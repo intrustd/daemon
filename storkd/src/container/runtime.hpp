@@ -11,12 +11,16 @@
 #include <sys/mount.h>
 #include <linux/netlink.h>
 
+#include "bridge.hpp"
+
 namespace stork {
   namespace container {
     struct NamespaceInitializationData {
       pid_t abs_pid;
       uid_t root_uid;
       gid_t root_gid;
+      BridgePort bridge_port;
+      std::uint32_t ip_address;
 
       //      char stork_init_path[PATH_MAX];
     };
@@ -110,7 +114,7 @@ namespace stork {
     public:
       TunDevice(const TunDevice &d) =delete;
 
-      TunDevice();
+      TunDevice(bool is_tap = false);
       TunDevice(TunDevice &&d);
       ~TunDevice();
 
@@ -122,7 +126,7 @@ namespace stork {
 
     private:
 
-      void open();
+      void open(bool is_tap);
 
       int m_tun_fd;
       std::string m_device_name;
@@ -185,6 +189,7 @@ namespace stork {
       void setup_users(uid_t reuid, gid_t regid,
                        const std::list< UidMapping<uid_t> > &users,
                        const std::list< UidMapping<gid_t> > &grps);
+      void set_uid_gid(uid_t reuid, gid_t regid);
 
       void mount(const boost::filesystem::path &src,
                  const boost::filesystem::path &dest,
@@ -202,6 +207,8 @@ namespace stork {
       // std::shared_ptr<TunInterface> new_tun_interface()
 
       inline const NamespaceInitializationData &init_data() const { return m_init_data; }
+      inline BridgePort bridge_port() const { return init_data().bridge_port; }
+      inline boost::asio::ip::address_v4 ip() const { return boost::asio::ip::address_v4(init_data().ip_address); }
 
     private:
       Namespaces(const NamespaceInitializationData &ni_data,
@@ -209,6 +216,8 @@ namespace stork {
 
       void close_ns_fd(int fd);
       int open_ns(const boost::filesystem::path &path);
+
+      BridgePort m_port;
 
       friend class NamespacesInitializer;
 
@@ -227,7 +236,8 @@ namespace stork {
       NamespacesInitializer(std::size_t stack_sz = (1024 * 1024));
       ~NamespacesInitializer();
 
-      void async_setup_namespaces(std::function<void(std::error_code, pid_t, int)> cb);
+      void async_setup_namespaces(BridgeController &c,
+                                  std::function<void(std::error_code, pid_t, int)> cb);
 
     protected:
       virtual void setup(Namespaces &ns, int comm);

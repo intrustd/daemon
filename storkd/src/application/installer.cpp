@@ -14,10 +14,24 @@ namespace stork {
     }
 
     void ApplicationInstaller::async_install() {
-      m_appliance.container_mgr().async_build_and_launch_container
-        (container_id(),
-         boost::bind(&ApplicationInstaller::application_container_launched, shared_from_this(),
-                     boost::placeholders::_1, boost::placeholders::_2));
+      auto shared(shared_from_this());
+      m_appliance.backend().async_get_persona
+        (m_persona_id, boost::bind(&ApplicationInstaller::got_persona, shared_from_this(),
+                                   boost::placeholders::_1));
+    }
+
+    void ApplicationInstaller::got_persona(std::shared_ptr<backend::IPersona> p) {
+      if ( p ) {
+        m_persona = p;
+
+        m_appliance.container_mgr().async_build_and_launch_app_instance
+          (app_instance_id(),
+           boost::bind(&ApplicationInstaller::application_container_launched, shared_from_this(),
+                       boost::placeholders::_1, boost::placeholders::_2));
+      } else {
+        // TODO better errors
+        m_callback(std::make_error_code(std::errc::identifier_removed));
+      }
     }
     //   m_appliance.app_mgr().async_get_application
     //     (m_app_id,
@@ -51,13 +65,19 @@ namespace stork {
     // }
 
     void ApplicationInstaller::application_container_launched(std::error_code ec,
-                                                              std::shared_ptr<container::Container> c ) {
+                                                              std::shared_ptr<container::AppInstanceMonitor> c ) {
       if ( ec ) {
         BOOST_LOG_TRIVIAL(error) << "Could not launch container: " << ec;
         m_callback(ec);
       } else {
-        BOOST_LOG_TRIVIAL(debug) << "GOt container!";
+        m_persona->async_install_application
+          (m_app_id, boost::bind(&ApplicationInstaller::application_installation_registered,
+                                 shared_from_this(), boost::placeholders::_1));
       }
+    }
+
+    void ApplicationInstaller::application_installation_registered(std::error_code ec) {
+      m_callback(ec);
     }
   }
 }

@@ -63,7 +63,8 @@ namespace stork {
     NamespacesInitializer::~NamespacesInitializer() {
     }
 
-    void NamespacesInitializer::async_setup_namespaces(std::function<void(std::error_code, pid_t, int)> cb) {
+    void NamespacesInitializer::async_setup_namespaces(BridgeController &bridge,
+                                                       std::function<void(std::error_code, pid_t, int)> cb) {
       if ( !m_is_setting_up.exchange(true) ) {
         // Now we can start the setup
         int error = socketpair(AF_UNIX, SOCK_DGRAM, 0, m_ipc_sockets);
@@ -74,11 +75,44 @@ namespace stork {
 
         int clone_flags =
           CLONE_NEWCGROUP | CLONE_NEWIPC | CLONE_NEWNET |
-          CLONE_NEWNS     | CLONE_NEWPID | CLONE_NEWUSER |
+          CLONE_NEWNS     | CLONE_NEWPID |
           CLONE_NEWUTS    | CLONE_PARENT | SIGCHLD ;
+        int child_id;
+
+        // Need to double fork to set namespace correctly
+        pid_t child(fork());
+        if ( child == 0 ) {
+          int err;
+          err = setns(bridge.userns_fd(), CLONE_NEWUSER);
+          if ( err == -1 ) {
+            auto ec(errno);
+            BOOST_LOG_TRIVIAL(error) << "Could not enter user namespace: " << ec;
+            exit(1);
+          }
+
+          child_id = clone(ns_trampoline, m_stack.data() + m_stack.size(), clone_flags, (void *) this);
+          err = send(m_ipc_sockets[1], &child_id, sizeof(child_id), 0);
+          if ( err == -1 ) {
+            auto ec(errno);
+            BOOST_LOG_TRIVIAL(error) << "Could not send child id: " << ec;
+            exit(1);
+          }
+
+          exit(0);
+        } else {
+          // Parent, wait for the child pid to come in on the socket
+          int err(recv(m_ipc_sockets[0], &child_id, sizeof(child_id), 0));
+          if ( err == - 1) {
+            auto ec(errno);
+            BOOST_LOG_TRIVIAL(error) << "Could not receive child id: " << ec;
+            close(m_ipc_sockets[0]);
+            close(m_ipc_sockets[1]);
+            cb(std::error_code(ec, std::generic_category()), 0, 0);
+            return;
+          }
+        }
 
         BOOST_LOG_TRIVIAL(info) << "Parent pid " << getpid();
-        int child_id = clone(ns_trampoline, m_stack.data() + m_stack.size(), clone_flags, (void *) this);
         if ( child_id < 0 ) {
           int error = errno;
 
@@ -93,6 +127,8 @@ namespace stork {
           ni_data.abs_pid = child_id;
           ni_data.root_uid = getuid();
           ni_data.root_gid = getgid();
+          ni_data.bridge_port = bridge.allocate_port();
+          ni_data.ip_address = bridge.allocate_ip().to_ulong();
 
           send(m_ipc_sockets[0], &ni_data, sizeof(ni_data), 0);
 
@@ -173,9 +209,9 @@ namespace stork {
       d.m_tun_fd = -1;
     }
 
-    TunDevice::TunDevice()
+    TunDevice::TunDevice(bool is_tap)
       : m_tun_fd(-1) {
-      open();
+      open(is_tap);
     }
 
     TunDevice::~TunDevice() {
@@ -190,7 +226,7 @@ namespace stork {
       return ret;
     }
 
-    void TunDevice::open() {
+    void TunDevice::open(bool is_tap) {
       static const char *clone_dev = "/dev/net/tun";
 
       int fd = ::open(clone_dev, O_RDWR);
@@ -203,7 +239,8 @@ namespace stork {
       struct ifreq ifr;
       memset(&ifr, 0, sizeof(ifr));
 
-      ifr.ifr_flags = IFF_TUN;
+      ifr.ifr_flags = is_tap ? IFF_TAP : IFF_TUN;
+      ifr.ifr_flags |= IFF_NO_PI;
 
       int err = ioctl(fd, TUNSETIFF, (void *) &ifr);
       if ( err < 0 ) {
@@ -485,6 +522,10 @@ namespace stork {
       uid_map << uid_map_data.str();
       uid_map.close();
 
+      set_uid_gid(reuid, regid);
+    }
+
+    void Namespaces::set_uid_gid(uid_t reuid, gid_t regid) {
       int err = setreuid(reuid, reuid);
       if ( err < 0 ) {
         auto ec(errno);

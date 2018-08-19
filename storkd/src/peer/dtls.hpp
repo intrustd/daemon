@@ -132,23 +132,23 @@ namespace stork {
       virtual Priority priority() const { return priority_application_normal; }
 
       virtual Result operator() (SSL *ssl, boost::asio::io_service &svc) {
-        BOOST_LOG_TRIVIAL(debug) << "SSL_read: starting";
+        //BOOST_LOG_TRIVIAL(debug) << "SSL_read: starting";
         int r(SSL_read(ssl, m_buffer, m_buffer_size));
         if ( r > 0 ) {
-          BOOST_LOG_TRIVIAL(debug) << "SSL_read: completes";
-          svc.post(boost::bind(m_completion, boost::system::error_code(), (std::size_t) r));
+          //BOOST_LOG_TRIVIAL(debug) << "SSL_read: completes";
+          svc.post(boost::bind<void>(m_completion, boost::system::error_code(), (std::size_t) r));
           return completes;
         } else {
           int err(SSL_get_error(ssl, r));
-          BOOST_LOG_TRIVIAL(debug) << "SSL_read: completes (waiting)";
+          //BOOST_LOG_TRIVIAL(debug) << "SSL_read: completes (waiting)";
           switch ( err ) {
           case SSL_ERROR_WANT_READ:
             return needs_read;
           case SSL_ERROR_WANT_WRITE:
             return needs_write;
           case SSL_ERROR_SYSCALL: {
-            auto ec(errno);
-            BOOST_LOG_TRIVIAL(error) << "SSL_read: syscall failed: " << ec;
+            //auto ec(errno);
+            //BOOST_LOG_TRIVIAL(error) << "SSL_read: syscall failed: " << ec;
             return needs_read;
           }
           case SSL_ERROR_SSL:
@@ -159,6 +159,8 @@ namespace stork {
             return fault;
           default:
             // TODO better error messages
+            BOOST_LOG_TRIVIAL(error) << "SSL_read: unknown error: " << err;
+            ERR_print_errors_fp(stderr);
             return_error(svc, ENOTRECOVERABLE);
             return fault;
           }
@@ -171,7 +173,7 @@ namespace stork {
 
     private:
       void return_error(boost::asio::io_service &svc, int errno_) {
-        svc.post(boost::bind(m_completion, boost::system::error_code(errno_, boost::system::generic_category()), 0));
+        svc.post(boost::bind<void>(m_completion, boost::system::error_code(errno_, boost::system::generic_category()), 0));
       }
 
       std::uint8_t *m_buffer;
@@ -196,21 +198,21 @@ namespace stork {
       virtual Priority priority() const { return priority_application_write; }
 
       virtual Result operator() (SSL *ssl, boost::asio::io_service &svc) {
-        BOOST_LOG_TRIVIAL(debug) << "SSL_write: starting";
+        //BOOST_LOG_TRIVIAL(debug) << "SSL_write: starting";
         int r (SSL_write(ssl, m_buffer, m_buffer_size));
         if ( r > 0 ) {
-          BOOST_LOG_TRIVIAL(debug) << "SSL_write: completes";
-          svc.post(boost::bind(m_completion, boost::system::error_code(), (std::size_t) r));
+          //BOOST_LOG_TRIVIAL(debug) << "SSL_write: completes";
+          svc.post(boost::bind<void>(m_completion, boost::system::error_code(), (std::size_t) r));
           return completes;
         } else {
           int err(SSL_get_error(ssl, r));
-          BOOST_LOG_TRIVIAL(debug) << "SSL_write: completes (waiting)";
+          //BOOST_LOG_TRIVIAL(debug) << "SSL_write: completes (waiting)";
           switch ( err ) {
           case SSL_ERROR_WANT_READ: return needs_read;
           case SSL_ERROR_WANT_WRITE: return needs_write;
           case SSL_ERROR_SYSCALL: {
-            auto ec(errno);
-            BOOST_LOG_TRIVIAL(error) << "SSL_write: syscall failed: " << ec;
+            //auto ec(errno);
+            //BOOST_LOG_TRIVIAL(error) << "SSL_write: syscall failed: " << ec;
             return needs_read;
           }
           case SSL_ERROR_SSL:
@@ -219,6 +221,7 @@ namespace stork {
             return_error(svc, ENOTRECOVERABLE);
             return fault;
           default:
+            BOOST_LOG_TRIVIAL(error) << "SSL_write: unknown error";
             return_error(svc, ENOTRECOVERABLE);
             return fault;
           }
@@ -231,7 +234,7 @@ namespace stork {
 
     private:
       void return_error(boost::asio::io_service &svc, int errno_) {
-        svc.post(boost::bind(m_completion, boost::system::error_code(errno_, boost::system::generic_category()), 0));
+        svc.post(boost::bind<void>(m_completion, boost::system::error_code(errno_, boost::system::generic_category()), 0));
       }
 
       const std::uint8_t *m_buffer;

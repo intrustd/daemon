@@ -105,19 +105,13 @@ export class ApplicationIdentifier {
 
 export class Credentials {
     constructor(persona_id, creds, apps) {
-        this.persona_id = persona_id
-        this.creds = creds
-        this.apps =
-            apps.filter((app) => { return app != USER_ADMIN_APP; })
-            .map( (app_uri) => { return new ApplicationIdentifier(app_uri); });
-        this.requires_user_admin = apps.some((app) => { return app == USER_ADMIN_APP; });
+        this.persona_id = persona_id;
+        this.creds = creds;
     }
 
     write (buf) {
         buf.putFixedLenString(64, this.persona_id)
-            .putVarLenString(this.creds)
-            .putUint8(this.requires_user_admin ? 1 : 0)
-            .putList(this.apps, (app) => { app.write(buf); });
+            .putVarLenString(this.creds);
     }
 }
 

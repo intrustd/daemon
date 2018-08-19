@@ -1,0 +1,9 @@
+cmake_minimum_required(VERSION 2.6)
+PROJECT(webrtc-proxy)
+
+FIND_PACKAGE(PkgConfig REQUIRED)
+PKG_SEARCH_MODULE(USRSCTP usrsctp REQUIRED)
+
+ADD_EXECUTABLE(webrtc-proxy main.c)
+TARGET_COMPILE_OPTIONS(webrtc-proxy PUBLIC ${USRSCTP_CFLAGS} -I../common/)
+TARGET_LINK_LIBRARIES(webrtc-proxy ${USRSCTP_LIBRARIES})

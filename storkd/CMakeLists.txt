@@ -20,17 +20,17 @@ ADD_LIBRARY(stork STATIC src/persona/profile.cpp src/nix.cpp src/proto.cpp
   src/local_proto.cpp src/uri.cpp
   src/unarchiver.cpp src/application/application.cpp src/flock/proto.cpp src/backend_common.cpp
   src/peer/initiator.cpp src/peer/session.cpp src/peer/ice.cpp src/peer/stun.cpp
-  src/peer/certificate.cpp src/peer/dtls.cpp src/peer/webrtc.cpp
-  src/sctp/manager.cpp src/sctp/proto.cpp src/sctp/port.cpp src/sctp/packet.cpp )
-TARGET_COMPILE_OPTIONS(stork PUBLIC -D BOOST_ALL_DYN_LINK -std=c++1z -Wall)
+  src/peer/certificate.cpp src/peer/dtls.cpp)
+TARGET_COMPILE_OPTIONS(stork PUBLIC -D BOOST_ALL_DYN_LINK -std=c++1z -Wall -I../common/)
 TARGET_LINK_LIBRARIES(stork ${USED_LIBS} ${OPENSSL_LIBRARIES} ${URIPARSER_LIBRARIES})
 
 ADD_EXECUTABLE(storkd src/main.cpp src/appliance.cpp src/local_api.cpp
+  src/util/fd.cpp
   src/backend.cpp src/application/manager.cpp src/application/manifest.cpp
-  src/application/installer.cpp src/container/container.cpp
+  src/application/installer.cpp src/container/app_instance.cpp
   src/container/manager.cpp src/container/runtime.cpp src/container/init.cpp
-  src/container/bridge.cpp)
-TARGET_COMPILE_OPTIONS(storkd PUBLIC -D BOOST_ALL_DYN_LINK -std=c++1z -Wall)
+  src/container/bridge.cpp src/container/persona.cpp)
+TARGET_COMPILE_OPTIONS(storkd PUBLIC -D BOOST_ALL_DYN_LINK -std=c++1z -Wall -I../common/)
 TARGET_LINK_LIBRARIES(storkd stork ${USED_LIBS} ${OPENSSL_LIBRARIES})
 
 ADD_EXECUTABLE(storkctl src/storkctl.cpp src/storkctl/command.cpp

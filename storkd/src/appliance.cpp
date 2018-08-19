@@ -1,3 +1,4 @@
+#include <boost/log/utility/manipulators/dump.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/random/mersenne_twister.hpp>
@@ -66,13 +67,15 @@ namespace stork {
     };
 
     class FlockPeerInitiator : public peer::PeerInitiator,
-                               public peer::IWebRTCConnectionDelegate,
+                               public container::IUdpListener,
                                public std::enable_shared_from_this<FlockPeerInitiator> {
     public:
-      FlockPeerInitiator(boost::asio::io_service &svc,
+      FlockPeerInitiator(boost::asio::io_service &svc, Appliance &appliance,
                          IFlockMembership *flock,
-                         const std::string &new_token)
-        : peer::PeerInitiator(svc), m_service(svc), m_flock(flock), m_is_ice_done(false), m_is_waiting(false) {
+                         const std::string &new_token, const backend::PersonaId &pid)
+        : peer::PeerInitiator(svc), m_service(svc), m_appliance(appliance),
+          m_persona(pid), m_flock(flock), m_is_ice_done(false), m_is_waiting(false),
+          m_udp_packets_in_flight(0) {
         memset(m_token, 'x', sizeof(m_token));
         m_token[LOGIN_TOKEN_LENGTH] = '\0';
 
@@ -89,13 +92,33 @@ namespace stork {
       virtual ~FlockPeerInitiator() {
       }
 
-      virtual void on_data_channel(std::shared_ptr<peer::WebRTCDataChannel> chan) override {
-        BOOST_LOG_TRIVIAL(debug) << "Received new data channel: " << chan->webrtc_channel_name() << " of protocol " << chan->webrtc_protocol();
-      }
+      inline const backend::PersonaId &persona() const { return m_persona; }
 
-      virtual void on_close() override {
-        BOOST_LOG_TRIVIAL(error) << "Peer initiator: connection closes";
-        // TODO what to actually do here?
+      static constexpr int MAX_UDP_PACKETS_IN_FLIGHT = 100;
+      virtual void on_udp_packet(const boost::asio::ip::address_v4 &saddr, std::uint16_t sport, std::uint16_t dport,
+                                 const boost::asio::const_buffer &b) override {
+        BOOST_LOG_TRIVIAL(debug) << "Received UDP packet from internal network on port "
+                                 << dport << " from " << saddr << ":" << sport << ": "
+                                 << boost::log::dump(boost::asio::buffer_cast<const void *>(b),
+                                                     boost::asio::buffer_size(b));
+
+        boost::unique_lock l(m_sctp_mutex);
+        if ( saddr != m_sctp_peer->ip() ) return;
+
+        if ( m_udp_packets_in_flight < MAX_UDP_PACKETS_IN_FLIGHT ) {
+          m_udp_packets_in_flight++;
+          auto data(std::make_shared< std::vector<std::uint8_t> >());
+          data->resize(boost::asio::buffer_size(b));
+          std::copy(boost::asio::buffer_cast<const std::uint8_t*>(b),
+                    boost::asio::buffer_cast<const std::uint8_t*>(b) + data->size(),
+                    data->begin());
+          m_sctp_in_chan->async_send(boost::asio::buffer(*data),
+                                     [data] ( boost::system::error_code ec, std::size_t bytes_tx ) {
+                                       if ( ec ) {
+                                         BOOST_LOG_TRIVIAL(error) << "Could not send received UDP packet over DTLS: " << ec;
+                                       }
+                                     });
+        }
       }
 
       virtual void answer_session_description(const std::string &sdp) {
@@ -113,27 +136,52 @@ namespace stork {
         if ( m_is_waiting ) do_answer_dial();
       }
 
-      virtual void on_data_connection_starts(peer::WebRTCConnectionBase &webrtc) override {
-        webrtc.set_webrtc_delegate(shared_from_this());
+      virtual void on_data_connection_starts(peer::DTLSChannel &chan) {
+        BOOST_LOG_TRIVIAL(debug) << "Data connection has started";
+        auto shared(shared_from_this());
+        boost::unique_lock sctp_l(m_sctp_mutex);
+        m_sctp_in_chan = &chan;
+
+        m_appliance.container_mgr().async_launch_persona_container
+          (persona(),
+           [shared, &chan] (std::error_code ec, std::shared_ptr<container::PersonaContainer> c) {
+            if ( ec ) {
+              // Shut down conection TODO
+              BOOST_LOG_TRIVIAL(error) << "Could not launch persona container: " << ec;
+            } else {
+              BOOST_LOG_TRIVIAL(info) << "Launched persona container";
+              boost::unique_lock sctp_l(shared->m_sctp_mutex);
+              shared->m_sctp_peer = c;
+              c->async_launch_webrtc_proxy
+                ([shared, &chan] (std::error_code ec, container::BridgeController::UsedUdpPort &&p) {
+                  if ( ec ) {
+                    BOOST_LOG_TRIVIAL(error) << "COuld not launch webrtc proxy: " << ec;
+                  } else {
+                    // This forwards all UDP traffic on the TUN connection to this tunnel
+                    p.listen(shared.get());
+
+                    boost::unique_lock sctp_l(shared->m_sctp_mutex);
+                    shared->m_sctp_port = std::make_unique<container::BridgeController::UsedUdpPort>(std::move(p));
+
+                    // Read traffic from this port and output it on our channel
+                    //shared->m_appliance.bridge_controller().async_recv_udp(...);
+
+                    // Read traffic from this channel and formulate UDP packets to send on our tun controller
+                    shared->read_sctp_in();
+                  }
+                });
+            }
+          });
+
       }
 
       void wait_for_completion() {
         BOOST_LOG_TRIVIAL(debug) << "Marked complete";
         boost::unique_lock l(m_completion_mutex);
+
         m_is_waiting = true;
         if ( m_is_ice_done ) do_answer_dial();
       }
-
-//      void move_peer(PushPullSocket &&socket) {
-//        BOOST_LOG_TRIVIAL(info) << "Starting peer";
-//
-//        sctp_instance.add_endpoint(std::move(socket));
-//
-//        if ( !m_peer ) {
-//          m_peer->async_start();
-//          m_peer = std::make_shared<PeerService>(std::move(sctp_instance.socket()));
-//        }
-//      }
 
       virtual std::shared_ptr<IceCandidateCollector> base_shared_from_this() {
         return shared_from_this();
@@ -155,7 +203,29 @@ namespace stork {
                                "", m_ice_candidates);
       }
 
+      void read_sctp_in() {
+        auto shared(shared_from_this());
+        if ( m_sctp_in_chan )
+          m_sctp_in_chan->async_receive(boost::asio::buffer(m_sctp_in_buf, sizeof(m_sctp_in_buf)),
+                                        boost::bind(&FlockPeerInitiator::on_sctp_packet_read, shared,
+                                                    boost::asio::placeholders::error,
+                                                    boost::asio::placeholders::bytes_transferred));
+      }
+
+      void on_sctp_packet_read(boost::system::error_code ec, std::size_t bytes_rx) {
+        if ( ec ) {
+          BOOST_LOG_TRIVIAL(error) << "on_sctp_packet_read: " << ec;
+        } else {
+          boost::shared_lock l(m_sctp_mutex);
+          m_sctp_port->write_pkt(m_sctp_peer->ip(), m_sctp_port->port(),
+                                 boost::asio::buffer(m_sctp_in_buf, bytes_rx));
+          read_sctp_in();
+        }
+      }
+
       boost::asio::io_service &m_service;
+      Appliance &m_appliance;
+      backend::PersonaId m_persona;
       IFlockMembership *m_flock;
       char m_token[LOGIN_TOKEN_LENGTH + 1];
 
@@ -163,6 +233,14 @@ namespace stork {
       std::string m_answer;
       std::list<std::string> m_ice_candidates;
       bool m_is_ice_done, m_is_waiting;
+
+      boost::shared_mutex m_sctp_mutex;
+      std::shared_ptr<container::PersonaContainer> m_sctp_peer;
+      std::unique_ptr<container::BridgeController::UsedUdpPort> m_sctp_port;
+      peer::DTLSChannel *m_sctp_in_chan;
+
+      char m_sctp_in_buf[1500];
+      int m_udp_packets_in_flight;
     };
 
     Appliance::Appliance(boost::asio::io_service &svc, backend::IBackend &b,
@@ -173,6 +251,7 @@ namespace stork {
         m_io_service(svc),
         m_app_mgr(m_io_service, *this),
         m_container_mgr(m_io_service, *this),
+        m_bridge_controller(m_io_service, m_nix_store, m_container_mgr, m_backend),
         m_flock_management_strand(m_io_service)
     {
       find_stork_init();
@@ -198,10 +277,6 @@ namespace stork {
       unsigned int processors = std::thread::hardware_concurrency();
 
       BOOST_LOG_TRIVIAL(info) << "Running on " << processors << " processor(s)";
-
-      // Start bridge service
-
-      container::BridgeController bridge(m_nix_store);
 
       LocalApi localApi(*this, m_io_service);
       //      FlockClient flockClient(*this, m_io_service);
@@ -247,46 +322,47 @@ namespace stork {
     }
 
     void Appliance::find_stork_init() {
-      char *stork_init_env = std::getenv("STORK_INIT");
-      if ( stork_init_env ) {
-        m_stork_init_path = stork_init_env;
-      } else {
-        BOOST_LOG_TRIVIAL(debug) << "Going to find path by examining mappings";
-
-        // TODO assume that this address is in the executable image
-        std::uintptr_t addr = (std::uintptr_t) (void *) &read_hex;
-
-        std::fstream maps("/proc/self/maps", std::fstream::in);
-        while ( !maps.eof() ) {
-          std::string start_addr_s, end_addr_s;
-          std::getline(maps, start_addr_s, '-');
-          maps >> end_addr_s;
-
-          auto start_addr(read_hex(start_addr_s)),
-            end_addr(read_hex(end_addr_s));
-
-          if ( addr >= start_addr && addr < end_addr ) {
-            std::string data_s;
-            std::getline(maps, data_s);
-
-            std::stringstream data(data_s);
-            std::string path;
-
-            while ( !data.eof() )
-              data >> path;
-
-            m_stork_init_path = path;
-            BOOST_LOG_TRIVIAL(debug) << "Found stork-init: " << m_stork_init_path;
-
-            break;
-          } else {
-            std::getline(maps, start_addr_s); // Skip to next line
-          }
-        }
-      }
-
-      if ( m_stork_init_path.empty() )
-        throw std::runtime_error("Unable to locate stork-init. Please specify the STORK_INIT environment variable");
+      m_stork_init_path = "/home/tathougies/Projects/stork-cpp/init/app-instance-init";
+//       char *stork_init_env = std::getenv("STORK_INIT");
+//       if ( stork_init_env ) {
+//         m_stork_init_path = stork_init_env;
+//       } else {
+//         BOOST_LOG_TRIVIAL(debug) << "Going to find path by examining mappings";
+// 
+//         // TODO assume that this address is in the executable image
+//         std::uintptr_t addr = (std::uintptr_t) (void *) &read_hex;
+// 
+//         std::fstream maps("/proc/self/maps", std::fstream::in);
+//         while ( !maps.eof() ) {
+//           std::string start_addr_s, end_addr_s;
+//           std::getline(maps, start_addr_s, '-');
+//           maps >> end_addr_s;
+// 
+//           auto start_addr(read_hex(start_addr_s)),
+//             end_addr(read_hex(end_addr_s));
+// 
+//           if ( addr >= start_addr && addr < end_addr ) {
+//             std::string data_s;
+//             std::getline(maps, data_s);
+// 
+//             std::stringstream data(data_s);
+//             std::string path;
+// 
+//             while ( !data.eof() )
+//               data >> path;
+// 
+//             m_stork_init_path = path;
+//             BOOST_LOG_TRIVIAL(debug) << "Found stork-init: " << m_stork_init_path;
+// 
+//             break;
+//           } else {
+//             std::getline(maps, start_addr_s); // Skip to next line
+//           }
+//         }
+//       }
+// 
+//       if ( m_stork_init_path.empty() )
+//         throw std::runtime_error("Unable to locate stork-init. Please specify the STORK_INIT environment variable");
     }
 
     void Appliance::restore_state() {
@@ -427,14 +503,16 @@ namespace stork {
       virtual void register_device(const proto::flock::RegisterDeviceCommand &cmd) {
         finish_connection_with_incompatible_command();
       }
+
       virtual void login_to_device(const proto::flock::LoginToDeviceCommand &cmd) {
         if ( cmd.has_credentials() ) {
           const auto &creds(cmd.credentials());
           BOOST_LOG_TRIVIAL(debug) << "Going to attempt login with " << creds.persona_id().id() << " " << creds.credentials();
+          auto persona_id(creds.persona_id());
 
           // Check if the credentials are valid
           m_appliance.backend().async_check_credentials
-            (creds, [this] (std::error_code ec) {
+            (creds, [this, persona_id] (std::error_code ec) {
               if ( ec ) {
                 // TODO Check if error is due to credentials being invalid
                 auto r(proto::flock::LoginToDeviceResponse::invalid_credentials());
@@ -442,7 +520,8 @@ namespace stork {
               } else {
                 // Otherwise, create a connection token. This token is valid for 10 minutes or so.
                 auto new_token(util::random_string(LOGIN_TOKEN_LENGTH));
-                auto peer(std::make_shared<FlockPeerInitiator>(m_service, this, new_token));
+                auto peer(std::make_shared<FlockPeerInitiator>(m_service, m_appliance, this,
+                                                               new_token, persona_id));
 
                 set_token(new_token, peer);
 
@@ -686,6 +765,11 @@ namespace stork {
       std::list< std::shared_ptr<IFlockMembership> > &m_flocks;
       std::list< typename Protocol::endpoint > m_endpoints;
     };
+
+    const boost::filesystem::path &Appliance::persona_init_path() const {
+      static const boost::filesystem::path ret("/home/tathougies/Projects/stork-cpp/init/persona-init");
+      return ret;
+    }
 
     void Appliance::async_join_flock(uri::Uri flock_uri,
                                      std::function<void(uri::ErrorCode)> cb) {

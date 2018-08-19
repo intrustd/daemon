@@ -5,7 +5,6 @@
 #include <boost/thread/shared_mutex.hpp>
 #include <vector>
 
-#include "../sctp/manager.hpp"
 #include "checklist.hpp"
 #include "../appliance.hpp"
 #include "../util/array.hpp"
@@ -13,7 +12,6 @@
 #include "ice.hpp"
 #include "certificate.hpp"
 #include "dtls.hpp"
-#include "webrtc.hpp"
 // #include "push_pull_socket.hpp"
 
 namespace stork {
@@ -44,9 +42,6 @@ namespace stork {
       PeerInitiator(boost::asio::io_service &service);
       virtual ~PeerInitiator();
 
-      using PeerSctpManager = sctp::SctpManager<DTLSChannel>;
-      using PeerWebRTCConnection = WebRTCConnection< PeerSctpManager::socket_type >;
-
       boost::asio::io_service &service() const;
 
       void set_session_description(const std::string &sdp);
@@ -61,7 +56,7 @@ namespace stork {
       virtual void answer_session_description(const std::string &sdp) =0;
       virtual void send_ice_candidate(const std::string &ice_candidate) =0;
       virtual void ice_candidate_collection_complete() =0;
-      virtual void on_data_connection_starts(WebRTCConnectionBase &webrtc) =0;
+      virtual void on_data_connection_starts(DTLSChannel &chan) =0;
 
       void remote_connection_check_succeeds(const boost::asio::ip::udp::endpoint &remote,
                                             const boost::asio::ip::udp::endpoint &local,
@@ -172,8 +167,6 @@ namespace stork {
 
       // The currently nominated connection
       std::shared_ptr<IceConnectivityListener> m_nominated;
-      std::shared_ptr<PeerSctpManager> m_sctp_manager;
-      std::shared_ptr<PeerWebRTCConnection> m_webrtc_connection;
       //      std::shared_ptr<PushPullAdaptor> m_data_stream_adaptor;
     };
 

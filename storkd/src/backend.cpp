@@ -33,10 +33,61 @@ namespace stork {
         return m_persona_id;
       }
 
+      virtual void async_install_application(const application::ApplicationIdentifier &id,
+                                             std::function<void(std::error_code)> completion) {
+        auto perms_file(persona_app_perm_file(id));
+
+        if ( !fs::create_directories(perms_file.parent_path()) ) {
+          // TODO better errors
+          completion(std::make_error_code(std::errc::no_such_file_or_directory));
+          return;
+        }
+
+        std::fstream perm(perms_file.string().c_str(), std::fstream::out);
+        perm << "installed";
+      }
+
+      virtual void async_check_application_installed(const application::ApplicationIdentifier &id,
+                                                     std::function<void(bool)> completion) {
+        auto perms_file(persona_app_perm_file(id));
+
+        BOOST_LOG_TRIVIAL(debug) << "Async_check_application installed: " << perms_file;
+        if ( fs::is_regular_file(perms_file) ) {
+          BOOST_LOG_TRIVIAL(debug) << "   this was a regular file";
+          std::fstream perms(perms_file.string().c_str(), std::fstream::in);
+          if ( perms.is_open() ) {
+            std::string perm;
+            std::getline(perms, perm);
+            BOOST_LOG_TRIVIAL(debug) << "  got permission " << perm;
+            if ( perm == "installed" )
+              completion(true);
+            else
+              completion(false);
+          } else
+            completion(false);
+        } else
+          completion(false);
+      }
+
+      bool exists() {
+        return fs::is_directory(persona_directory()) &&
+          fs::is_regular_file(public_key_file()) &&
+          fs::is_regular_file(private_key_file()) &&
+          fs::is_regular_file(persona_file());
+      }
+
       fs::path persona_directory() const {
         fs::path persona_path(m_backend.personas_dir());
         persona_path /= m_persona_id.id();
         return persona_path;
+      }
+
+      fs::path persona_perms_directory() const {
+        return persona_directory() / "perms";
+      }
+
+      fs::path persona_app_perm_file(const application::ApplicationIdentifier &id) const {
+        return persona_directory() / "perms" / id.domain() / id.app_id();
       }
 
       fs::path public_key_file() const {
@@ -58,7 +109,7 @@ namespace stork {
       }
 
       bool ready_directory() const {
-        if ( !fs::create_directories(persona_directory()) ) {
+        if ( !fs::create_directories(persona_perms_directory()) ) {
           BOOST_LOG_TRIVIAL(error) << "Could not create persona directory " << persona_directory();
           return false;
         }
@@ -86,6 +137,7 @@ namespace stork {
 
         return true;
       }
+
 
     private:
       FilePersona(FileBackend &be, const PersonaId &persona_id)
@@ -252,6 +304,15 @@ namespace stork {
       return persona;
     }
 
+    void FileBackend::async_get_persona(const PersonaId &p,
+                                        std::function<void(std::shared_ptr<IPersona>)> completion) {
+      std::shared_ptr<FilePersona> persona(new FilePersona(*this, p));
+      if ( persona->exists() )
+        completion(persona);
+      else
+        completion(nullptr);
+    }
+
     std::list< std::shared_ptr<IPersona> > FileBackend::list_personas() {
       std::list< std::shared_ptr<IPersona> > personas;
       fs::path cur_personas_dir(personas_dir());
@@ -335,8 +396,27 @@ namespace stork {
     }
 
     void FileBackend::async_check_credentials(const LoginCredentials &creds, std::function<void(std::error_code)> cb) {
-      // TODO actaully check credentials
-      cb(std::error_code());
+      // First check if tthe persona exists
+      async_get_persona
+        (creds.persona_id(),
+         [cb{std::move(cb)}] (std::shared_ptr<IPersona> persona) {
+          if ( !persona ) {
+            cb(std::make_error_code(std::errc::file_exists));
+          } else {
+            cb(std::error_code());
+            //        if ( persona->check_credential(creds.credentials()) ) {
+            //          cb(std::error_code());
+            //        } else {
+            //          cb(std::make_error_code(std::errc::permission_denied));
+                            //        }
+          }
+        });
     }
+  }
+}
+
+namespace std {
+  std::size_t hash<stork::backend::PersonaId>::operator() (const stork::backend::PersonaId &pid) const {
+    return hash<string>()(pid.id());
   }
 }

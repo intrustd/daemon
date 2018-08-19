@@ -81,11 +81,11 @@ export class FlockClient extends EventTarget {
         this.sendRequest(cmd);
     }
 
-    loginToDeviceWithCreds(device_name, persona_id, creds, apps, cb) {
+    loginToDeviceWithCreds(device_name, persona_id, creds, cb) {
         var cmd = new LoginToDeviceCommand(1, device_name);
         console.log("Logging into device with credentials");
 
-        cmd.add_credentials(new Credentials(persona_id, creds, apps));
+        cmd.add_credentials(new Credentials(persona_id, creds));
 
         var responseListener = (evt) => {
             var response = new Response(evt.responseBuffer);
@@ -145,10 +145,16 @@ export class FlockClient extends EventTarget {
                 if ( rsp.success ) {
                     console.log("Successful login, candidates are ", rsp);
 
-                    var conn = flock.startConnection("combustion toxicity maple semicolon", "persona id", [ "stork+app://travis.athougies.net/testapp" ]);
+                    var conn = flock.startConnection("combustion toxicity maple semicolon", "c12e34eb2dd3924ad58f7192008aa2bdd7931ce2fe1c75c6c3ea5bc57686132a", [ "stork+app://flywithkite.com/photos" ]);
 
                     conn.addEventListener('open', function() {
-                        console.log("Open");
+                        console.log("Open", conn.applications);
+                        var socket = conn.socketTCP("stork+app://flywithkite.com/photos", 50051);
+                        socket.addEventListener('open', function() { console.log("photos socket opened"); })
+                        socket.addEventListener('data', function(e) { console.log("Got data", e.data); })
+                    });
+                    conn.addEventListener('error', function (e) {
+                        console.error("Error opening connection", e);
                     });
 
                     conn.login("creds");

@@ -307,39 +307,8 @@ namespace stork {
         m_local_candidates.clear();
         m_remote_candidates.clear();
 
+        on_data_connection_starts(found_pair->local()->listener().data_channel());
 
-        // Start SCTP layer
-        m_sctp_manager = std::make_shared<PeerSctpManager>(found_pair->local()->listener().data_channel());
-        auto acceptor(std::make_shared<PeerSctpManager::acceptor_type>(*m_sctp_manager));
-
-        boost::system::error_code ec;
-        // TODO which port?
-        acceptor->bind_port(5000, ec);
-        if ( ec ) {
-          BOOST_LOG_TRIVIAL(error) << "Could not bind acceptor: " << ec;
-        }
-
-        acceptor->bind(boost::asio::ip::address(), ec);
-        if ( ec ) {
-          BOOST_LOG_TRIVIAL(error) << "Could not bind acceptor: " << ec;
-        }
-
-        acceptor->listen(2);
-
-        acceptor->async_accept([acceptor, this] (boost::system::error_code ec, PeerSctpManager::socket_type new_socket) {
-            if ( ec ) {
-              BOOST_LOG_TRIVIAL(error) << "No SCTP association received on this acceptor";
-              // TODO what sohuld we do here? Also we should have a timeout waiting for this to accept
-            } else {
-              m_webrtc_connection = std::make_shared<PeerWebRTCConnection>(std::move(new_socket), true);
-              on_data_connection_starts(*m_webrtc_connection);
-
-              if ( m_webrtc_connection->has_delegate() )
-                m_webrtc_connection->start();
-            }
-          });
-
-        m_sctp_manager->start();
       } else if ( m_checklist.has_failed() ) {
         BOOST_LOG_TRIVIAL(error) << "Peer initiator has failed";
       } else

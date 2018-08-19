@@ -10,6 +10,7 @@
 #include "backend.hpp"
 #include "nix.hpp"
 #include "application/manager.hpp"
+#include "container/bridge.hpp"
 #include "container/manager.hpp"
 
 namespace stork {
@@ -28,10 +29,12 @@ namespace stork {
       boost::filesystem::path stork_local_api_socket_path() const;
 
       inline backend::IBackend &backend() { return m_backend; };
+      inline container::BridgeController &bridge_controller() { return m_bridge_controller; }
       inline application::Manager &app_mgr() { return m_app_mgr; };
       inline container::Manager &container_mgr() { return m_container_mgr; }
       inline const std::string &appliance_name() const { return m_appliance_name; }
-      inline const boost::filesystem::path &stork_init_path() const { return m_stork_init_path; }
+      inline const boost::filesystem::path &app_instance_init_path() const { return m_stork_init_path; }
+      const boost::filesystem::path &persona_init_path() const;
 
       void async_join_flock(uri::Uri swarm_uri,
                             std::function<void(uri::ErrorCode)> cb);
@@ -63,6 +66,7 @@ namespace stork {
       // Various managers
       application::Manager m_app_mgr;
       container::Manager m_container_mgr;
+      container::BridgeController m_bridge_controller;
 
       boost::asio::io_service::strand m_flock_management_strand;
       std::list< std::shared_ptr<IFlockMembership> > m_flocks;

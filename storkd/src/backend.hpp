@@ -50,16 +50,9 @@ namespace stork {
       inline LoginCredentials() { }
       inline LoginCredentials(const LoginCredentials &creds) = default;
       inline LoginCredentials(const backend::PersonaId &persona, const std::string &credentials)
-        : m_persona_id(persona), m_credentials(credentials), m_wants_user_admin(false) {
+        : m_persona_id(persona), m_credentials(credentials) {
       }
       inline LoginCredentials(LoginCredentials &&creds) = default;
-
-      inline void request_user_admin() { m_wants_user_admin = true; }
-      inline void give_up_user_admin() { m_wants_user_admin = false; }
-
-      inline void request_app(const application::ApplicationIdentifier &id) { m_wanted_apps.insert(id); }
-      inline void give_up_app(const application::ApplicationIdentifier &id) { m_wanted_apps.erase(id); }
-      inline bool is_requesting_app(const application::ApplicationIdentifier &id) { return m_wanted_apps.find(id) != m_wanted_apps.end(); }
 
       void build_proto(proto::ProtoBuilder &b) const;
 
@@ -67,15 +60,10 @@ namespace stork {
 
       inline const std::string &credentials() const { return m_credentials; }
       inline const backend::PersonaId &persona_id() const { return m_persona_id; }
-      inline bool wants_user_admin() const { return m_wants_user_admin; }
-      inline const std::unordered_set<application::ApplicationIdentifier> &wanted_apps() const { return m_wanted_apps; }
 
     private:
       backend::PersonaId m_persona_id;
       std::string m_credentials;
-
-      bool m_wants_user_admin;
-      std::unordered_set<application::ApplicationIdentifier> m_wanted_apps;
     };
 
     class IPersona;
@@ -86,6 +74,8 @@ namespace stork {
       virtual ~IBackend();
 
       virtual std::shared_ptr<IPersona> new_persona(const persona::Profile &p) =0;
+      virtual void async_get_persona(const PersonaId &p,
+                                     std::function<void(std::shared_ptr<IPersona>)> completion) =0;
       virtual std::list< std::shared_ptr<IPersona> > list_personas() =0;
 
       virtual std::list< std::shared_ptr<IApplication> > list_installed_applications() =0;
@@ -114,6 +104,14 @@ namespace stork {
       virtual ~IPersona();
 
       virtual const PersonaId &persona_id() const =0;
+
+      // Register the given application as having been installed for this persona
+      virtual void async_install_application(const application::ApplicationIdentifier &id,
+                                             std::function<void(std::error_code)> completion) =0;
+
+      // Checks if all provided applications are installed. Calls completion with true or false.
+      virtual void async_check_application_installed(const application::ApplicationIdentifier &app,
+                                                     std::function<void(bool)> completion) =0;
     };
 
     class FileBackend : public IBackend {
@@ -122,6 +120,8 @@ namespace stork {
       virtual ~FileBackend();
 
       virtual std::shared_ptr<IPersona> new_persona(const persona::Profile &p);
+      virtual void async_get_persona(const PersonaId &p,
+                                     std::function<void(std::shared_ptr<IPersona>)> completion);
       virtual std::list< std::shared_ptr<IPersona> > list_personas();
 
       virtual std::list< std::shared_ptr<IApplication> > list_installed_applications();
@@ -148,6 +148,13 @@ namespace stork {
       boost::filesystem::path m_stork_dir;
     };
   }
+}
+
+namespace std {
+  template <>
+  struct hash<stork::backend::PersonaId> {
+    std::size_t operator() (const stork::backend::PersonaId &) const;
+  };
 }
 
 #endif

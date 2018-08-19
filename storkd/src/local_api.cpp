@@ -63,6 +63,7 @@ namespace stork {
                     try {
                       parsedCommand = proto::local::Command::read(parser);
                     } catch ( proto::ProtoParseException &e) {
+                      BOOST_LOG_TRIVIAL(info) << "[LocalApi] Could not read command: " << e.what();
                     }
 
                     if ( !parsedCommand ) {
