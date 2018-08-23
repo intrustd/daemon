@@ -137,6 +137,8 @@ export class FlockClient extends EventTarget {
 
     static testFlock() {
         var flock = new FlockClient("ws://localhost:6854/");
+        var httpParser = require('http-parser-js').HTTPParser;
+        var myBuffer = require('buffer').Buffer;
         console.log("Test flock");
 
         flock.addEventListener("open", function() {
@@ -150,8 +152,38 @@ export class FlockClient extends EventTarget {
                     conn.addEventListener('open', function() {
                         console.log("Open", conn.applications);
                         var socket = conn.socketTCP("stork+app://flywithkite.com/photos", 50051);
-                        socket.addEventListener('open', function() { console.log("photos socket opened"); })
-                        socket.addEventListener('data', function(e) { console.log("Got data", e.data); })
+                        var respParser = new httpParser(httpParser.RESPONSE);
+                        var decoder = new TextDecoder();
+
+                        respParser[respParser.kOnHeaders] = respParser.onHeaders = function (headers, url) {
+                            console.log("Got http response", headers, url);
+                        }
+                        respParser[respParser.kOnHeadersComplete] = respParser.onHeadersComplete = function (info) {
+                            console.log("On headers complete", info);
+                        }
+                        respParser[respParser.kOnBody] = respParser.onBody = function (b) {
+                            console.log("on body", b);
+                        }
+
+                        socket.addEventListener('open', function() {
+                            console.log("photos socket opened. Sending HTTP/1.1 message");
+                            socket.send("GET / HTTP/1.1\r\nHost: flywithkite.com\r\nAccept: text/json\r\nConnection: close\r\n\r\n");
+                        });
+                        socket.addEventListener('data', function(e) {
+                            var dataStr = decoder.decode(e.data);
+                            console.log("Got data", dataStr);
+
+                            var dataBuffer = Buffer.from(e.data);
+                            respParser.execute(dataBuffer);
+                        })
+                        socket.addEventListener('close', function(e) {
+                            console.log("Socket closes");
+                            respParser.finish();
+                            console.log("response is ", respParser);
+                        })
+                        socket.addEventListener('error', function(e) {
+                            console.error("Socket error", e, e.explanation);
+                        })
                     });
                     conn.addEventListener('error', function (e) {
                         console.error("Error opening connection", e);

@@ -56,10 +56,13 @@ export class FlockSocketOpensEvent {
 }
 
 export class FlockSocketErrorEvent {
-    constructor ( sk, err ) {
-        this.type('error');
+    constructor ( sk, err, explanation ) {
+        this.type = 'error';
         this.socket = sk;
         this.error = err;
+
+        if ( explanation !== undefined )
+            this.explanation = explanation;
     }
 }
 
@@ -121,6 +124,7 @@ export class FlockSocket extends EventTarget {
         }
 
         this.data_chan.onmessage = (e) => {
+            //console.log("Got message in socket", e.data);
             switch ( this.state ) {
             case 'connecting':
                 // Check to see if the connection is valid; if it is, set state to connected
@@ -132,8 +136,8 @@ export class FlockSocket extends EventTarget {
                     this.dispatchEvent(new FlockSocketErrorEvent(this, 'system-error:' + rsp.errno));
                 } else {
                     console.log("Connected socket");
-                    this.dispatchEvent(new FlockSocketOpensEvent(this));
                     this.state = 'connected';
+                    this.dispatchEvent(new FlockSocketOpensEvent(this));
                 }
                 break;
             case 'connected':
@@ -156,8 +160,34 @@ export class FlockSocket extends EventTarget {
     }
 
     send(data) {
-        if ( this.state == 'connected' )
-            this.data_chan.send(data);
+        const DATA_HDR_SZ = 5;
+
+        if ( this.state == 'connected' ) {
+            var buffer;
+            if ( data instanceof String || typeof data == 'string' ) {
+                var enc = new TextEncoder();
+                data = enc.encode(data).buffer;
+            }
+
+            console.log("DAta is ", data);
+
+            if ( data instanceof ArrayBuffer ) {
+                buffer = new ArrayBuffer(data.byteLength + DATA_HDR_SZ);
+
+                var old_array = new Uint8Array(data);
+                var new_array = new Uint8Array(buffer);
+                new_array.set(old_array, DATA_HDR_SZ);
+
+                var dv = new DataView(buffer);
+                dv.setUint8(0, 0x0F);
+                dv.setUint32(1, 0x0);
+            } else {
+                throw new TypeError("data should be an ArrayBuffer or a string");
+            }
+
+            this.data_chan.send(buffer);
+        } else
+            this.dispatchEvent(new FlockSocketErrorEvent(this, 0, "The socket was not connected"));
     }
 
     send_connection_request(sk_type, port) {

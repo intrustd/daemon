@@ -1,0 +1,17 @@
+# -*- mode: org -*-
+
+#+TODO: TODO IN-PROGRESS | DONE
+
+* TODO Use UDP for flock <-> appliance communication
+* TODO Save recent appliances in javascript library
+* TODO Show profile data for personas
+* TODO log-in process sometimes stalls
+* TODO Upload files in photo app                                     :photos:
+* TODO Album gallery view in photo app                               :photos:
+
+#+BEGIN: kanban :mirrored t
+| DONE | IN-PROGRESS | TODO                                          |
+|------+-------------+-----------------------------------------------|
+|      |             | [[Use UDP for flock <-> appliance communication][Use UDP for flock <-> appliance communication]] |
+|      |             | [[Save recent appliances in javascript library][Save recent appliances in javascript library]]  |
+#+END:

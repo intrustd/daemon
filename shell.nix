@@ -70,7 +70,7 @@ in pkgs.stdenv.mkDerivation {
 
     lksctp-tools libnl usrsctp thrift
 
-    (python3.withPackages (ps: [ ps.grpcio ps.googleapis_common_protos (grpc-io-tools ps) ]))
+    (python3.withPackages (ps: [ ps.flask ps.grpcio ps.googleapis_common_protos (grpc-io-tools ps) ]))
   ];
 
 #  CMAKE_

@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
@@ -31,6 +32,26 @@
 
 #define WEBRTC_NAME_MAX 128
 #define APP_ID_MAX      512
+
+#define PACKED          __attribute__((packed))
+
+struct stack_ent {
+  struct stack_ent *next;
+};
+
+#define STACK_INIT { NULL }
+#define STACK_IS_EMPTY(stack_ent) ((stack_ent)->next == NULL)
+#define CLEAR_STACK(stack_ent) (void) ((stack_ent)->next = NULL)
+#define PUSH_STACK(stack_ent, new_top, field)                           \
+  if (1) {                                                              \
+    (new_top)->field.next = (stack_ent)->next;                          \
+    (stack_ent)->next = &((new_top)->field);                            \
+  }
+#define GET_STACK(stack_ent, result_ty, field) ((result_ty *) ((stack_ent)->next ? (((uintptr_t) (stack_ent)->next) - offsetof(result_ty, field)) : 0))
+#define CONSUME_STACK(stack_head, v, result_ty, field)                  \
+  for ( v = GET_STACK(stack_head, result_ty, field); v;                 \
+        (stack_head)->next = v->field.next,                             \
+        v = GET_STACK(stack_head, result_ty, field) )
 
 //#define CONTROL_PROTO_NAME "control"
 //#define CONTROL_PROTO_LEN  7
@@ -67,6 +88,8 @@ struct wrtcchan {
   struct timespec wrc_last_msg_sent, wrc_created_at;
 
   uint32_t wrc_flags;
+
+  struct stack_ent wrc_closed_stack;
 };
 
 #define WRC_HAS_MESSAGE_PENDING(chan)                                   \
@@ -92,7 +115,6 @@ struct wrtcchan {
 
 // pending connection
 struct wrcpendingconn {
-  int wpc_sk_type;
   struct sockaddr_in wpc_sin;
 };
 
@@ -103,21 +125,25 @@ struct stkcmsg {
     struct {
       uint32_t scm_app_len;
       char scm_app_id[];
-    } scm_open_app_request;
+    } PACKED scm_open_app_request;
     struct {
       uint8_t scm_retries;
       uint8_t scm_sk_type;
       uint16_t scm_port;
       uint32_t scm_app;
-    } scm_connect;
+    } PACKED scm_connect;
     uint32_t scm_opened_app;
     uint32_t scm_error;
-    char scm_data; // Use with & to get the address of the first character
+    struct {
+      uint32_t scm_flags; // Data Flags (reserved for now)
+      char scm_bod; // Beginning of data. Use with & to get address of first character
+    } PACKED scm_data;
   } data;
-} __attribute__ ((packed));
+} PACKED;
 
 #define STK_CMSG_REQ(msg) ((msg)->scm_type & SCM_REQ_MASK)
 #define STK_CMSG_IS_RSP(msg) ((msg)->scm_type & SCM_RESPONSE)
+#define SCM_DATA(req) ((void *) &(req)->data.scm_data.scm_bod)
 
 #define SCM_RESPONSE     0x80 // bitmask for responses to requests
 #define SCM_ERROR        0x40 // bitmask for responses that are errors
@@ -132,6 +158,7 @@ struct stkcmsg {
 #define SCM_ERROR_RSP_SZ        5
 #define SCM_CONNECT_REQ_SZ      9
 #define SCM_CONNECT_RSP_SZ      1
+#define SCM_DATA_REQ_SZ         5
 
 #define STORKD_ADDR "10.0.0.1"
 #define STORKD_OPEN_APP_PORT 9998 // The port where we send open app requests
@@ -154,6 +181,7 @@ int g_num_strms = 1024;
 pthread_mutex_t g_channel_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct wrtcchan *g_channels = NULL;
 struct wrtcchan **g_channel_htbl = NULL;
+struct stack_ent g_pending_free_channels = STACK_INIT;
 int g_channels_open = 0;
 
 pthread_mutex_t g_addresses_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -205,27 +233,48 @@ int translate_stk_connection_error(int which) {
   }
 }
 
-int mk_socket(int sk_type, struct sockaddr_in *sin ) {
-  int sk, err;
-  char name[INET6_ADDRSTRLEN];
+int mk_socket(int sk_type) {
+  int err;
 
-  sk = socket(AF_INET, sk_type, 0);
-  if ( sk < 0 ) {
+  err = socket(AF_INET, sk_type | SOCK_NONBLOCK, 0);
+  if ( err < 0 ) {
     perror("mk_socket: socket");
     return -1;
+  }
+
+  return err;
+}
+
+// Attempt to connect the socket. Returns 0 on success, 1 if the
+// connection is in progress, and -1 on error
+int connect_socket(struct wrtcchan *chan, struct sockaddr_in *sin) {
+  char name[INET6_ADDRSTRLEN];
+  int err;
+
+  if ( clock_gettime(CLOCK_REALTIME, &chan->wrc_last_msg_sent) < 0 ) {
+    perror("connect_socket: clock_gettime");
   }
 
   log_printf("Will connect to %s:%d\n",
              inet_ntop(AF_INET, &sin->sin_addr, name, sizeof(name)),
              ntohs(sin->sin_port));
-  err = connect(sk, (struct sockaddr *) sin, sizeof(*sin));
+  err = connect(chan->wrc_sk, (struct sockaddr *) sin, sizeof(*sin));
   if ( err < 0 ) {
-    perror("mk_socket: connect");
-    close(sk);
-    return -1;
-  }
+    if ( errno == EINPROGRESS ) {
+      log_printf("The connection has been queued and is in progress\n");
+      return 1;
+    } else {
+      int saved_errno = errno;
+      perror("connect_socket: connect");
+      errno = saved_errno;
+      close(chan->wrc_sk);
+      chan->wrc_sk = 0;
+      return -1;
+    }
+  } else
+    log_printf("Connected on first attempt!\n");
 
-  return sk;
+  return 0;
 }
 
 // address utilities
@@ -334,7 +383,7 @@ struct wrtcchan *find_chan(wrcchanid cid) {
 }
 
 void remove_chan_from_tbl(struct wrtcchan *c) {
-  int hidx = c->wrc_chan_id % g_num_strms, jidx, kidx;
+  int hidx = c->wrc_chan_id % g_num_strms, jidx, kidx = 0;
 
   // TODO test this
   if ( g_channel_htbl[hidx] ) {
@@ -345,8 +394,9 @@ void remove_chan_from_tbl(struct wrtcchan *c) {
 
       do {
         jidx = (jidx + 1) % g_num_strms;
+        log_printf("remove_chan_from_tbl: hidx=%d jidx=%d kidx=%d; %p\n", hidx, jidx, kidx, g_channel_htbl[jidx]);
 
-        if ( !g_channel_htbl[jidx] ) break;
+        if ( !g_channel_htbl[jidx] ) return;
 
         kidx = g_channel_htbl[jidx]->wrc_chan_id % g_num_strms;
       } while ( (hidx <= jidx) ?
@@ -379,6 +429,9 @@ struct wrtcchan *alloc_wrtc_chan(wrcchanid chan_id) {
       g_channels[i].wrc_family = 0;
       g_channels[i].wrc_type = 0;
       g_channels[i].wrc_sk = 0;
+      g_channels[i].wrc_ctype = 0xFF;
+
+      CLEAR_STACK(&(g_channels[i].wrc_closed_stack));
 
       insert_chan_in_htbl(&g_channels[i]);
 
@@ -416,10 +469,16 @@ void dealloc_wrtc_chan(struct wrtcchan *chan) {
   }
 }
 
+void mark_channel_closed(struct wrtcchan *chan) {
+  PUSH_STACK(&g_pending_free_channels, chan, wrc_closed_stack);
+}
+
 void rsp_cmsg_error(struct socket *srv, struct wrtcchan *chan, uint8_t req, int rsperr) {
   struct stkcmsg msg;
   struct sctp_sndinfo si;
   int err;
+
+  log_printf("CMSG error: %d %d\n", chan->wrc_chan_id, rsperr);
 
   msg.scm_type = req | SCM_RESPONSE | SCM_ERROR;
   msg.data.scm_error = htonl(rsperr);
@@ -454,6 +513,21 @@ void reset_wrc_chan(struct socket *srv, wrcchanid chan_id) {
   if ( usrsctp_setsockopt(srv, IPPROTO_SCTP, SCTP_RESET_STREAMS, &rst, sizeof(rst)) < 0 ) {
     perror("usrsctp_setsockopt SCTP_RESET_STREAMS");
   }
+}
+
+void perform_delayed_closes(struct socket *srv) {
+  struct wrtcchan *chan;
+
+  CONSUME_STACK(&g_pending_free_channels, chan, struct wrtcchan, wrc_closed_stack) {
+    log_printf("Closing channel %d (delayed)\n", chan->wrc_chan_id);
+
+    reset_wrc_chan(srv, chan->wrc_chan_id);
+    dealloc_wrtc_chan(chan);
+
+    log_printf("The next thing is %p\n", g_pending_free_channels.next);
+  };
+
+  log_printf("We have now closed all delayed channels\n");
 }
 
 void wait_for_write_on_chan(struct wrtcchan *chan) {
@@ -520,23 +594,30 @@ void arm_channel(struct wrtcchan *chan) {
   }
 }
 
-void mark_channel_open(struct wrtcchan *chan, int new_sk) {
-  int old_sk;
+// Marks the channel as open (meaning it is currently connecting)
+void mark_channel_connecting(struct wrtcchan *chan,
+                             struct sockaddr_in *in,
+                             int retries) {
+  struct wrcpendingconn *pconn = (struct wrcpendingconn *) chan->wrc_buffer;
 
   // Close the control socket, and unset the flag
   chan->wrc_sts = WEBRTC_STS_OPEN; // The open status signifies that we are connecting
+  chan->wrc_flags &= ~WRC_CONTROL;
+  chan->wrc_flags |= WRC_HAS_PENDING_CONN | WRC_RETRY_MSG;
+  chan->wrc_msg_sz = sizeof(*pconn);
+  chan->wrc_retries_left = retries;
+  chan->wrc_retry_interval_millis = 100;
+
+  memcpy(&pconn->wpc_sin, in, sizeof(pconn->wpc_sin));
+
+  arm_channel(chan);
+  wait_for_write_on_chan(chan);
+}
+
+void mark_channel_connected(struct wrtcchan *chan) {
+  chan->wrc_sts = WEBRTC_STS_CONNECTED;
   chan->wrc_flags &= ~(WRC_CONTROL | WRC_HAS_PENDING_CONN | WRC_RETRY_MSG);
   chan->wrc_msg_sz = 0;
-  chan->wrc_retries_left = 0;
-
-  disarm_channel(chan);
-
-  old_sk = chan->wrc_sk;
-  chan->wrc_sk = new_sk;
-  close(old_sk);
-
-  mark_channel_writable(chan, 0, 0);
-  arm_channel(chan);
 }
 
 void cancel_pending_writes(struct wrtcchan *chan) {
@@ -706,16 +787,19 @@ int stkcmsg_has_enough(struct stkcmsg *msg, int sz) {
 
       if ( sz < SCM_OPEN_APP_REQ_SZ_MIN ) return 0;
 
-      return sz <= (SCM_OPEN_APP_REQ_SZ_MIN + appnmlen);
+      return sz >= (SCM_OPEN_APP_REQ_SZ_MIN + appnmlen);
     }
   case SCM_REQ_CONNECT:
     if ( STK_CMSG_IS_RSP(msg) )
-      return sz <= SCM_CONNECT_RSP_SZ;
+      return sz >= SCM_CONNECT_RSP_SZ;
     else
-      return sz <= SCM_CONNECT_REQ_SZ;
+      return sz >= SCM_CONNECT_REQ_SZ;
   case SCM_REQ_DATA:
+    if ( STK_CMSG_IS_RSP(msg) )
+      return 0; // No response for DATA messages
+    else return sz >= SCM_DATA_REQ_SZ;
   default:
-    return sz <= sizeof(*msg);
+    return sz >= sizeof(*msg);
   }
 }
 
@@ -732,7 +816,8 @@ void proxy_data(struct socket *srv, struct wrtcchan *chan, char *proxy_buf) {
   if ( err < 0 ) {
     perror("proxy_data recv");
     return;
-  }
+  } else if ( err == 0 )
+    return;
 
   if ( chan->wrc_flags & WRC_CONTROL ) {
     struct stkdmsg *msg = (struct stkdmsg *) proxy_buf;
@@ -792,8 +877,9 @@ void proxy_data(struct socket *srv, struct wrtcchan *chan, char *proxy_buf) {
       log_printf("Not enough data in storkd response\n");
     }
   } else {
+    int old_sz = err;
 
-    // TODO use the WRC_HAS_OUTGOING mechanism
+    // TODO use some kind of asynchronous notification?
 
     // Now send the data over the usrsctp socket
     err = usrsctp_sendv(srv, (void *) proxy_buf, err, NULL, 0,
@@ -801,6 +887,7 @@ void proxy_data(struct socket *srv, struct wrtcchan *chan, char *proxy_buf) {
                         SCTP_SENDV_SNDINFO, 0);
     if ( err < 0 ) {
       perror("proxy_data: usrsctp_sendv");
+      log_printf("While running %p %d %d\n", proxy_buf, old_sz, chan->wrc_chan_id);
       // TODO close the channel or something
     }
 
@@ -825,7 +912,7 @@ void send_connection_opens_rsp(struct socket *srv, struct wrtcchan *chan) {
 }
 
 void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
-  int err;
+  int err, old_sk;
 
   if ( chan->wrc_flags & WRC_HAS_PENDING_CONN ) {
     struct wrcpendingconn *pconn = (struct wrcpendingconn *) chan->wrc_buffer;
@@ -833,26 +920,40 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
     log_printf("Reattempting connection on channel %d\n", chan->wrc_chan_id);
     assert(chan->wrc_msg_sz == sizeof(struct wrcpendingconn));
 
-    err = mk_socket(pconn->wpc_sk_type, &pconn->wpc_sin);
+    err = mk_socket(chan->wrc_type);
     if ( err < 0 ) {
-      int scm_error;
-      perror("mk_socket");
-
-      scm_error = translate_stk_connection_error(errno);
-
-      chan->wrc_retries_left--;
-      if ( chan->wrc_retries_left > 0 ) {
-        log_printf("Retrying connection on %d\n", chan->wrc_chan_id);
-        chan->wrc_retry_interval_millis *= 2;
-      } else {
-        rsp_cmsg_error(srv, chan, SCM_REQ_CONNECT, scm_error);
-        chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_HAS_PENDING_CONN);
-      }
-    } else {
-      log_printf("Successfully opened channel %d\n", chan->wrc_chan_id);
-      chan->wrc_type = pconn->wpc_sk_type;
-      mark_channel_open(chan, err);
+      mark_channel_closed(chan);
+      return;
     }
+
+    disarm_channel(chan);
+
+    old_sk = chan->wrc_sk;
+    chan->wrc_sk = err;
+    close(old_sk);
+
+    arm_channel(chan);
+
+    err = connect_socket(chan, &pconn->wpc_sin);
+    if ( err < 0 ) {
+      int scm_error = errno;
+      perror("connect_socket");
+
+      scm_error = translate_stk_connection_error(scm_error);
+
+      rsp_cmsg_error(srv, chan, SCM_REQ_CONNECT, scm_error);
+      chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_HAS_PENDING_CONN);
+
+      // TODO mark channel closed
+      mark_channel_closed(chan);
+    } else if ( err == 0 ) {
+      log_printf("Successfully opened channel %d\n", chan->wrc_chan_id);
+      mark_channel_connected(chan);
+      send_connection_opens_rsp(srv, chan);
+    } else
+      wait_for_write_on_chan(chan);
+
+    // Connection is in progress now; wait and return
   } else if ( chan->wrc_flags & WRC_HAS_OUTGOING ) {
     log_printf("Flushing channel %d of type %s\n", chan->wrc_chan_id, sk_type_str(chan->wrc_type));
 
@@ -861,6 +962,8 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
       // transitions. Return immmediately
       //
       // TODO do we need empty data grams??
+
+      chan->wrc_flags &= ~WRC_HAS_OUTGOING;
 
       return;
     }
@@ -879,7 +982,6 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
           perror("flush_chan: clock_gettime");
         }
 
-        chan->wrc_retries_left--;
         if ( chan->wrc_retries_left == 0 ) {
           chan->wrc_msg_sz = 0;
           log_printf("No more retries left for datagram\n");
@@ -889,6 +991,7 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
           }
           chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_ERROR_ON_RETRY);
         } else {
+          chan->wrc_retries_left--;
           chan->wrc_retry_interval_millis *= 2;
         }
       } else
@@ -931,13 +1034,56 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
 
 void state_transition(struct socket *srv, struct wrtcchan *chan, int epev) {
   // Perform necessary transitions
-  if ( chan->wrc_sts == WEBRTC_STS_OPEN && (epev & (EPOLLIN | EPOLLOUT)) ) {
-    log_printf("Marking cannel %d as connected\n", chan->wrc_chan_id);
-    chan->wrc_sts == WEBRTC_STS_CONNECTED;
-    chan->wrc_flags |= 0;
+  if ( chan->wrc_sts == WEBRTC_STS_OPEN && (epev & EPOLLOUT) &&
+       !(epev & EPOLLRDHUP) && !(epev & EPOLLHUP)) {
+    log_printf("Marking channel %d as connected\n", chan->wrc_chan_id);
 
+    mark_channel_connected(chan);
     // Typically, we want to send some kind of success msg here as well
     send_connection_opens_rsp(srv, chan);
+  }
+}
+
+// Run when we get a EPOLLRDHUP or EPOLLHUP on the socket
+int chan_disconnects(struct socket *srv, struct wrtcchan *chan) {
+  int sockerr, cerr, err;
+  socklen_t sockerrlen = sizeof(sockerr);
+
+  if ( chan->wrc_sts == WEBRTC_STS_OPEN && chan->wrc_flags & WRC_HAS_PENDING_CONN ) {
+    // Get socket error. Retry if the error is temporary and we have retries left
+    err = getsockopt(chan->wrc_sk, SOL_SOCKET, SO_ERROR, &sockerr, &sockerrlen);
+    if ( err < 0 ) {
+      perror("getsockopt SO_ERROR");
+      sockerr = errno;
+    }
+
+    if ( sockerr == 0 ) {
+      log_printf("Got HUP or RDHUP but there was no socket error\n");
+      return 0;
+    } else {
+      log_printf("Closing socket due to error: %s\n", strerror(sockerr));
+
+      cerr = translate_stk_connection_error(sockerr);
+
+      if ( chan->wrc_retries_left > 0 && STKD_ERR_IS_TEMPORARY(cerr) ) {
+        // set the channel with WRC_HAS_OUTGOING, which causes a new
+        // connect to be issued
+        chan->wrc_retries_left--;
+        chan->wrc_retry_interval_millis *= 2;
+        chan->wrc_flags |= WRC_HAS_OUTGOING;
+        log_printf("Marked channel %d for connection retry\n", chan->wrc_chan_id);
+        return 0;
+      } else {
+        chan->wrc_sts = WEBRTC_STS_VALID;
+        chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_HAS_PENDING_CONN);
+        rsp_cmsg_error(srv, chan, SCM_REQ_CONNECT, cerr);
+        return -1;
+      }
+    }
+  } else if ( chan->wrc_sts == WEBRTC_STS_CONNECTED ) {
+    log_printf("Got HUP while channel is connected\n");
+    mark_channel_closed(chan);
+    return -1;
   }
 }
 
@@ -968,6 +1114,8 @@ int chan_needs_retry(struct wrtcchan *chan, struct timespec *now,
         int timeout_millis;
         timeout_millis = (when.tv_sec * 1000 + (when.tv_nsec / 1000000));
         timeout_millis -= (now->tv_sec * 1000 + (now->tv_nsec / 1000000));
+
+        log_printf("We have %d milliseconds until we need to wake up\n", timeout_millis);
 
         *timeout = UPDATE_TIMEOUT(*timeout, timeout_millis);
 
@@ -1034,6 +1182,7 @@ void *epoll_thread(void *srv_raw) {
   pthread_mutex_unlock(&g_channel_mutex);
 
   while (1) {
+    log_printf("Epoll with timeout: %d\n", timeout);
     ev_cnt = epoll_pwait(g_epollfd, evs, MAX_EPOLL_EVENTS, timeout, &old);
     if ( ev_cnt == -1 ) {
       if ( errno == EINTR ) {
@@ -1054,8 +1203,7 @@ void *epoll_thread(void *srv_raw) {
     for ( i = 0; i < ev_cnt; ++i ) {
       struct epoll_event *ev = evs + i;
       struct wrtcchan *chan = (struct wrtcchan *) ev->data.ptr;
-      int new_events = EPOLLIN | EPOLLRDHUP | EPOLLPRI | EPOLLONESHOT;
-      int chan_sk;
+      int new_events = DFL_EPOLL_EVENTS;
 
       lock_channel(chan);
 
@@ -1063,34 +1211,42 @@ void *epoll_thread(void *srv_raw) {
 
       state_transition(srv, chan, ev->events);
 
+//      if ( ev->events & EPOLLHUP ) {
+//        log_printf("The channel %d was closed by us (chan id may be wrong)\n", chan->wrc_chan_id);
+//        release_channel(chan);
+//
+//        continue;
+//      }
+
       if ( ev->events & EPOLLIN )
         // We have data ready for reading. Read the data and send it
         // out on the channel.
         proxy_data(srv, chan, proxy_buf);
 
+      if ( ev->events & (EPOLLHUP | EPOLLRDHUP) ) {
+        err = chan_disconnects(srv, chan);
+        if ( err != 0 ) {
+          release_channel(chan);
+          continue;
+        }
+      }
+
       if ( ev->events & EPOLLOUT )
         // The socket can be written to. Flush any pending messages
         flush_chan(srv, chan, &new_events);
 
-      if ( ev->events & EPOLLRDHUP ) {
-        wrcchanid chan_id = chan->wrc_chan_id;
+      // Rearm the channel
 
-        // The channel was closed
-        release_channel(chan);
-
-        dealloc_wrtc_chan(chan);
-        reset_wrc_chan(srv, chan_id);
-      } else {
-        // Rearm the channel
-        release_channel(chan);
-
-        ev->events = new_events;
-        err = epoll_ctl(g_epollfd, EPOLL_CTL_MOD, chan->wrc_sk, ev);
-        if ( err < 0 ) {
-          perror("epoll_ctl EPOLL_CTL_MOD");
-        }
+      ev->events = new_events;
+      err = epoll_ctl(g_epollfd, EPOLL_CTL_MOD, chan->wrc_sk, ev);
+      if ( err < 0 ) {
+        perror("epoll_ctl EPOLL_CTL_MOD");
       }
+      release_channel(chan);
     }
+
+    // Close all channels that were marked close
+    perform_delayed_closes(srv);
 
     // Now, go over all open channels and if a timeout has expired,
     // mark the socket as waiting for output as well
@@ -1257,19 +1413,6 @@ int write_open_app_req(struct wrtcchan *chan, char *app_name, int app_name_len) 
   memcpy(buf + 4 + app_name_len, g_capability, cap_len);
 }
 
-int do_connect(struct stkcmsg *msg, struct sockaddr_in *sin) {
-
-  sin->sin_family = AF_INET;
-  sin->sin_port = msg->data.scm_connect.scm_port;
-
-  if ( !get_address_by_descriptor(ntohl(msg->data.scm_connect.scm_app), &sin->sin_addr.s_addr) ) {
-    errno = ENOENT;
-    return -1;
-  }
-
-  return mk_socket(msg->data.scm_connect.scm_sk_type, sin);
-}
-
 void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
                      void *buf, int sz) {
   int app_name_len, send_buf_len, err, rsp_sz;
@@ -1323,45 +1466,59 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
         rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
         rsp.data.scm_error = STKD_ERROR_SYSTEM_BUSY;
       } else if ( chan_supports_sk_type(chan, msg->data.scm_connect.scm_sk_type) ) {
-        err = do_connect(msg, &endpoint);
-        if ( err < 0 ) {
-          struct wrcpendingconn *pconn = (struct wrcpendingconn *) chan->wrc_buffer;
-          int saved_errno = errno;
-          perror("do_connect");
+        endpoint.sin_family = AF_INET;
+        endpoint.sin_port = msg->data.scm_connect.scm_port;
 
+        if ( !get_address_by_descriptor(ntohl(msg->data.scm_connect.scm_app),
+                                        &endpoint.sin_addr.s_addr) ) {
           rsp_sz = SCM_ERROR_RSP_SZ;
           rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-
-          rsp.data.scm_error = translate_stk_connection_error(saved_errno);
-
-          // If the error is something that may change in the future,
-          // check if we want to retry
-          if ( STKD_ERR_IS_TEMPORARY(rsp.data.scm_error) &&
-               msg->data.scm_connect.scm_retries > 0 ) {
-            log_printf("Retrying connection\n");
-
-            // We will want to retry this
-            rsp_sz = 0;
-            chan->wrc_sts = WEBRTC_STS_VALID;    // We are in the process of connecting
-            chan->wrc_flags |= WRC_RETRY_MSG | WRC_HAS_PENDING_CONN; // Wait until we are ready to connect
-            chan->wrc_retries_left = msg->data.scm_connect.scm_retries;
-            chan->wrc_retry_interval_millis = 100;
-
-            chan->wrc_msg_sz = sizeof(*pconn);
-            pconn->wpc_sk_type = msg->data.scm_connect.scm_sk_type;
-            memcpy(&pconn->wpc_sin, &endpoint, sizeof(endpoint));
-
-            signal_new_timeout();
-          }
+          rsp.data.scm_error = STKD_ERROR_APP_DOES_NOT_EXIST;
         } else {
-          chan->wrc_family = AF_INET;
-          chan->wrc_type = msg->data.scm_connect.scm_sk_type;
+          err = mk_socket(msg->data.scm_connect.scm_sk_type);
+          if ( err < 0 ) {
+            int saved_errno = errno;
+            perror("mk_socket");
 
-          mark_channel_open(chan, err);
+            rsp_sz = SCM_ERROR_RSP_SZ;
+            rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
+            rsp.data.scm_error = translate_stk_connection_error(saved_errno);
+          } else {
+            int old_sk = chan->wrc_sk;
 
-          rsp_sz = 0;
+            rsp_sz = 0;
 
-          // The response will be sent by the runtime
+            disarm_channel(chan);
+            chan->wrc_sk = err;
+            close(old_sk);
+
+            // Attempt to connect on this channel
+            err = connect_socket(chan, &endpoint);
+            if ( err < 0 ) {
+              // TODO we should probably close this socket
+              rsp_sz = SCM_ERROR_RSP_SZ;
+              rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
+              rsp.data.scm_error = translate_stk_connection_error(errno);
+            } else {
+              if ( err == 0 ) {
+                int old_sk = chan->wrc_sk;
+
+                mark_channel_connected(chan);
+                arm_channel(chan);
+
+                rsp_sz = SCM_CONNECT_RSP_SZ;
+                rsp.scm_type = SCM_RESPONSE | SCM_REQ_CONNECT;
+              } else {
+                struct wrcpendingconn *pconn = (struct wrcpendingconn *) chan->wrc_buffer;
+
+                // The connection is in progress
+                chan->wrc_family = AF_INET;
+                chan->wrc_type = msg->data.scm_connect.scm_sk_type;
+
+                mark_channel_connecting(chan, &endpoint, msg->data.scm_connect.scm_retries);
+              }
+            }
+          }
         }
       } else {
         rsp_sz = SCM_ERROR_RSP_SZ;
@@ -1379,6 +1536,9 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
           perror("SCM_REQ_CONNECT usrsctp_sendv");
           goto reset;
         }
+
+        if ( rsp.scm_type & SCM_ERROR )
+          goto reset;
       }
     } else
       goto fault;
@@ -1386,13 +1546,57 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
   case SCM_REQ_DATA:
     if ( WRC_IS_CONTROL(chan) ) goto fault;
     else {
+      int data_sz, reliable = 0;
+
       log_printf("Received data message\n");
+
+      switch ( chan->wrc_type ) {
+      case SOCK_STREAM:
+        data_sz = sz - SCM_DATA_REQ_SZ;
+        reliable = 1;
+        break;
+      case SOCK_DGRAM:
+        data_sz = sz - SCM_DATA_REQ_SZ + 4;
+        reliable = 0;
+        break;
+      default:
+        log_printf("Can't send data over socket of type: %d(%s)\n",
+                   chan->wrc_type, sk_type_str(chan->wrc_type));
+        goto done;
+      };
+
+      if ( (chan->wrc_msg_sz + data_sz) <= chan->wrc_buf_sz ) {
+        uint8_t *outgoing_buf = chan->wrc_buffer + chan->wrc_msg_sz;
+
+        if ( chan->wrc_type == SOCK_DGRAM ) {
+          // Include frame
+          *((uint32_t *) outgoing_buf) = data_sz;
+          outgoing_buf += 4;
+        }
+
+        memcpy(outgoing_buf, SCM_DATA(msg), data_sz);
+
+        chan->wrc_msg_sz += data_sz;
+
+        if ( !(chan->wrc_flags & WRC_HAS_OUTGOING) )
+          signal_write_on_chan(chan, 0, 0);
+
+        log_printf("Registered write for channel %d\n", chan->wrc_chan_id);
+      } else if ( !reliable )
+        // TODO we may want to drop the oldest packet
+        log_printf("Dropping packet because this channel is not reliable, and the buffer is full\n");
+      else {
+        log_printf("Channel %d faulted: not enough space in write buffer\n", chan->wrc_chan_id);
+        goto reset;
+      }
     }
     break;
   default:
     fprintf(stderr, "Invalid control message type: %d\n", STK_CMSG_REQ(msg));
     goto reset;
   }
+
+ done:
 
   release_channel(chan);
   return;
