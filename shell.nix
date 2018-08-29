@@ -63,10 +63,11 @@ in pkgs.stdenv.mkDerivation {
   buildInputs = with pkgs; [
     pkgconfig  boost boost.dev cmake gdb openssl_1_1_0.dev
     uriparser nodejs protobuf grpc
+    uthash zlib
 
-    runc criu
+    runc criu ncat
 
-    valgrind stun
+    valgrind stun graphviz
 
     lksctp-tools libnl usrsctp thrift
 
