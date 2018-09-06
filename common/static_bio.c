@@ -5,7 +5,6 @@
 
 #include "util.h"
 
-#define BIO_STATIC_DEBUG 1
 #ifdef BIO_STATIC_DEBUG
 #define dbg_printf(...) fprintf(stderr, __VA_ARGS__)
 #else

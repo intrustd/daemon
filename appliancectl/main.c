@@ -9,14 +9,12 @@ static struct {
   int (*cmd_main)(int, char **);
 } commands[] = {
   { "create-persona", create_persona },
+  { "list-personas", list_personas },
+
   { "join-flock", join_flock },
+  { "list-flocks", list_flocks },
   { NULL, 0 }
 };
-
-int create_persona(int argc, char **argv) {
-  printf("create persona\n");
-  return 0;
-}
 
 void usage() {
   int i;

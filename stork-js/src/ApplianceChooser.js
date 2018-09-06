@@ -4,26 +4,26 @@ import 'bootstrap';
 import jQuery from 'jquery';
 import "./ApplianceChooser.scss";
 
-export class ApplianceChooserCancelsEvent {
+export class ChooserCancelsEvent {
     constructor () {
         this.type = 'cancel'
     }
 }
 
-export class ApplianceChooserChoosesEvent {
-    constructor(device, candidateId) {
+export class PersonaChooserChoosesEvent {
+    constructor(device, id, creds) {
         this.type = 'persona-chosen'
         this.device = device
-        this.persona = candidateId
+        this.personaId = id
+        this.creds = creds
     }
 }
 
-const ApplianceChooserState = {
-    NONE: 'NONE',
-    LOADING: 'LOADING',
-    CANDIDATES_LOADED: 'CANDIDATES_LOADED',
-    CANDIDATES_HIDDEN: 'CANDIDATES_HIDDEN',
-    ERROR: 'ERROR'
+export class ApplianceChooserChoosesEvent {
+    constructor(device) {
+        this.type = 'appliance-chosen'
+        this.device = device
+    }
 }
 
 function PersonaList(vnode) {
@@ -37,41 +37,52 @@ function PersonaList(vnode) {
             console.log("Candidates", candidates)
 
             var candidateEls =
-                candidates.map(({id, token}) => {
+                candidates.map(({id, displayname}) => {
                     var elName = "li.list-group-item";
-                    if ( id == current )
+                    var active = id == current;
+                    var body = m(".display-name", displayname);
+
+                    if ( active ) {
                         elName += ".active";
+                        body = [
+                            m("form.uk-form", { onsubmit: (e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+
+                                var creds = e.target.elements["password"].value
+                                chooser.onchoose(current, creds)
+                            }}, [
+                                m(".display-name", displayname),
+                                m(".uk-form-password", [
+                                    m("input", {type: "password", name: "password"}),
+                                    m("a.uk-form-password-toggle", {href: ""})
+                                ]),
+                                m("button", {type: "submit"}, "Login")
+                            ])
+                        ]
+                    }
 
                     return m(elName,
                              { id,
                                onclick: () => { current = id; } },
-                             id)
+                             body)
                 })
 
-            var activationButton = []
-            if ( current !== null )
-                activationButton = [
-                    m("button.btn.btn-primary",
-                      { onclick: () => { chooser.chooseCandidate(current) } },
-                      "Login")
-                ]
-
             return m("ul.persona-list.list-group",
-                     [ candidateEls,
-                       activationButton ]);
+                     candidateEls);
         }
     }
 }
 
-export class ApplianceChooser extends EventTarget {
-    constructor (client) {
+class Chooser extends EventTarget {
+    constructor() {
         super()
-
-        this.client = client
         this.shown = false
-        this.state = ApplianceChooserState.NONE
+    }
 
-        this.show()
+    canceled() {
+        this.hide()
+        this.dispatchEvent(new ChooserCancelsEvent())
     }
 
     show() {
@@ -103,42 +114,6 @@ export class ApplianceChooser extends EventTarget {
             container.parentNode.removeChild(container)
     }
 
-    canceled() {
-        this.hide()
-        this.dispatchEvent(new ApplianceChooserCancelsEvent())
-    }
-
-    chooseCandidate(candidateId) {
-        console.log("Choosing candidate", candidateId)
-        this.dispatchEvent(new ApplianceChooserChoosesEvent(this.deviceName, candidateId))
-    }
-
-    onenter(applianceName) {
-        console.log("Going to lookup personas for device " + applianceName);
-        this.state = ApplianceChooserState.LOADING
-        this.deviceName = applianceName
-        if ( this.hasOwnProperty('error') ) delete this.error
-        if ( this.hasOwnProperty('candidates') ) delete this.candidates
-        if ( this.hasOwnProperty('persona_component') ) delete this.persona_component
-        this.client.loginToDevice(applianceName, (rsp) => {
-            if ( rsp.success ) {
-                if ( rsp.hasHiddenCandidates )
-                    this.state = ApplianceChooserState.CANDIDATES_HIDDEN
-                else {
-                    this.state = ApplianceChooserState.CANDIDATES_LOADED
-                    this.candidates = rsp.candidates
-                    console.log("Got candidates", rsp)
-                }
-            } else {
-                this.state = ApplianceChooserState.ERROR
-                this.error = "Could not fetch personas"
-                console.error("Could not fetch personas", rsp);
-            }
-
-            m.redraw()
-        });
-    }
-
     oncreate (vnode) {
         jQuery(vnode.dom)
             .modal('show')
@@ -153,53 +128,102 @@ export class ApplianceChooser extends EventTarget {
         this.rootVnode = vnode.dom
     }
 
-    view () {
-        var body = m("div");
-        switch ( this.state ) {
-        case ApplianceChooserState.LOADING:
-            body = m("div.loading", "Loading...")
-            break
-        case ApplianceChooserState.CANDIDATES_LOADED:
-            body = m(PersonaList, { chooser: this, candidates: this.candidates })
-            break
-        case ApplianceChooserState.CANDIDATES_HIDDEN:
-            body = m("div", "TODO Hidden candidates");
-            break;
-        case ApplianceChooserState.ERROR:
-            body = m("div.alert.alert-danger", { role: "alert" }, this.error);
-            break;
-        case ApplianceChooserState.NONE:
-        default:
-            break;
-        }
-
-        return m(".stork-appliance-chooser.modal.fade",
+    view(options) {
+        return m(".stork-chooser.modal.fade",
                  { tabindex: "-1", role: "dialog",
-                   "aria-labelledby": "stork-appliance-chooser-title",
+                   "aria-labelledby": "stork-chooser-title",
                    "aria-hidden": "true" },
                  [
                      m(".modal-dialog", { role: "document" },
                        [ m(".modal-content", [
                            m(".modal-header", [
-                               m("h5.modal-title#stork-appliance-chooser-title",
-                                 "Log-in"),
+                               m("h5.modal-title#stork-chooser-title",
+                                 options.title),
                                m("button.close",
                                  { type: "button", "data-dismiss": "modal", "aria-label": "Close" },
                                  m("span", {"aria-hidden": "true"}, "×"))
                            ]),
-                           m(".modal-body", [
-                               m(".input-group", [
-                                   m("input.form-control",
-                                     { type: "text", placeholder: "Appliance Name",
-                                       onkeyup: ({keyCode, target}) => {
-                                           if ( keyCode == 13 ) this.onenter(target.value)
-                                       },
-                                       "aria-label": "Appliance Name" })
-                               ]),
-                               body
-                           ])
+                           m(".modal-body", options.body)
                        ])]),
                  ])
+    }
+}
+
+export class PersonaChooser extends Chooser {
+    constructor (client) {
+        super()
+
+        this.client = client
+        this.personasLoaded = false
+
+        this.show()
+    }
+
+    show() {
+        this.personasLoaded = this.client.hasPersonas()
+        this.onPersonasLoaded = () => {
+            console.log("on personas loaded", this)
+            this.personasLoaded = true
+            m.redraw()
+        }
+        this.client.addEventListener('needs-personas', this.onPersonasLoaded)
+        super.show()
+    }
+
+    hide() {
+        this.client.removeEventListener('needs-personas', this.onPersonasLoaded)
+        delete this.onPersonasLoaded
+        super.hide()
+    }
+
+    onchoose ( personaId, creds ) {
+        this.dispatchEvent(new PersonaChooserChoosesEvent(this.client, personaId, creds))
+    }
+
+    view () {
+        var body;
+
+        if ( this.personasLoaded ) {
+            if ( this.client.personas.length == 0 ) {
+                body = "No personas";
+            } else {
+                body = m(PersonaList, { chooser: this, candidates: this.client.personas });
+            }
+        } else {
+            body = "Loading..."
+        }
+
+        return super.view({ title: "Log-in",
+                            body: body })
+    }
+}
+
+export class ApplianceChooser extends Chooser {
+    constructor (client) {
+        super()
+
+        this.client = client
+
+        this.show()
+    }
+
+    onenter(applianceName) {
+        this.deviceName = applianceName
+        this.dispatchEvent(new ApplianceChooserChoosesEvent(this.deviceName))
+    }
+
+    view () {
+        return super.view({ title: "Log-in",
+                            body: [
+                                m(".input-group", [
+                                    m("input.form-control",
+                                      { type: "text", placeholder: "Appliance Name",
+                                        onkeyup: ({keyCode, target}) => {
+                                            if ( keyCode == 13 ) this.onenter(target.value)
+                                        },
+                                        "aria-label": "Appliance Name" })
+                                ])
+                            ]})
     }
 }
 

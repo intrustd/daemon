@@ -1,5 +1,7 @@
 import { EventTarget } from "event-target-shim";
 
+import vCardParser from "vcard-parser";
+
 import { Response, LoginToDeviceResponse,
          LoginToDeviceCommand, Credentials,
          DialSessionCommand,  DialResponse,
@@ -12,97 +14,242 @@ class FlockOpenEvent {
     }
 };
 
-class FlockResponseEvent {
-    constructor(response_buffer) {
-        this.type = "response";
-        this.responseBuffer = response_buffer;
+class FlockErrorEvent {
+    constructor(line) {
+        this.type = "error";
+        this.line = line;
     }
 };
 
+class FlockNeedsApplianceEvent {
+    constructor(flk) {
+        this.type = 'needs-appliance';
+        this.flock = flk;
+    }
+}
+
+class FlockNeedsPersonasEvent {
+    constructor(flk) {
+        this.type = 'needs-personas';
+        this.flock = flk;
+    }
+}
+
+const FlockClientState = {
+    Error: 'error',
+    Connecting: 'connecting', // currently in the process of choosing an appliance
+    Connected: 'connected', // connected to an appliance via a flock
+    CollectingPersonas: 'collecting-personas',
+    ReadyToLogin: 'ready-to-login', // personas collected, ready to log in
+    StartIce: 'start-ice', // ICE is starting
+    OfferReceived: 'offer-received', // Offer is received
+    AnswerSent: 'answer-sent',
+    Complete: 'ice-complete'
+}
+
+const iceServers = [ { urls: [ "stun:stun.stunprotocol.org" ] } ]
+
 export class FlockClient extends EventTarget {
-    constructor (websocket_url) {
+    constructor (options) {
         super();
 
-        this.websocket = new WebSocket(websocket_url);
-        this.websocket.binaryType = 'arraybuffer';
+        if ( !options.hasOwnProperty('url') )
+            throw TypeError('\'url\' property required on options');
+
+        var url = new URL(options.url);
+        console.log("Got options", options);
+
+        if ( options.hasOwnProperty('appliance') ) {
+            console.log("Adding path", encodeURIComponent(options.appliance));
+            url.pathname = '/' + encodeURIComponent(options.appliance);
+            console.log("Path is now", url.pathname, url);
+            this.state = FlockClientState.Connected;
+            this.appliance = options.appliance;
+        } else {
+            url.pathname = '/';
+            this.state = FlockClientState.Connecting;
+        }
+
+        this.personas = [];
+        this.websocket = new WebSocket(url.href);
 
         var thisFlockClient = this;
         this.websocket.addEventListener('open', function (evt) {
             thisFlockClient.dispatchEvent(new FlockOpenEvent());
         });
-        this.websocket.addEventListener('message', function (evt) {
-            thisFlockClient.dispatchEvent(new FlockResponseEvent(evt.data));
+        this.websocket.addEventListener('message', (evt) => {
+            var line = this.parseLine(evt.data)
+            console.log("Got websocket message", evt.data);
+            if ( line ) {
+                switch ( this.state ) {
+                case FlockClientState.Connecting:
+                    break;
+                case FlockClientState.Connected:
+                    // TODO get personas
+                    switch ( line.code ) {
+                    case 105:
+                        this.personas = [];
+                        this.state = FlockClientState.CollectingPersonas;
+                        break;
+                    default:
+                        this.handleError(line);
+                    }
+                    break;
+                case FlockClientState.CollectingPersonas:
+                    switch ( line.code ) {
+                    case 503:
+                        console.log("Got 503");
+                        this.personas = [];
+                        break;
+                    case 403:
+                        console.log("Got 403");
+                        // Authenticate now
+                        this.state = FlockClientState.ReadyToLogin;
+                        this.dispatchEvent(new FlockNeedsPersonasEvent(this));
+                        break;
+                    default:
+                        this.handleError(line);
+                    }
+                    break;
+                case FlockClientState.ReadyToLogin:
+                    switch ( line.code ) {
+                    case 200:
+                        this.state = FlockClientState.StartIce;
+                        break;
+                    default:
+                        this.handleError(line);
+                    }
+                    break;
+                case FlockClientState.StartIce:
+                    switch ( line.code ) {
+                    case 150:
+                        this.rtc_connection = new RTCPeerConnection({ iceServers: iceServers });
+                        this.rtc_channel = this.rtc_connection.createDataChannel('control', {protocol: 'control'})
+                        this.rtc_channel.onopen = function () { console.log("channel opens") }
+                        this.rtc_channel.onclose = function () { console.log('channel closes') }
+
+                        this.rtc_connection.addEventListener('negotiationneeded',
+                                                             (e) => { this.onNegotiationNeeded(e) })
+                        break;
+                    default:
+                        this.handleError(line);
+                    }
+                    break;
+                default:
+                    break;
+                }
+            } else {
+                if ( this.state == FlockClientState.CollectingPersonas ) {
+                    this.parseVCardData(event.data);
+                } else if ( this.state == FlockClientState.StartIce ) {
+                    console.log("Got offer", event.data);
+                    this.offer = event.data;
+                } else {
+                    this.sendError(new FlockErrorEvent(evt.data));
+                }
+            }
         });
     };
+
+    onNegotiationNeeded (e) {
+        console.log("NEGOTIATION NEEDED")
+        this.rtc_connection.createOffer().then((e) => console.log("Expected offer", e.sdp))
+        this.rtc_connection.setRemoteDescription({ type: 'offer',
+                                                   sdp: this.offer})
+            .then(() => { this.onSetDescription() },
+                  (err) => { console.error("Could not set remote description", err) })
+    }
+
+    // Called when the remote description is set and we need to send the answer
+    onSetDescription() {
+        console.log("Set remote description");
+
+        this.rtc_connection.addEventListener('icecandidate', (c) => { console.log("Got ice candidate", c) })
+        this.rtc_connection.createAnswer()
+            .then((answer) => {
+                this.rtc_connection.setLocalDescription(answer)
+                console.log("Got answer", answer.sdp)
+            })
+    }
+
+    parseVCardData(vcard) {
+        var exp_prefix = "KITE PERSONAS";
+        if ( vcard.startsWith(exp_prefix) ) {
+            vcard = vcard.slice(exp_prefix.length);
+            var vcards = vcard.split("\nEND:VCARD");
+            vcards = vcards.map((vc) => (vc + "\nEND:VCARD").trim()).filter((vc) => vc.length > 0)
+            vcards = vcards.map((vc) => vCardParser.parse(vc))
+
+            console.log("Got parsed vcards", vcards)
+
+            vcards = vcards.map((vc) => {
+                if ( vc.hasOwnProperty('X-KITEID') ) {
+                    var ret = { displayname: vc['X-KITEID'][0].value,
+                                id: vc['X-KITEID'][0].value };
+                    if ( vc.hasOwnProperty('fn') )
+                        ret.displayname = vc['fn'][0].value;
+                    return ret;
+                } else return null
+            }).filter((vc) => vc !== null)
+
+            this.personas.push(...vcards)
+        } else
+            console.error("Invalid vcard data", vcard);
+    }
+
+    isLoggedIn() {
+        return this.state == FlockClientState.StartIce ||
+            this.state == FlockClientState.OfferReceived ||
+            this.state == FlockClientState.AnswerSent ||
+            this.state == FlockClientState.Complete;
+    }
+
+    hasPersonas() {
+        return this.state == FlockClientState.ReadyToLogin ||
+            this.isLoggedIn();
+    }
+
+    parseLine (ln) {
+        var comps = ln.split(' ')
+        var rspCode = parseInt(comps[0])
+        if ( rspCode == rspCode ) {
+            return { code: rspCode,
+                     line: ln }
+        } else return null;
+    }
+
+    handleError (line) {
+        switch ( line.code ) {
+        case 404:
+            if ( this.state == FlockClientState.Connecting ) {
+                delete this.appliance;
+                this.dispatchEvent(new FlockNeedsApplianceEvent(this));
+                return;
+            }
+            break;
+        default: break;
+        }
+
+        this.sendError(new FlockErrorEvent(line.line));
+    }
+
+    tryLogin ( personaId, creds ) {
+        this.websocket.send(personaId)
+        this.websocket.send(creds)
+
+        return Promise.reject("could not login")
+    }
+
+    sendError (err) {
+        this.state = FlockClientState.Error;
+        this.websocket.close();
+        this.dispatchEvent(err);
+    }
 
     sendRequest (req) {
         var buffer = req.write();
         this.websocket.send(buffer.toArrayBuffer(), {binary: true});
     };
-
-    loginToDevice (device_name, callback) {
-        var cmd = new LoginToDeviceCommand(1, device_name);
-
-        var responseData = {
-            success: true,
-            hasHiddenCandidates: false,
-            candidates: []
-        };
-
-        var responseListener = (evt) => {
-            var response = new LoginToDeviceResponse(evt.responseBuffer);
-
-            if ( response.status == Response.Codes.NoMoreEntries ) {
-                this.removeEventListener('response', responseListener);
-                callback(responseData);
-            } else if ( response.status == Response.Codes.PersonasNotListed ) {
-                responseData.candidates = [];
-                responseData.hasHiddenCandidates = true;
-                this.removeEventListener('response', responseListener);
-                callback(responseData);
-            } else if ( response.status == Response.Codes.NoSuchDevice ) {
-                responseData.success = false;
-                responseData.error = "No such device";
-                this.removeEventListener('response', responseListener);
-                callback(responseData);
-            } else if ( response.success ) {
-                responseData.candidates.push(response.candidate);
-            } else {
-                this.removeEventListener('response', responseListener);
-                console.error("Invalid response code", response.status);
-
-                responseData.success = false;
-                responseData.error = "Invalid response code";
-
-                callback(responseData);
-            }
-        };
-        this.addEventListener('response', responseListener);
-        this.sendRequest(cmd);
-    }
-
-    loginToDeviceWithCreds(device_name, persona_id, creds, cb) {
-        var cmd = new LoginToDeviceCommand(1, device_name);
-        console.log("Logging into device with credentials");
-
-        cmd.add_credentials(new Credentials(persona_id, creds));
-
-        var responseListener = (evt) => {
-            var response = new Response(evt.responseBuffer);
-
-            this.removeEventListener('response', responseListener);
-            if ( response.status == Response.Codes.InvalidCredentials ) {
-                cb("invalid-credentials", []);
-            } else if ( response.status == Response.Codes.Success ) {
-                cb(null, [ "stun.stunprotocol.org", "stun.ekiga.net" ]);
-            } else {
-                console.error("Invalid response code for login command: ", response.status);
-                cb("unknown-error", []);
-            }
-        };
-        this.addEventListener('response', responseListener);
-        this.sendRequest(cmd);
-    }
 
     sendSessionDescription(sdp) {
         var cmd = new DialSessionCommand(DIAL_TYPE_SDP, sdp);
@@ -111,23 +258,6 @@ export class FlockClient extends EventTarget {
 
     sendIceCandidate(iceData) {
         var cmd = new DialSessionCommand(DIAL_TYPE_ICE, iceData);
-        this.sendRequest(cmd);
-    }
-
-    requestDialAnswer(cb, err) {
-        var cmd = new DialSessionCommand(DIAL_TYPE_DONE, "");
-
-        var responseListener = (evt) => {
-            var response = new DialResponse(evt.responseBuffer);
-
-            this.removeEventListener('response', responseListener);
-            if ( response.status == Response.Codes.Success ) {
-                cb(response);
-            } else {
-                err();
-            }
-        }
-        this.addEventListener('response', responseListener);
         this.sendRequest(cmd);
     }
 

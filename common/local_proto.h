@@ -1,6 +1,7 @@
 #ifndef __kite_local_proto_H__
 #define __kite_local_proto_H__
 
+#include <string.h>
 #include <stdint.h>
 #include <arpa/inet.h>
 
@@ -27,12 +28,16 @@ struct kitelocalattr {
 #define KLM_REQ_STOP   0x04 // Kills running containers
 #define KLM_REQ_SUB    0x05 // Runs a command within a container
 
-#define KLM_REQ_ENTITY(msg)    (ntohs((msg)->klm_req) & 0xFF00)
+#define KLM_REQ_ENTITY(msg)    (ntohs((msg)->klm_req) & 0x7F00)
 #define KLM_REQ_ENTITY_PERSONA 0x0100
 #define KLM_REQ_ENTITY_APP     0x0200
 #define KLM_REQ_ENTITY_FLOCK   0x0300
 
 #define KLM_RESPONSE           0x8000
+
+#define KLM_IS_END(msg)        (ntohs((msg)->klm_req_flags) & KLM_IS_LAST)
+#define KLM_RETURN_MULTIPLE    0x0001
+#define KLM_IS_LAST            0x0002
 
 #define KLA_RESPONSE_CODE      0x0000
 #define KLA_PERSONA_ID         0x0001
@@ -45,6 +50,10 @@ struct kitelocalattr {
 #define KLA_MESSAGE            0x0008
 #define KLA_OPERATION          0x0009
 #define KLA_SYSTEM_ERROR       0x000A
+#define KLA_FLOCK_SIGNATURE    0x000B
+#define KLA_FLOCK_STATUS       0x000C
+#define KLA_PERSONA_DISPLAYNM  0x000D
+#define KLA_PERSONA_PASSWORD   0x000E
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001
@@ -66,5 +75,6 @@ struct kitelocalattr {
    (char *) (((uintptr_t) attr) + sizeof(struct kitelocalattr)) : NULL)
 #define KLA_DATA_AS(attr, buf, sz, type) ((type) (KLA_DATA(attr, buf, sz)))
 #define KLA_DATA_UNSAFE(attr, type) ((type) (((uintptr_t)attr) + sizeof(struct kitelocalattr)))
+#define KLA_NAME(attr) ntohs((attr)->kla_name)
 
 #endif

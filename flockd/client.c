@@ -1,4 +1,5 @@
 #include "client.h"
+#include "service.h"
 
 int fcs_init(struct flockclientstate *st, flockclientfn fn, shfreefn freefn) {
   SHARED_INIT(&st->fcs_shared, freefn);

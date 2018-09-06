@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <memory.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <openssl/err.h>
@@ -108,7 +109,7 @@ static int flockstate_read_key(struct flockstate *st, const char *key_file) {
 
 static int flockstate_open_websocket(struct flockstate *st, uint16_t ws_port) {
   struct sockaddr_in ep;
-  int err;
+  int err, yes = 1;
 
   err = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if ( err < 0 ) {
@@ -119,6 +120,13 @@ static int flockstate_open_websocket(struct flockstate *st, uint16_t ws_port) {
   st->fs_websocket_sk = err;
   fdsub_init(&st->fs_websocket_sub, &st->fs_eventloop, st->fs_websocket_sk,
              WS_EVENT_ACCEPT, websocket_fn);
+
+  err = setsockopt(st->fs_websocket_sk, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  if ( err < 0 ) {
+    perror("flockstate_open_websocket: setsockopt SO_REUSEADDR");
+    close(st->fs_websocket_sk);
+    return -1;
+  }
 
   ep.sin_family = AF_INET;
   ep.sin_addr.s_addr = INADDR_ANY;
@@ -250,6 +258,6 @@ int flockstate_set_conf(struct flockstate *st, struct flockconf *conf) {
 void flockstate_start_services(struct flockstate *st) {
   flockservice_start(&st->fs_service, &st->fs_eventloop);
 
-  st->fs_websocket_sub.fds_subscriptions |= FD_SUB_READ;;
+  FDSUB_SUBSCRIBE(&st->fs_websocket_sub, FD_SUB_READ);
   eventloop_subscribe_fd(&st->fs_eventloop, st->fs_websocket_sk, &st->fs_websocket_sub);
 }

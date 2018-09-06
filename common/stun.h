@@ -3,14 +3,21 @@
 
 #include <stdint.h>
 #include <zlib.h>
+#include <arpa/inet.h>
 
 #include "util.h"
 
 #define STUN_MAX_ATTRIBUTES_SIZE 556 // Based on maximum message size
+#define MAX_STUN_MSG_SIZE 576
+#define STUN_MSG_HDR_SZ 20
 
 struct stuntxid {
-  uint32_t a, b, c;
+  union {
+    struct { uint32_t a, b, c; };
+    char stx_raw_bytes[12];
+  };
 } KITE_PACKED;
+
 
 struct stunmsg {
   uint16_t        sm_type;
@@ -25,11 +32,15 @@ struct stunmsg {
 #define STUN_INVALID_REQUEST   0x0000
 #define STUN_BINDING           0x0001
 #define STUN_KITE_REGISTRATION 0x0022
+#define STUN_KITE_STARTCONN    0x0023
+#define STUN_KITE_GET_PERSONAS 0x0024
+#define STUN_KITE_SENDOFFER    0x0025
 
 #define STUN_RESPONSE          0x0100
 #define STUN_ERROR             0x0010
 
-#define STUN_REQUEST_TYPE(hdr) (ntohs((hdr)->sm_type) & ~(STUN_RESPONSE | STUN_ERROR))
+#define STUN_MESSAGE_TYPE(hdr) ntohs((hdr)->sm_type)
+#define STUN_REQUEST_TYPE(hdr) (STUN_MESSAGE_TYPE(hdr) & ~(STUN_RESPONSE | STUN_ERROR))
 
 struct stunattr {
   uint16_t sa_name;
@@ -37,45 +48,54 @@ struct stunattr {
 } KITE_PACKED;
 
 #define STUN_IS_VALID(ptr, msg, sz) ((((uintptr_t) ptr) - ((uintptr_t) msg)) < sz)
+#define STUN_ATTR_IS_VALID(attr, msg, sz) \
+  (STUN_IS_VALID(attr, msg, sz) && (((uintptr_t) STUN_NEXTATTR(attr)) - ((uintptr_t) msg)) <= sz)
+#define STUN_COOKIE_VALID(msg) (ntohl((msg)->sm_magic_cookie) == STUN_MAGIC_COOKIE)
+#define STUN_IS_STUN(msg) ((ntohs((msg)->sm_type) & 0xC000) == 0)
 
-#define STUN_ALIGN(len) (4 * ((len + 3) / 4))
+#define STUN_ALIGN(len) ((len) > 0 ? (4 * (((len) + 3) / 4)) : 4)
 #define STUN_FIRSTATTR(msg) ((struct stunattr *) (msg)->sm_attributes)
-#define STUN_NEXTATTR(attr) ((struct stunattr *) (((uintptr_t) attr) + STUN_ALIGN(ntohs((attr)->sa_length))))
+#define STUN_NEXTATTR(attr) ((struct stunattr *) (((uintptr_t) attr) + STUN_ATTR_TOTAL_SZ(attr)))
 #define STUN_ATTR_DATA(attr) ((void *) ((uintptr_t) attr) + sizeof(struct stunattr))
-#define STUN_MSG_LENGTH(msg) ntohs((msg)->sm_len)
+#define STUN_MSG_LENGTH(msg) (ntohs((msg)->sm_len) + STUN_MSG_HDR_SZ)
 
 #define STUN_INIT_MSG(msg, ty)                          \
   if(1) {                                               \
     (msg)->sm_type = htons(ty);                         \
     (msg)->sm_magic_cookie = htonl(STUN_MAGIC_COOKIE);  \
   }
-#define STUN_FINISH_MSG(msg, last_attr, sz_ptr)                         \
-  if (1) {                                                              \
-    last_attr = STUN_NEXTATTR(last_attr);                               \
-    (msg)->sm_len = htons(((uintptr_t) last_attr) - ((uintptr_t) msg)); \
-  }
 #define STUN_INIT_ATTR(attr, nm, payload)                               \
   if (1) {                                                              \
     (attr)->sa_name = htons(nm);                                        \
-    (attr)->sa_length = htons(payload + sizeof(struct stunattr));       \
+    (attr)->sa_length = htons(payload);                                 \
   }
+#define STUN_REMAINING_BYTES(attr, msg, sz) (sz - (((uintptr_t)attr) - ((uintptr_t)msg)))
 
-#define STUN_ADD_FINGERPRINT(attr, msg)                                 \
-  if (1) {                                                              \
+#define STUN_FINISH_WITH_FINGERPRINT(attr, msg, sz, err)                \
+  do {                                                                  \
     uint32_t __crc_ ## __LINE__;                                        \
+    struct stunattr *__attr_ ## __LINE__;                               \
                                                                         \
+    (err) = 0;                                                          \
     attr = STUN_NEXTATTR(attr);                                         \
+    if ( !STUN_IS_VALID(attr, msg, sz) ) { (err) = -1; break; }         \
     STUN_INIT_ATTR(attr, STUN_ATTR_FINGERPRINT, 4);                     \
+    if ( !STUN_ATTR_IS_VALID(attr, msg, sz) ) { (err) = -1; break; }    \
     *((uint32_t *) STUN_ATTR_DATA(attr)) = 0;                           \
+    __attr_ ## __LINE__ = STUN_NEXTATTR(attr);                          \
+                                                                        \
+    (msg)->sm_len = htons(((uintptr_t) __attr_ ## __LINE__) - ((uintptr_t) (msg)->sm_attributes)); \
                                                                         \
     __crc_ ## __LINE__ = crc32(0, (void *) msg,                         \
                                ((uintptr_t) attr) -                     \
                                ((uintptr_t) msg));                      \
+    __crc_ ## __LINE__ ^= 0x5354554e;                                   \
     *((uint32_t *) STUN_ATTR_DATA(attr)) = ntohl(__crc_ ## __LINE__);   \
-  }
+  } while(0)
 
 #define STUN_ATTR_MAPPED_ADDRESS     0x0001
 #define STUN_ATTR_USERNAME           0x0006
+#define STUN_ATTR_PASSWORD           0x0007
 #define STUN_ATTR_MESSAGE_INTEGRITY  0x0008
 #define STUN_ATTR_ERROR_CODE         0x0009
 #define STUN_ATTR_XOR_MAPPED_ADDRESS 0x0020
@@ -87,16 +107,77 @@ struct stunattr {
 #define STUN_ATTR_RESPONSE_ORIGIN    0x802B
 #define STUN_ATTR_OTHER_ADDRESS      0x802C
 
-#define STUN_ATTR_KITE_APPL_NM       0x0040
-#define STUN_ATTR_KITE_APPL_FPRINT   0x0041
-#define STUN_ATTR_KITE_ICE_CAND      0x0042
-#define STUN_ATTR_KITE_SIGNAL_ID     0x0043
+#define STUN_ATTR_KITE_APPL_FPRINT   0x0040
+#define STUN_ATTR_KITE_ICE_CAND      0x0041
+#define STUN_ATTR_KITE_CONN_ID       0x0042
+#define STUN_ATTR_KITE_PERSONAS_HASH 0x0043
+#define STUN_ATTR_KITE_CANCELED      0x0044
+#define STUN_ATTR_KITE_SDP_LINE      0x0045
+#define STUN_ATTR_KITE_PERSONAS_OFFS 0x0046
+#define STUN_ATTR_KITE_PERSONAS_SIZE 0x0047
+#define STUN_ATTR_KITE_PERSONAS_DATA 0x0048
 
 #define STUN_ATTR_REQUIRED(attr)     (((attr) & 0x8000) == 0)
 #define STUN_ATTR_OPTIONAL(attr)     (((attr) & 0x8000) != 0)
 
-#define STUN_ATTR_TYPE(attr)         ntohs((attr)->sa_type)
-#define STUN_ATTR_PAYLOAD_SZ(attr)   (ntohs((attr)->sa_length) - sizeof(stunattr))
+#define STUN_ATTR_NAME(attr)         ntohs((attr)->sa_name)
+#define STUN_ATTR_PAYLOAD_SZ(attr)   ntohs((attr)->sa_length)
+#define STUN_ATTR_TOTAL_SZ(attr)     (STUN_ALIGN(ntohs((attr)->sa_length)) + sizeof(struct stunattr))
 
+#define STUN_ADDR_IN  1
+#define STUN_ADDR_IN6 2
+
+#define STUN_NOT_STUN           (-1)
+#define STUN_SUCCESS            000
+#define STUN_TRY_ALTERNATE      300
+#define STUN_BAD_REQUEST        400
+#define STUN_UNAUTHORIZED       401
+#define STUN_NOT_FOUND          404
+#define STUN_UNKNOWN_ATTRIBUTES 420
+#define STUN_STALE_NONCE        438
+#define STUN_SERVER_ERROR       500
+
+#define STUN_MISSING_ERROR_CODE 0x10000
+#define STUN_REQUEST_MISMATCH   0x10001
+#define STUN_TX_ID_MISMATCH     0x10002
+
+typedef int(*stunusercb)(const char *, size_t, char *, size_t *, void *);
+typedef int(*stunattrcb)(uint16_t, const char *, size_t, void *);
+
+#define STUN_ACCEPT_UNKNOWN stun_accept_unknown
+int stun_accept_unknown(uint16_t attr, const char *data, size_t sz, void *a);
+
+#define STUN_VALIDATE_VERBOSE       0x1
+#define STUN_NEED_FINGERPRINT       0x2
+#define STUN_NEED_MESSAGE_INTEGRITY 0x4
+#define STUN_HAD_FINGERPRINT        0x8
+#define STUN_HAD_MESSAGE_INTEGRITY  0x10
+#define STUN_FINGERPRINT_VALID      0x20
+#define STUN_VALIDATE_RESPONSE      0x40
+#define STUN_VALIDATE_TX_ID         0x80
+#define STUN_VALIDATE_REQUEST       0x100
+
+struct stunvalidation {
+  int        sv_flags;
+
+  uint16_t   sv_req_code;
+  struct stuntxid *sv_tx_id;
+
+  stunusercb sv_user_cb;
+  stunattrcb sv_unknown_cb;
+  void      *sv_user_data;
+
+  uint16_t  sv_error_code;
+
+  uint16_t *sv_unknown_attrs;
+  int       sv_unknown_attrs_sz;
+};
+
+int stun_validate(const char *buf, int buf_sz, struct stunvalidation *v);
+int stun_add_mapped_address_attrs(struct stunattr **attr, struct stunmsg *msg, int max_msg_sz,
+                                  void *app_addr, int app_addr_sz);
+int stun_add_message_integrity(struct stunattr **attr, struct stunmsg *msg, int max_msg_sz,
+                               const char *key, int key_sz);
+void stun_random_tx_id(struct stuntxid *tx);
 
 #endif

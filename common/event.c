@@ -171,7 +171,7 @@ void eventloop_set_debug(struct eventloop *el, int debug) {
 }
 
 void sigalrm(int sig) {
-  write(STDERR_FILENO, "SIGALRM\n", 8);
+  //write(STDERR_FILENO, "SIGALRM\n", 8);
 }
 
 void eventloop_prepare(struct eventloop *el) {
@@ -187,21 +187,17 @@ void eventloop_prepare(struct eventloop *el) {
     perror("sigaction");
 }
 
-static struct timersub **eventloop_find_timer_by_idx(struct eventloop *el, uint32_t which, struct timersub **parents, uint32_t *depth) {
+static struct timersub **eventloop_find_timer_by_idx(struct eventloop *el, uint32_t which) {
   struct timersub **last = NULL;
-  uint32_t tmr_mask, depth_;
+  uint32_t tmr_mask;
 
   assert(which <= el->el_tmr_count);
 
   which += 1;
 
-  if ( !depth ) depth = &depth_;
-
-  for ( tmr_mask = 0x80000000, *depth = 0; tmr_mask; tmr_mask >>= 1 ) {
+  for ( tmr_mask = 0x80000000; tmr_mask; tmr_mask >>= 1 ) {
     if ( last ) {
       assert(*last);
-      if ( parents )
-        parents[(*depth)++] = *last;
       if ( tmr_mask & which )
         last = &((*last)->ts_right);
       else
@@ -215,83 +211,95 @@ static struct timersub **eventloop_find_timer_by_idx(struct eventloop *el, uint3
   return last;
 }
 
+#define FIX_CHILD_PARENTS(t)                                    \
+  if (1) {                                                      \
+    if ( (t)->ts_left ) (t)->ts_left->ts_parent = (t);          \
+    if ( (t)->ts_right ) (t)->ts_right->ts_parent = (t);        \
+  }
+
 static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *sub) {
-  uint32_t depth;
-  struct timersub *parents[32];
+  struct timersub *parent;
 
-  fprintf(stderr, "Adding timer to heap with %d timers\n", el->el_tmr_count);
+  if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
+    fprintf(stderr, "Adding timer to heap with %d timers\n", el->el_tmr_count);
 
-  *(eventloop_find_timer_by_idx(el, el->el_tmr_count, parents, &depth)) = sub;
-  parents[depth++] = sub;
+  if ( el->el_tmr_count > 0 ) {
+    parent = *(eventloop_find_timer_by_idx(el, (el->el_tmr_count - 1) >> 1));
+    assert(parent);
+    if ( (el->el_tmr_count + 1) & 0x1 ) {
+      eventloop_dbg_verify_timers(el);
+      assert(parent->ts_left && !parent->ts_right);
+      parent->ts_right = sub;
+    } else {
+      eventloop_dbg_verify_timers(el);
+      assert(!parent->ts_left && !parent->ts_right);
+      parent->ts_left = sub;
+    }
+    sub->ts_parent = parent;
+  } else {
+    el->el_next_tmr = sub;
+    sub->ts_parent = NULL;
+  }
   el->el_tmr_count++;
 
   // Now sift up
-  for ( ; depth > 1; depth-- ) {
-    struct timersub *parent = parents[depth - 2];
-    struct timersub *child = parents[depth - 1];
-    if ( timespec_lt(&child->ts_when, &parent->ts_when) ) {
+  while ( sub->ts_parent ) {
+    parent = sub->ts_parent;
+    if ( timespec_lt(&sub->ts_when, &parent->ts_when) ) {
       // Swap and continue
-      if ( parent->ts_left == child ) {
+      if ( parent->ts_left == sub ) {
         struct timersub *parent_right = parent->ts_right;
-        parent->ts_left = child->ts_left;
-        parent->ts_right = child->ts_right;
-        child->ts_left = parent;
-        child->ts_right = parent_right;
-      } else if ( parent->ts_right == child ) {
+        sub->ts_parent = parent->ts_parent;
+
+        parent->ts_left = sub->ts_left;
+        parent->ts_right = sub->ts_right;
+
+        sub->ts_left = parent;
+        sub->ts_right = parent_right;
+
+        FIX_CHILD_PARENTS(parent);
+        FIX_CHILD_PARENTS(sub);
+      } else if ( parent->ts_right == sub ) {
         struct timersub *parent_left = parent->ts_left;
-        parent->ts_left = child->ts_left;
-        parent->ts_right = child->ts_right;
-        child->ts_right = parent;
-        child->ts_left = parent_left;
+        sub->ts_parent = parent->ts_parent;
+
+        parent->ts_left = sub->ts_left;
+        parent->ts_right = sub->ts_right;
+
+        sub->ts_right = parent;
+        sub->ts_left = parent_left;
+
+        FIX_CHILD_PARENTS(parent);
+        FIX_CHILD_PARENTS(sub);
       } else assert(0);
 
       // Now we have to reset the value pointed to in our grandparent
-      if ( depth > 2 ) {
-        struct timersub *grandparent = parents[depth - 3];
+      if ( sub->ts_parent ) {
+        struct timersub *grandparent = sub->ts_parent;
         if ( grandparent->ts_left == parent )
-          grandparent->ts_left = child;
+          grandparent->ts_left = sub;
         else if ( grandparent->ts_right == parent )
-          grandparent->ts_right = child;
+          grandparent->ts_right = sub;
         else assert(0);
+        FIX_CHILD_PARENTS(grandparent);
       } else
-        el->el_next_tmr = child;
-
-      // Finally, swap in the parents array
-      SWAP(parents[depth - 2], parents[depth - 1]);
+        el->el_next_tmr = sub;
     } else // Done sifting
       break;
   }
 }
 
-static inline void eventloop_queue_unlocked(struct eventloop *el, struct qdevtsub *sub) {
-  if ( el->el_first_finished ) {
-    assert(el->el_last_finished);
-    el->el_last_finished->qe_next = sub;
-    el->el_last_finished = sub;
-  } else {
-    el->el_first_finished = el->el_last_finished = sub;
-  }
-}
-
-static void eventloop_mark_timer_completed(struct eventloop *el) {
-  struct timersub **bottommost = eventloop_find_timer_by_idx(el, el->el_tmr_count - 1, NULL, 0);
-  struct timersub *done = el->el_next_tmr, *root, *cur, **sift_parent = &root;
+static void eventloop_remove_timer_from_heap(struct eventloop *el, struct timersub *done) {
+  struct timersub **bottommost = eventloop_find_timer_by_idx(el, el->el_tmr_count - 1);
+  struct timersub *root, *cur, **sift_parent = &root;
 
   // Swap bottom most with us
   cur = root = *bottommost;
   assert(root);
 
-  root->ts_left = done->ts_left;
-  root->ts_right = done->ts_right;
-  done->ts_left = NULL;
-  done->ts_right = NULL;
-  done->ts_parent = NULL;
-
-  el->el_next_tmr = root;
-
-  // Now remove root from the heap
+  // Now remove last element from heap from the heap
   if ( el->el_tmr_count > 1 ) {
-    struct timersub *parent = *eventloop_find_timer_by_idx(el, (el->el_tmr_count - 2) >> 1, NULL, 0);
+    struct timersub *parent = root->ts_parent;
     assert( parent );
     if ( parent->ts_left == root ) {
       assert(!parent->ts_right);
@@ -301,6 +309,14 @@ static void eventloop_mark_timer_completed(struct eventloop *el) {
       parent->ts_right = NULL;
     }
   }
+
+  root->ts_left = done->ts_left;
+  root->ts_right = done->ts_right;
+  root->ts_parent = done->ts_parent;
+  done->ts_left = NULL;
+  done->ts_right = NULL;
+
+  FIX_CHILD_PARENTS(root);
 
   // Now sift down
   while ( 1 ) {
@@ -321,20 +337,32 @@ static void eventloop_mark_timer_completed(struct eventloop *el) {
     else if ( dir > 0 ) {
       struct timersub *child = cur->ts_right, *cur_left = cur->ts_left;
       // Swap right and cur
+      child->ts_parent = cur->ts_parent;
+
       cur->ts_right = child->ts_right;
       cur->ts_left = child->ts_left;
+
       child->ts_right = cur;
       child->ts_left = cur_left;
+
+      FIX_CHILD_PARENTS(cur);
+      FIX_CHILD_PARENTS(child);
 
       *sift_parent = child;
       sift_parent = &child->ts_right;
     } else {
       struct timersub *child = cur->ts_left, *cur_right = cur->ts_right;
       // Swap left and cur
+      child->ts_parent = cur->ts_parent;
+
       cur->ts_left = child->ts_left;
       cur->ts_right = child->ts_right;
+
       child->ts_left = cur;
       child->ts_right = cur_right;
+
+      FIX_CHILD_PARENTS(cur);
+      FIX_CHILD_PARENTS(child);
 
       *sift_parent = child;
       sift_parent = &child->ts_left;
@@ -342,10 +370,156 @@ static void eventloop_mark_timer_completed(struct eventloop *el) {
   }
 
   el->el_tmr_count--;
-  el->el_next_tmr = root == done ? NULL : root;
+
+  root = root == done ? NULL : root;
+  if ( done->ts_parent ) {
+    if ( done->ts_parent->ts_left == done ) {
+      done->ts_parent->ts_left = root;
+    } else if ( done->ts_parent->ts_right == done ){
+      done->ts_parent->ts_right = root;
+    } // else assert(0);
+
+    FIX_CHILD_PARENTS(done->ts_parent);
+  } else
+    el->el_next_tmr = root;
+}
+
+int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub) {
+  int ret = 0;
+
+  assert( pthread_mutex_lock(&el->el_tmr_mutex) == 0 );
+
+  // Check if the sub is part of the eventloop
+  if ( el->el_next_tmr == sub || sub->ts_parent ) {
+    // The subscription is part of the heap
+    eventloop_remove_timer_from_heap(el, sub);
+    fprintf(stderr, "Remove heap\n");
+    ret = 1;
+  } else if ( el->el_first_finished == &sub->ts_queued || (!sub->ts_left && sub->ts_right) ) {
+    // The child is part of the queue and needs to be removed from it
+    struct qdevtsub *left, *cur;
+
+    fprintf(stderr, "Remove queued\n");
+
+    ret = 1;
+    // TODO this may be a very expensive operation.
+    // Does it make sense to have a doubly linked list?
+    for ( cur = el->el_first_finished, left = NULL;
+          cur && cur != &sub->ts_queued;
+          left = cur, cur = cur->qe_next );
+
+    if ( cur == &sub->ts_queued ) {
+      left->qe_next = sub->ts_queued.qe_next;
+    } else {
+      fprintf(stderr, "eventloop_cancel_timer: timer not found in completion queue\n");
+      abort();
+    }
+  } else
+    ret = 0;
+
+  sub->ts_parent = sub->ts_left = sub->ts_right = NULL;
+
+  pthread_mutex_unlock(&el->el_tmr_mutex);
+  return ret;
+}
+
+static inline void eventloop_queue_unlocked(struct eventloop *el, struct qdevtsub *sub) {
+  if ( el->el_first_finished ) {
+    assert(el->el_last_finished);
+    el->el_last_finished->qe_next = sub;
+    el->el_last_finished = sub;
+  } else {
+    el->el_first_finished = el->el_last_finished = sub;
+  }
+}
+
+static void eventloop_mark_timer_completed(struct eventloop *el) {
+  struct timersub *done = el->el_next_tmr;
+  eventloop_remove_timer_from_heap(el, done);
+
+  /* struct timersub **bottommost = eventloop_find_timer_by_idx(el, el->el_tmr_count - 1); */
+  /* struct timersub *done = el->el_next_tmr, *root, *cur, **sift_parent = &root; */
+
+  /* // Swap bottom most with us */
+  /* cur = root = *bottommost; */
+  /* assert(root); */
+
+  /* // Now remove root from the heap */
+  /* if ( el->el_tmr_count > 1 ) { */
+  /*   struct timersub *parent = root->ts_parent; */
+  /*   assert( parent ); */
+  /*   if ( parent->ts_left == root ) { */
+  /*     assert(!parent->ts_right); */
+  /*     parent->ts_left = NULL; */
+  /*   } else { */
+  /*     assert(parent->ts_right == root); */
+  /*     parent->ts_right = NULL; */
+  /*   } */
+  /* } */
+
+  /* root->ts_left = done->ts_left; */
+  /* root->ts_right = done->ts_right; */
+  /* root->ts_parent = NULL; */
+  /* done->ts_left = NULL; */
+  /* done->ts_right = NULL; */
+  /* done->ts_parent = NULL; */
+
+  /* // Now sift down */
+  /* while ( 1 ) { */
+  /*   int dir = 0; */
+
+  /*   if ( cur->ts_left && cur->ts_right && timespec_lt(&cur->ts_right->ts_when, &cur->ts_when) ) { */
+  /*     dir = 1; */
+  /*   } */
+
+  /*   if ( cur->ts_left ) { */
+  /*     if ( dir == 0 && timespec_lt(&cur->ts_left->ts_when, &cur->ts_when) ) */
+  /*       dir = -1; */
+  /*     else if ( dir > 0 && timespec_lt(&cur->ts_left->ts_when, &cur->ts_right->ts_when) ) */
+  /*       dir = -1; */
+  /*   } */
+
+  /*   if ( dir == 0 ) break; */
+  /*   else if ( dir > 0 ) { */
+  /*     struct timersub *child = cur->ts_right, *cur_left = cur->ts_left; */
+  /*     // Swap right and cur */
+  /*     child->ts_parent = cur->ts_parent; */
+
+  /*     cur->ts_right = child->ts_right; */
+  /*     cur->ts_left = child->ts_left; */
+
+  /*     child->ts_right = cur; */
+  /*     child->ts_left = cur_left; */
+
+  /*     FIX_CHILD_PARENTS(cur); */
+  /*     FIX_CHILD_PARENTS(child); */
+
+  /*     *sift_parent = child; */
+  /*     sift_parent = &child->ts_right; */
+  /*   } else { */
+  /*     struct timersub *child = cur->ts_left, *cur_right = cur->ts_right; */
+  /*     // Swap left and cur */
+  /*     child->ts_parent = cur->ts_parent; */
+
+  /*     cur->ts_left = child->ts_left; */
+  /*     cur->ts_right = child->ts_right; */
+
+  /*     child->ts_left = cur; */
+  /*     child->ts_right = cur_right; */
+
+  /*     FIX_CHILD_PARENTS(cur); */
+  /*     FIX_CHILD_PARENTS(child); */
+
+  /*     *sift_parent = child; */
+  /*     sift_parent = &child->ts_left; */
+  /*   } */
+  /* } */
+
+  /* el->el_tmr_count--; */
+  /* el->el_next_tmr = root == done ? NULL : root; */
 
   // Now add the completed timer
-  done->ts_left = done->ts_right = NULL;
+  done->ts_left = done->ts_right = done->ts_parent = NULL;
   eventloop_queue_unlocked(el, &done->ts_queued);
 }
 
@@ -365,10 +539,9 @@ static int eventloop_deliver_timers(struct eventloop *el) {
     if ( timeval_lt(&when_tv, &now_tv) ) {
       delivered++;
       assert(el->el_tmr_count > 0);
-      eventloop_mark_timer_completed(el);
-
       if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
         eventloop_dbg_verify_timers(el);
+      eventloop_mark_timer_completed(el);
     } else
       break;
   }
@@ -382,7 +555,11 @@ static void eventloop_reset_timer(struct eventloop *el) {
   struct timeval when_tv, now_tv;
   int err;
 
-  if ( !el->el_next_tmr ) return;
+  if ( !el->el_next_tmr ) {
+    if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
+      fprintf(stderr, "Not setting itimer because there are no timers\n");
+    return;
+  }
 
   it.it_interval.tv_sec = 0;
   it.it_interval.tv_usec = 0;
@@ -398,6 +575,9 @@ static void eventloop_reset_timer(struct eventloop *el) {
     it.it_value.tv_sec = 0;
     it.it_value.tv_usec = 1;
   }
+
+  if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
+    fprintf(stderr, "Set itimer %ld %ld\n", it.it_value.tv_sec, it.it_value.tv_usec);
 
   err = setitimer(ITIMER_REAL, &it, NULL);
   if ( err < 0 )
@@ -421,11 +601,11 @@ static int eventloop_pop_queued(struct eventloop *el, struct qdevent *evt) {
     else {
       // Because there are more timers ready, we send a signal to
       // ourselves which will wake other threads
-      if ( raise(SIGALRM) < 0 )
+      if ( kill(getpid(), SIGALRM) < 0 )
         perror("raise");
     }
 
-    evt->qde_timersub->ts_parent = evt->qde_timersub->ts_right = evt->qde_timersub->ts_left = NULL;
+    evt->qde_sub->qe_next = NULL;
     ret = 1;
   } else
     ret = 0;
@@ -441,6 +621,7 @@ void eventloop_run(struct eventloop *el) {
   sigset_t blocked_signals, old_signals;
 
   sigfillset(&blocked_signals);
+  sigdelset(&blocked_signals, SIGINT); // TODO
   // Block all signals
   err = pthread_sigmask(SIG_SETMASK, &blocked_signals, &old_signals);
   if ( err != 0 ) {
@@ -462,8 +643,8 @@ void eventloop_run(struct eventloop *el) {
           fprintf(stderr, "pwait interrupted\n");
 
           pthread_mutex_lock(&el->el_tmr_mutex);
-          if ( eventloop_deliver_timers(el) > 0 )
-            eventloop_reset_timer(el);
+          eventloop_deliver_timers(el);
+          eventloop_reset_timer(el);
           pthread_mutex_unlock(&el->el_tmr_mutex);
 
           fprintf(stderr, "Done delivering timers\n");
@@ -484,7 +665,6 @@ void eventloop_run(struct eventloop *el) {
           fprintf(stderr, "Dispatching event\n");
 
         sub = (struct fdsub *) ev.data.ptr;
-
         fd_event.fde_ev.ev_type = EV_TYPE_FD;
         fd_event.fde_sub = sub;
         fd_event.fde_triggered = translate_from_epoll_flags(ev.events);
@@ -538,14 +718,22 @@ static void *eventloop_async_thread(void *arg) {
   }
 }
 
-void eventloop_queue(struct eventloop *el, struct qdevtsub *sub) {
+int eventloop_queue(struct eventloop *el, struct qdevtsub *sub) {
+  int ret = 0;
   if ( pthread_mutex_lock(&el->el_tmr_mutex) != 0 ) {
     fprintf(stderr, "eventloop_queue: could not lock mutex\n");
+    ret = 0;
   } else {
-    eventloop_queue_unlocked(el, sub);
-    raise(SIGALRM);
+    if ( el->el_last_finished == sub || sub->qe_next )
+      ret = 0;
+    else {
+      eventloop_queue_unlocked(el, sub);
+      kill(getpid(), SIGALRM);
+      ret = 1;
+    }
     pthread_mutex_unlock(&el->el_tmr_mutex);
   }
+  return ret;
 }
 
 int eventloop_invoke_async(struct eventloop *el, struct qdevtsub *evt) {
@@ -597,6 +785,8 @@ int eventloop_invoke_async(struct eventloop *el, struct qdevtsub *evt) {
     el->el_async_thread_cnt = i;
   }
 
+  pthread_cond_signal(&el->el_async_cond);
+
   pthread_mutex_unlock(&el->el_async_mutex);
 }
 
@@ -640,16 +830,26 @@ int set_socket_nonblocking(int sk) {
   return 0;
 }
 
-void eventloop_subscribe_fd(struct eventloop *el, int fd, struct fdsub *sub) {
+int eventloop_subscribe_fd(struct eventloop *el, int fd, struct fdsub *sub) {
   int err;
   struct epoll_event ev;
+  uint32_t old_subs;
 
   ev.events = translate_to_epoll_flags(sub->fds_subscriptions);
   ev.data.ptr = (void *) sub;
 
+  // Now, replace the upper half of the subscription word with the
+  // lower half. The upper half gives the set of subscriptions
+  // currently in place.
+  (sub->fds_subscriptions & 0xFFFF) << 16
+
+  do {
+  } while ( __sync_bool_compare_and_swap(&sub->fds_subscriptions, old_subs, old_subs
+
   err = epoll_ctl(el->el_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
   if ( err < 0 )
     perror("eventloop_subscribe_fd: epoll_ctl");
+
 }
 
 void eventloop_unsubscribe_fd(struct eventloop *el, int fd, struct fdsub *sub) {
@@ -736,7 +936,8 @@ void eventloop_dbg_print_heap_(struct timersub *timer, FILE *f, int depth) {
   if ( depth >= 32 ) return;
   if ( !timer ) return;
 
-  fprintf(f, "n%08lx[label=\"%08lx (%ld.%012ld)\"];\n", (uintptr_t) timer, (uintptr_t) timer,
+  fprintf(f, "n%08lx[label=<<B>%08lx</B><BR/>%d<BR/>(%ld.%012ld)>];\n",
+          (uintptr_t) timer, (uintptr_t) timer, timer->ts_op,
           timer->ts_when.tv_sec, timer->ts_when.tv_nsec);
   if ( timer->ts_left ) {
     eventloop_dbg_print_heap_(timer->ts_left, f, depth + 1);
@@ -746,6 +947,8 @@ void eventloop_dbg_print_heap_(struct timersub *timer, FILE *f, int depth) {
     eventloop_dbg_print_heap_(timer->ts_right, f, depth + 1);
     fprintf(f, "n%08lx -> n%08lx [ label=\"R\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_right);
   }
+  if ( timer->ts_parent )
+    fprintf(f, "n%08lx -> n%08lx [ label = \"P\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_parent);
 }
 
 void eventloop_dbg_print_heap(struct timersub *timer, int iter) {
@@ -763,8 +966,10 @@ void eventloop_dbg_print_heap(struct timersub *timer, int iter) {
 void eventloop_dbg_verify_timers(struct eventloop *el) {
   static int iter = 0;
 
-  if ( el->el_flags & EL_FLAG_DEBUG_VERBOSE )
+  if ( el->el_flags & EL_FLAG_DEBUG_VERBOSE ) {
+    fprintf(stderr, "Printing heap %d\n", iter);
     eventloop_dbg_print_heap(el->el_next_tmr, iter++);
+  }
 
   if ( el->el_next_tmr )
     eventloop_dbg_verify_timers_(el->el_next_tmr, el->el_tmr_count, 1);
@@ -850,4 +1055,26 @@ int dnssub_start_resolution(struct dnssub *dns, struct eventloop *el,
   dns->ds_service = service;
 
   return eventloop_invoke_async(el, &dns->ds_async_resolver);
+}
+
+void eventloop_queue_all(struct eventloop *el, evtqueue *q) {
+  if ( pthread_mutex_lock(&el->el_tmr_mutex) != 0 ) {
+    fprintf(stderr, "eventloop_queue_all: could not lock mutex\n");
+  } else {
+    struct qdevtsub *cur, *next;
+    for ( cur = *q, next = cur ? cur->qe_next : NULL;
+          cur;
+          cur = next, next = cur ? cur->qe_next : NULL ) {
+      cur->qe_next = NULL;
+      eventloop_queue_unlocked(el, cur);
+    }
+    *q = NULL;
+    pthread_mutex_unlock(&el->el_tmr_mutex);
+  }
+}
+
+void evtqueue_queue(evtqueue *queue, struct qdevtsub *evt) {
+  assert( !__sync_fetch_and_or(&evt->qe_next, 0) );
+  evt->qe_next = *queue;
+  *queue = evt;
 }

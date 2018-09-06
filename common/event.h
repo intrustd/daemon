@@ -47,7 +47,7 @@ void eventloop_run(struct eventloop *el);
  * Invokes the given event in an asynchronous thread. On error, returns -1 and errno is set
  */
 int eventloop_invoke_async(struct eventloop *el, struct qdevtsub *evt);
-void eventloop_queue(struct eventloop *el, struct qdevtsub *evt);
+int eventloop_queue(struct eventloop *el, struct qdevtsub *evt);
 
 typedef void (*evtctlfn)(struct eventloop *el, int, void *);
 
@@ -59,7 +59,7 @@ typedef void (*evtctlfn)(struct eventloop *el, int, void *);
 
 // files
 struct fdsub {
-  uint32_t fds_subscriptions;
+  uint32_t fds_subd;
   evtctlfn fds_fn;
   int      fds_op;
 };
@@ -74,6 +74,9 @@ struct fdsub {
 #define FD_SUB_ERROR      0x40
 
 #define STATE_FROM_FDSUB(type, field, sub) STRUCT_FROM_BASE(type, field, sub)
+// #define FDSUB_SUBSCRIBE(fds, s) __sync_or_and_fetch(&(fds)->fds_subscriptions, (s) & 0xFFFF)
+// #define FDSUB_UNSUBSCRIBE(fds, s) __sync_and_and_fetch(&(fds)->fds_subscriptions, ~((s) & 0xFFFF))
+#define FDSUB_HAS_SUBSCRIPTIONS(fds) ((FDSUB_SUBSCRIBE(fds, 0) & 0x7FFFFFFF) != 0)
 
 void fdsub_init(struct fdsub *sub, struct eventloop *el, int fd, int op, evtctlfn fn);
 void fdsub_clear(struct fdsub *sub);
@@ -81,8 +84,14 @@ void fdsub_clear(struct fdsub *sub);
 // Returns 0 on success, -1 on error
 int set_socket_nonblocking(int fd);
 
-void eventloop_subscribe_fd(struct eventloop *el, int fd, struct fdsub *sub);
-void eventloop_unsubscribe_fd(struct eventloop *el, int fd, struct fdsub *sub);
+// Adds the given events to the fd
+//
+// Returns the bit mask of which subscriptions were installed
+int eventloop_subscribe_fd(struct eventloop *el, int fd, uint32_t evs, struct fdsub *sub);
+// Removes teh given events from the fd
+//
+// Returns the bit mask of subscriptions that were removed
+int eventloop_unsubscribe_fd(struct eventloop *el, int fd, uint32_t evs, struct fdsub *sub);
 
 struct qdevtsub {
   struct qdevtsub *qe_next;
@@ -96,7 +105,6 @@ struct qdevtsub {
     (sub)->qe_fn = fn;             \
     (sub)->qe_op = op;             \
   }
-void qdevtsub_deliver(struct eventloop *el, struct qdevtsub *sub);
 
 // DNS resolution
 struct dnssub {
@@ -161,8 +169,10 @@ void timersub_set(struct timersub *sub, struct timespec *when);
 void timersub_set_from_now(struct timersub *sub, int millis);
 
 void eventloop_subscribe_timer(struct eventloop *el, struct timersub *sub);
-void eventloop_update_timer(struct eventloop *el, struct timersub *sub);
-void eventloop_unsubscribe_timer(struct eventloop *el, struct timersub *sub);
+
+// Returns 1 if a timer was canceled, 0 if it wasn't, and -1 on error
+int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub);
+#define eventloop_unsubscribe_timer eventloop_cancel_timer
 
 void eventloop_dbg_verify_timers(struct eventloop *el);
 
@@ -186,6 +196,7 @@ struct fdevent {
 
 #define FD_WRITE_AVAILABLE(ev) ((ev)->fde_triggered & (FD_SUB_WRITE | FD_SUB_WRITE_OOB))
 #define FD_READ_PENDING(ev) ((ev)->fde_triggered & (FD_SUB_READ | FD_SUB_READ_OOB))
+#define FD_ERROR_PENDING(ev) ((ev)->fde_triggered & (FD_SUB_ERROR | FD_SUB_HUP | FD_SUB_RDHUP))
 #define IS_FDEVENT(ev) ((ev)->fde_ev.ev_type == EV_TYPE_FD)
 
 // Timers
@@ -198,5 +209,12 @@ struct qdevent {
     struct qdevtsub *qde_sub;
   };
 };
+
+typedef struct qdevtsub *evtqueue;
+#define evtqueue_init(q) (*(q) = NULL)
+
+// Enqueue all in the queue and reset queue
+void eventloop_queue_all(struct eventloop *el, evtqueue *q);
+void evtqueue_queue(evtqueue *queue, struct qdevtsub *evt);
 
 #endif

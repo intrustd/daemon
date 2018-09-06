@@ -1,16 +1,18 @@
+#include <openssl/err.h>
+#include <openssl/rand.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <assert.h>
 #include <string.h>
-#include <arpa/inet.h>
-#include <openssl/err.h>
 
 #include "service.h"
 #include "state.h"
 #include "event.h"
 #include "appliance.h"
 #include "client.h"
+#include "personas.h"
 
-#define DEFAULT_CLIENT_TIMEOUT 5000 // Keep DTLS contexts around for 30 seconds
+#define DEFAULT_CLIENT_TIMEOUT 60000 // Keep DTLS contexts around for 30 seconds
 
 #define OP_FLOCKSERVICE_SOCKET EVT_CTL_CUSTOM
 #define OP_FSCS_EXPIRE         EVT_CTL_CUSTOM
@@ -30,6 +32,7 @@ struct flocksvcclientstate {
   SSL *fscs_dtls;
 
   // Client state
+  pthread_mutex_t fscs_state_mutex;
   uint32_t fscs_flags;
 
   pthread_mutex_t fscs_outgoing_mutex;
@@ -37,32 +40,134 @@ struct flocksvcclientstate {
   char fscs_outgoing_buf[PKT_BUF_SZ];
   struct flocksvcclientstate *fscs_next_outgoing;
 
+  // Packets that need to be sent to this client
+  DLIST_HEAD(struct fcspktwriter) fscs_outgoing_packets;
+
   // A client may be an appliance
   struct applianceinfo fscs_appliance;
 };
 
 #define FSCS_IS_APPLIANCE               0x00000001
 #define FSCS_OUTGOING_MUTEX_INITIALIZED 0x80000000
+#define FSCS_STATE_MUTEX_INITIALIZED    0x40000000
 
 #define FSCS_HAS_OUTGOING(fscs) ((fscs)->fscs_outgoing.bs_ptr > 0)
+#define FSCS_HAS_PENDING_WRITES(fscs)  (FSCS_HAS_OUTGOING(fscs) || !DLIST_EMPTY(&fscs->fscs_outgoing_packets))
 #define FSCS_CAN_SEND_MORE(fscs) !(FSCS_HAS_OUTGOING(fscs))
 
-#define FSCS_REF(fscs) FLOCKCLIENT_REF(&(fscs)->fscs_base_st);
-#define FSCS_UNREF(fscs) FLOCKCLIENT_UNREF(&(fscs)->fscs_base_st);
+#define FSCS_REF(fscs) FLOCKCLIENT_REF(&(fscs)->fscs_base_st)
+#define FSCS_UNREF(fscs) FLOCKCLIENT_UNREF(&(fscs)->fscs_base_st)
+
+#define FSCS_FROM_APPINFO(info) STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_appliance, info)
 
 static void flockservice_fn(struct eventloop *el, int op, void *arg);
+static int flockservice_handle_startconn_response(struct flockservice *svc,
+                                                  const struct stunmsg *msg, int buf_sz);
+static int flockservice_handle_offer_response(struct flockservice *svc,
+                                              const struct stunmsg *msg, int buf_sz);
 
 // client state functions
+// Ensure that the client is in the outgoing queue. fscs_outgoing_mutex must be held
 static void fscs_ensure_enqueued_out(struct flockservice *svc, struct flocksvcclientstate *st);
 static int fscs_release(struct flocksvcclientstate *st);
+static void fscs_touch_timeout(struct flocksvcclientstate *st, struct eventloop *el);
+
+static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct flockservice *svc,
+                                     const char *buf, int buf_sz);
+static void fscs_write_response(struct flocksvcclientstate *st, const char *rsp, size_t sz);
+static void fscs_free_appliance(const struct shared *sh, int level);
+
+static int fscs_appliancefn(struct applianceinfo *info, int op, void *arg) {
+  struct flocksvcclientstate *st;
+  struct fcspktwriter *pw;
+  struct aireconcile *air;
+
+  st = FSCS_FROM_APPINFO(info);
+
+  switch ( op ) {
+  case AI_OP_GET_PEER_ADDR:
+    memcpy(arg, &st->fscs_addr, sizeof(st->fscs_addr));
+    return 0;
+  case AI_OP_RECONCILE: // TODO reconciliation
+    air = (struct aireconcile *) arg;
+    if ( air->air_old == air->air_new ) return 0;
+    else return -1;
+  case AI_OP_SEND_PACKET:
+    pw = (struct fcspktwriter *) arg;
+    if ( pw->fcspw_sh )
+      SHARED_REF(pw->fcspw_sh);
+
+    fprintf(stderr, "fscs_appliancefn: sending packet\n");
+    if ( pthread_mutex_lock(&st->fscs_outgoing_mutex) == 0 ) {
+      fprintf(stderr, "fscs_appliancefn: adding packet to queue\n");
+      // We do not release the reference we have to conn. This is released in
+      // flock_service_flush_buffers
+      DLIST_INSERT(&st->fscs_outgoing_packets, fcspw_dl, pw);
+
+      FDSUB_SUBSCRIBE(&st->fscs_svc->fs_service_sub, FD_SUB_WRITE);
+      fscs_ensure_enqueued_out(st->fscs_svc, st);
+      eventloop_subscribe_fd(&(FLOCKSTATE_FROM_SERVICE(st->fscs_svc)->fs_eventloop),
+                             st->fscs_svc->fs_service_sk,
+                             &st->fscs_svc->fs_service_sub);
+      pthread_mutex_unlock(&st->fscs_outgoing_mutex);
+      return 0;
+    } else {
+      if ( pw->fcspw_sh )
+        SHARED_UNREF(pw->fcspw_sh);
+      return -1;
+    }
+  default:
+    fprintf(stderr, "fscs_appliancefn: got unhandled op %d\n", op);
+    return -1;
+  }
+}
+
+static void fscs_free_appliance(const struct shared *sh, int level) {
+  // The appliance is no longer being used by the run-time
+  struct applianceinfo *ai = APPLIANCEINFO_FROM_SHARED(sh);
+  struct flocksvcclientstate *st = STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_appliance, ai);
+
+  if ( level != SHFREE_NO_MORE_REFS ) return;
+
+  if( pthread_mutex_lock(&st->fscs_state_mutex) == 0 ) {
+    st->fscs_flags &= ~FSCS_IS_APPLIANCE;
+    pthread_mutex_unlock(&st->fscs_state_mutex);
+
+    // This is in response to the state acquisition in fscs_handle_stun_request
+    FSCS_UNREF(st);
+  } else
+    fprintf(stderr, "fscs_free_appliance: could not free\n");
+
+  if ( pthread_mutex_lock(&ai->ai_mutex) == 0 ) {
+    if ( ai->ai_flags & AI_FLAG_ACTIVE )
+      flockservice_remove_appliance(st->fscs_svc, ai, FLOCKSERVICE_REMOVE_REASON_APPLIANCE_EXPIRED);
+    ai->ai_flags &= ~AI_FLAG_ACTIVE;
+    pthread_mutex_unlock(&ai->ai_mutex);
+  } else
+    fprintf(stderr, "fscs_free_appliance: could not lock appliance\n");
+}
 
 static void fscs_fn(struct eventloop *el, int op, void *arg) {
-  struct qdevent *tmr_evt = (struct tmrevent *)arg;
+  struct qdevent *tmr_evt = (struct qdevent *)arg;
   struct flocksvcclientstate *st = STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_client_timeout, tmr_evt->qde_timersub);
+  int is_appliance;
 
   switch ( op ) {
   case OP_FSCS_EXPIRE:
+    FSCS_REF(st);
     fprintf(stderr, "The client state is expiring\n");
+
+    if ( pthread_mutex_lock(&st->fscs_state_mutex) == 0 ) {
+      is_appliance = st->fscs_flags & FSCS_IS_APPLIANCE;
+      pthread_mutex_unlock(&st->fscs_state_mutex);
+    } else
+      is_appliance = 0;
+
+    if ( is_appliance ) {
+      AI_UNREF(&st->fscs_appliance);
+    }
+
+    FSCS_UNREF(st);
     FSCS_UNREF(st);
     break;
   default:
@@ -72,13 +177,16 @@ static void fscs_fn(struct eventloop *el, int op, void *arg) {
 
 static void fscs_client_fn(struct flockservice *svc, struct flockclientstate *st_base, int op, void *arg) {
   struct flocksvcclientstate *st = STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_base_st, st_base);
+  struct flockstate *flockst = FLOCKSTATE_FROM_SERVICE(svc);
   char pkt_buf[PKT_BUF_SZ];
   int err;
 
-  fprintf(stderr, "fscs_client_fn: %d\n", op);
 
   switch ( op ) {
   case FSC_RECEIVE_PKT:
+    // Since we got an event, we retouch the client timeout
+    fscs_touch_timeout(st, &flockst->fs_eventloop);
+
     BIO_reset(SSL_get_rbio(st->fscs_dtls));
     BIO_reset(SSL_get_wbio(st->fscs_dtls));
     // Handle receiving this packet
@@ -108,11 +216,10 @@ static void fscs_client_fn(struct flockservice *svc, struct flockclientstate *st
       }
     } else {
       fprintf(stderr, "Received packet of length %d\n", err);
+      fscs_handle_stun_request(st, svc, pkt_buf, err);
     }
 
-    fprintf(stderr, "Checking outgoing packet %ld\n", st->fscs_outgoing.bs_ptr);
-
-    if ( FSCS_HAS_OUTGOING(st) )
+    if ( FSCS_HAS_PENDING_WRITES(st) )
       fscs_ensure_enqueued_out(svc, st);
     break;
   default:
@@ -128,20 +235,31 @@ static int fscs_init(struct flocksvcclientstate *st, struct flockservice *svc, S
 
   if ( !SSL_up_ref(dtls) ) goto error;
 
+  st->fscs_flags = 0;
   if ( pthread_mutex_init(&st->fscs_outgoing_mutex, NULL) != 0 ) goto error;
+  st->fscs_flags |= FSCS_OUTGOING_MUTEX_INITIALIZED;
+  if ( pthread_mutex_init(&st->fscs_state_mutex, NULL) != 0 ) goto error;
+  st->fscs_flags |= FSCS_STATE_MUTEX_INITIALIZED;
 
   st->fscs_svc = svc;
   st->fscs_dtls = dtls;
-  st->fscs_flags = FSCS_OUTGOING_MUTEX_INITIALIZED;
   st->fscs_next_outgoing = NULL;
 
   st->fscs_outgoing.bs_buf = st->fscs_outgoing_buf;
   st->fscs_outgoing.bs_sz = -PKT_BUF_SZ;
   st->fscs_outgoing.bs_ptr = 0;
 
+  DLIST_INIT(&st->fscs_outgoing_packets);
+
   timersub_init_from_now(&st->fscs_client_timeout, DEFAULT_CLIENT_TIMEOUT, OP_FSCS_EXPIRE, fscs_fn);
 
-  applianceinfo_clear(&st->fscs_appliance);
+  if ( applianceinfo_init(&st->fscs_appliance, fscs_free_appliance) < 0 )
+    goto error;
+
+  st->fscs_appliance.ai_shared.sh_refcnt = 0;
+
+  st->fscs_appliance.ai_appliance_fn = fscs_appliancefn;
+  st->fscs_appliance.ai_flags |= AI_FLAG_SECURE;
 
   return 0;
 
@@ -152,6 +270,7 @@ static int fscs_init(struct flocksvcclientstate *st, struct flockservice *svc, S
 
 static int fscs_release(struct flocksvcclientstate *st) {
   int ret = 0;
+  struct fcspktwriter *pkt, *tmppkt;
 
   fsc_release(&st->fscs_base_st);
 
@@ -163,22 +282,33 @@ static int fscs_release(struct flocksvcclientstate *st) {
   pthread_mutex_destroy(&st->fscs_outgoing_mutex);
   st->fscs_flags &= ~FSCS_OUTGOING_MUTEX_INITIALIZED;
 
+  DLIST_ITER(&st->fscs_outgoing_packets, fcspw_dl, pkt, tmppkt) {
+    if ( pkt->fcspw_sh )
+      SHARED_UNREF(pkt->fcspw_sh);
+  }
+
+  applianceinfo_release(&st->fscs_appliance);
+
   if ( st->fscs_dtls )
     SSL_free(st->fscs_dtls);
 
   return ret;
 }
 
-static void free_fscs(const struct shared *s) {
+static void free_fscs(const struct shared *s, int level) {
   struct flockclientstate *st_base = STRUCT_FROM_BASE(struct flockclientstate, fcs_shared, s);
   struct flocksvcclientstate *st = STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_base_st, st_base);
+
+  if ( level != SHFREE_NO_MORE_REFS ) return;
 
   fprintf(stderr, "Freeing flock client state\n");
 
   // Also attempt to remove ourselves from the hash table
-  pthread_rwlock_wrlock(&st->fscs_svc->fs_clients_mutex);
+  assert(pthread_rwlock_wrlock(&st->fscs_svc->fs_clients_mutex) == 0);
   HASH_DELETE(fscs_hash_ent, st->fscs_svc->fs_clients_hash, st);
   pthread_rwlock_unlock(&st->fscs_svc->fs_clients_mutex);
+
+  AI_UNREF(&st->fscs_appliance);
 
   fscs_release(st);
   free(st);
@@ -203,6 +333,12 @@ static void fscs_subscribe(struct flocksvcclientstate *st, struct eventloop *el)
   eventloop_subscribe_timer(el, &st->fscs_client_timeout);
 }
 
+static void fscs_touch_timeout(struct flocksvcclientstate *st, struct eventloop *el) {
+  eventloop_cancel_timer(el, &st->fscs_client_timeout);
+  timersub_set_from_now(&st->fscs_client_timeout, DEFAULT_CLIENT_TIMEOUT);
+  eventloop_subscribe_timer(el, &st->fscs_client_timeout);
+}
+
 static void fscs_ensure_enqueued_out(struct flockservice *svc, struct flocksvcclientstate *st) {
   pthread_mutex_lock(&svc->fs_service_mutex);
 
@@ -220,6 +356,159 @@ static void fscs_ensure_enqueued_out(struct flockservice *svc, struct flocksvccl
   }
 
   pthread_mutex_unlock(&svc->fs_service_mutex);
+}
+
+static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct flockservice *svc,
+                                     const char *buf, int buf_sz) {
+  struct applianceinfo *app;
+  const struct stunmsg *msg = (const struct stunmsg *)buf;
+  struct stunvalidation v;
+  int err = 0, reg_err;
+  uint16_t unknown_attrs[100];
+  char response_buf[MAX_STUN_MSG_SIZE];
+  size_t response_sz = sizeof(response_buf);
+
+  v.sv_flags      = STUN_VALIDATE_VERBOSE | STUN_NEED_FINGERPRINT;
+  v.sv_user_cb    = NULL;
+  v.sv_unknown_cb = STUN_ACCEPT_UNKNOWN;
+  v.sv_user_data  = st;
+  v.sv_unknown_attrs = unknown_attrs;
+  v.sv_unknown_attrs_sz = sizeof(unknown_attrs) / sizeof(unknown_attrs[0]);
+
+  err = stun_validate(buf, buf_sz, &v);
+  if ( err < 0 || err == STUN_SUCCESS ) { // Negative error codes are responses that contained an error
+    fprintf(stderr, "Got stun request\n");
+
+    switch ( STUN_REQUEST_TYPE(msg) ) {
+    case STUN_BINDING:
+      fprintf(stderr, "TODO binding requests\n");
+      break;
+    case STUN_KITE_STARTCONN:
+      if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
+        err = 0;
+        reg_err = flockservice_handle_startconn_response(svc, msg, buf_sz);
+        if ( reg_err < 0 ) {
+          fprintf(stderr, "Error while processing startconn response\n");
+        }
+      } else
+        err = STUN_BAD_REQUEST;
+      break;
+    case STUN_KITE_SENDOFFER:
+      fprintf(stderr, "Stun kite sendoffer\n");
+      if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
+        err = 0;
+        reg_err = flockservice_handle_offer_response(svc, msg, buf_sz);
+        if ( reg_err < 0 ) {
+          fprintf(stderr, "Error while processing offer request\n");
+        }
+      } else
+        err = STUN_BAD_REQUEST;
+      break;
+    case STUN_KITE_GET_PERSONAS:
+      // This is sent to the appliance
+      if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
+        err = 0;
+        assert( pthread_mutex_lock(&st->fscs_state_mutex) == 0 );
+        if ( st->fscs_flags & FSCS_IS_APPLIANCE ) {
+          AI_REF(&st->fscs_appliance);
+          app = &st->fscs_appliance;
+          pthread_mutex_unlock(&st->fscs_state_mutex);
+          // If we are an appliance, sen
+          reg_err = applianceinfo_receive_persona_response(app, msg, buf_sz);
+          if ( reg_err < 0 ) {
+            fprintf(stderr, "Could not process persona response\n");
+          }
+          AI_UNREF(app);
+        } else
+          pthread_mutex_unlock(&st->fscs_state_mutex);
+      } else
+        err = STUN_BAD_REQUEST;
+      break;
+    case STUN_KITE_REGISTRATION:
+      // The appliance gets its own reference to our state.
+      // This is dereferenced in fscs_free_appliance
+      //
+      // The reference is released if there is an error or we
+      // succeeded, but the state was already an appliance
+      if ( err != STUN_SUCCESS ) break;
+      FSCS_REF(st);
+      reg_err = flockservice_handle_appliance_registration(svc, &st->fscs_appliance, msg, buf_sz,
+                                                           response_buf, &response_sz);
+      if ( reg_err >= 0 ) {
+        assert(pthread_mutex_lock(&st->fscs_state_mutex) == 0);
+        if ( (st->fscs_flags & FSCS_IS_APPLIANCE) != 0 ) {
+          FSCS_UNREF(st);
+        }
+        st->fscs_flags |= FSCS_IS_APPLIANCE;
+        pthread_mutex_unlock(&st->fscs_state_mutex);
+      } else
+        FSCS_UNREF(st);
+
+      if ( reg_err == 0 ) {
+        // Attempt to write the response buffer
+        fscs_write_response(st, response_buf, response_sz);
+      } else if ( reg_err > 0 ) {
+        fprintf(stderr, "Could register application\n");
+      } else if ( reg_err < 0 ) {
+        fprintf(stderr, "There was an error while registering the application\n");
+        err = -reg_err;
+      }
+      break;
+    default:
+      err = STUN_BAD_REQUEST;
+    }
+  }
+
+  if ( err == STUN_NOT_STUN ) {
+    fprintf(stderr, "ignoring packet because it is not a STUN request\n");
+  } else if ( err != STUN_SUCCESS ) {
+    fprintf(stderr, "error while parsing STUN request\n");
+
+    // TODO Respond with error now
+  }
+}
+
+static void fscs_write_response(struct flocksvcclientstate *st, const char *rsp, size_t sz) {
+  int err;
+
+  pthread_mutex_lock(&st->fscs_outgoing_mutex);
+  fprintf(stderr, "fscs_write_response: response size is %ld\n", sz);
+  err = SSL_write(st->fscs_dtls, rsp, sz);
+  if ( err <= 0 ) {
+    err = SSL_get_error(st->fscs_dtls, err);
+    switch ( err ) {
+    case SSL_ERROR_WANT_WRITE:
+      fprintf(stderr, "fscs_write_response: buffer overflow\n");
+      BIO_STATIC_RESET_WRITE(&st->fscs_outgoing);
+      break;
+    case SSL_ERROR_WANT_READ:
+      fprintf(stderr, "fscs_write_response: SSL_ERROR_WANT_READ\n");
+      BIO_STATIC_RESET_WRITE(&st->fscs_outgoing);
+      break;
+    case SSL_ERROR_ZERO_RETURN:
+      fprintf(stderr, "fscs_write_response: SSL protocol error\n");
+      ERR_print_errors_fp(stderr);
+      BIO_STATIC_RESET_WRITE(&st->fscs_outgoing);
+      break;
+    case SSL_ERROR_SYSCALL:
+      if ( BIO_should_io_special(SSL_get_wbio(st->fscs_dtls)) ) {
+        fprintf(stderr, "The write BIO was flushed\n");
+        return;
+      } else {
+        perror("fscs_write_response");
+        BIO_STATIC_RESET_WRITE(&st->fscs_outgoing);
+      }
+      break;
+    default:
+      fprintf(stderr, "fscs_write_response: unknown error %d\n", err);
+      ERR_print_errors_fp(stderr);
+      BIO_STATIC_RESET_WRITE(&st->fscs_outgoing);
+      break;
+    }
+  } else {
+    fprintf(stderr, "Encoded STUN response... sending\n");
+  }
+  pthread_mutex_unlock(&st->fscs_outgoing_mutex);
 }
 
 // Object functions
@@ -294,6 +583,20 @@ int flockservice_init(struct flockservice *svc, X509 *cert, EVP_PKEY *pkey, stru
   }
   svc->fs_mutexes_initialized |= FS_CLIENTS_MUTEX;
 
+  err = pthread_rwlock_init(&svc->fs_appliances_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "flockservice_init: could not create appliances rwlock: %s\n", strerror(err));
+    goto error;
+  }
+  svc->fs_mutexes_initialized |= FS_APPLIANCES_MUTEX;
+
+  err = pthread_rwlock_init(&svc->fs_connections_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "flockservice_init: could not create connections rwlock: %s\n", strerror(err));
+    goto error;
+  }
+  svc->fs_mutexes_initialized |= FS_CONNECTIONS_MUTEX;
+
   svc->fs_ssl_ctx = SSL_CTX_new(DTLS_server_method());
   if ( !svc->fs_ssl_ctx ) {
     fprintf(stderr, "flockservice_init: SSL_CTX_new failed\n");
@@ -359,6 +662,8 @@ void flockservice_clear(struct flockservice *svc) {
   svc->fs_incoming_addr = NULL;
 
   svc->fs_clients_hash = NULL;
+  svc->fs_appliances = NULL;
+  svc->fs_connections = NULL;
 
   svc->fs_ssl_ctx = NULL;
 }
@@ -402,10 +707,21 @@ void flockservice_release(struct flockservice *svc) {
     pthread_mutex_destroy(&svc->fs_service_mutex);
     svc->fs_mutexes_initialized &= ~FS_SERVICE_MUTEX;
   }
+
+  if ( svc->fs_mutexes_initialized & FS_APPLIANCES_MUTEX ) {
+    // TODO destroy all appliances
+    pthread_rwlock_destroy(&svc->fs_appliances_mutex);
+    svc->fs_mutexes_initialized &= ~FS_APPLIANCES_MUTEX;
+  }
+
+  if ( svc->fs_mutexes_initialized & FS_CONNECTIONS_MUTEX ) {
+    pthread_rwlock_destroy(&svc->fs_connections_mutex);
+    svc->fs_mutexes_initialized &= ~FS_CONNECTIONS_MUTEX;
+  }
 }
 
 void flockservice_start(struct flockservice *svc, struct eventloop *el) {
-  svc->fs_service_sub.fds_subscriptions |= FD_SUB_READ;
+  FDSUB_SUBSCRIBE(&svc->fs_service_sub, FD_SUB_READ);
   eventloop_subscribe_fd(el, svc->fs_service_sk, &svc->fs_service_sub);
 }
 
@@ -461,6 +777,7 @@ static void flock_service_accept(struct flockservice *st, struct eventloop *even
   outgoing_bio.bs_buf = pkt_out;
   outgoing_bio.bs_sz = sizeof(pkt_out);
   outgoing_bio.bs_ptr = 0;
+
   bio_out = BIO_new_static(BIO_STATIC_WRITE, &outgoing_bio);
   if ( !bio_out ) {
     fprintf(stderr, "flock_service_accept: out of memory\n");
@@ -599,32 +916,97 @@ static void flock_service_handle_read(struct flockservice *st, struct eventloop 
     // The datagram is delivered if we have space in the outgoing packet queue
     pthread_mutex_lock(&client->fscs_outgoing_mutex);
     if ( FSCS_CAN_SEND_MORE(client) ) {
+      pthread_mutex_unlock(&client->fscs_outgoing_mutex);
       // Continue
       client->fscs_base_st.fcs_fn(st, &client->fscs_base_st, FSC_RECEIVE_PKT, NULL);
-    } else
+    } else {
+      pthread_mutex_unlock(&client->fscs_outgoing_mutex);
       fprintf(stderr, "Ignoring data because there is no space in the outgoing buffer\n");
-    pthread_mutex_unlock(&client->fscs_outgoing_mutex);
+    }
   }
 }
 
-static void flock_service_flush_buffers(struct flockservice *st) {
+static void flock_service_flush_buffers(struct flockservice *st, struct eventloop *el) {
   int err;
-  struct flocksvcclientstate *cli, *old_cli;
+  struct flocksvcclientstate *cli, *old_cli = NULL;
+  struct fcspktwriter *curpkt, *tmppkt;
+
   fprintf(stderr, "Flushing buffers\n");
 
   pthread_mutex_lock(&st->fs_service_mutex);
-  for ( cli = st->fs_first_outgoing; cli;
-        old_cli = cli, cli = cli->fscs_next_outgoing == cli ? NULL : cli->fscs_next_outgoing, old_cli->fscs_next_outgoing = NULL ) {
+  for ( cli = st->fs_first_outgoing; cli && cli != old_cli;
+        old_cli = cli, cli = (cli->fscs_next_outgoing == cli ? NULL : cli->fscs_next_outgoing), old_cli->fscs_next_outgoing = NULL ) {
+
+    assert ( pthread_mutex_lock(&cli->fscs_outgoing_mutex) == 0 );
     // Attempt to write out the buffer with the DTLS context
-    err = sendto(st->fs_service_sk, cli->fscs_outgoing_buf, BIO_STATIC_WPENDING(&cli->fscs_outgoing), 0,
-                 (void *) &cli->fscs_addr, sizeof(cli->fscs_addr));
-    BIO_STATIC_RESET_WRITE(&cli->fscs_outgoing);
-    if ( err < 0 ) {
-      if ( errno == EWOULDBLOCK ) break;
-      perror("flock_service_flush_buffers: sendto");
+
+    if ( BIO_STATIC_WPENDING(&cli->fscs_outgoing) ) {
+      err = sendto(st->fs_service_sk, cli->fscs_outgoing_buf, BIO_STATIC_WPENDING(&cli->fscs_outgoing), 0,
+                   (void *) &cli->fscs_addr, sizeof(cli->fscs_addr));
+      BIO_STATIC_RESET_WRITE(&cli->fscs_outgoing);
+      if ( err < 0 ) {
+        if ( errno == EWOULDBLOCK )
+          goto wouldblock;
+        perror("flock_service_flush_buffers: sendto");
+        goto finish_cli_send;
+      }
     }
 
+    // Attempt to write any connection attempts
+    DLIST_ITER(&cli->fscs_outgoing_packets, fcspw_dl, curpkt, tmppkt) {
+      char req_buf[MAX_STUN_MSG_SIZE];
+      int req_sz = sizeof(req_buf);
+
+      curpkt->fcspw_sts = -1;
+      if ( curpkt->fcspw_write(curpkt, req_buf, &req_sz) < 0 ) {
+        fprintf(stderr, "Could not write outgoing packet\n");
+        req_sz = 0;
+      }
+
+      fprintf(stderr, "Sending stun request of size %d\n", req_sz);
+
+      if ( req_sz > 0 ) {
+        err = SSL_write(cli->fscs_dtls, req_buf, req_sz);
+        if ( err <= 0 ) {
+          fprintf(stderr, "fscs_write_response: cannot write STUN start conn: %d\n",
+                  SSL_get_error(cli->fscs_dtls, err));
+          BIO_STATIC_RESET_WRITE(&cli->fscs_outgoing);
+        }
+
+        if ( BIO_STATIC_WPENDING(&cli->fscs_outgoing) ) {
+          err = sendto(st->fs_service_sk, cli->fscs_outgoing_buf,
+                       BIO_STATIC_WPENDING(&cli->fscs_outgoing), 0,
+                       (void *) &cli->fscs_addr, sizeof(cli->fscs_addr));
+          BIO_STATIC_RESET_WRITE(&cli->fscs_outgoing);
+          if ( err < 0 ) {
+            if ( errno == EWOULDBLOCK ) {
+              DLIST_SET_FIRST(&cli->fscs_outgoing_packets, curpkt);
+              goto wouldblock;
+            }
+            perror("flock_service_flush_buffers: sendto (start conn requests)");
+            curpkt->fcspw_sts = -errno;
+          } else
+            curpkt->fcspw_sts = 0;
+        }
+      }
+
+      eventloop_queue(el, &curpkt->fcspw_done);
+      if ( curpkt->fcspw_sh )
+        SHARED_UNREF(curpkt->fcspw_sh);
+    }
+
+    DLIST_CLEAR(&cli->fscs_outgoing_packets);
+
+  finish_cli_send:
+    pthread_mutex_unlock(&cli->fscs_outgoing_mutex);
+
     FSCS_UNREF(cli);
+    continue;
+
+  wouldblock:
+    fprintf(stderr, "Got wouldblock\n");
+    pthread_mutex_unlock(&cli->fscs_outgoing_mutex);
+    break;
   }
 
   st->fs_first_outgoing = cli;
@@ -632,13 +1014,14 @@ static void flock_service_flush_buffers(struct flockservice *st) {
     st->fs_last_outgoing = NULL;
 
   pthread_mutex_unlock(&st->fs_service_mutex);
+  fprintf(stderr, "Wrote buffers\n");
 }
 
 static void flock_service_handle_event(struct flockservice *st, struct eventloop *el, struct fdevent *ev) {
   fprintf(stderr, "Flock service got socket event\n");
 
   if ( FD_WRITE_AVAILABLE(ev) )
-    flock_service_flush_buffers(st);
+    flock_service_flush_buffers(st, el);
 
   if ( FD_READ_PENDING(ev) ) { // && BIO_ctrl_wpending(st->fs_service_bio) == 0 ) {
     // Only read data if there is no write pending
@@ -646,10 +1029,11 @@ static void flock_service_handle_event(struct flockservice *st, struct eventloop
   }
 
   pthread_mutex_lock(&st->fs_service_mutex);
+  fprintf(stderr, "Handle event %p\n", st->fs_first_outgoing);
   if ( st->fs_first_outgoing )
-    st->fs_service_sub.fds_subscriptions |= FD_SUB_WRITE | FD_SUB_WRITE_OOB;
+    FDSUB_SUBSCRIBE(&st->fs_service_sub, FD_SUB_WRITE | FD_SUB_WRITE_OOB);
   else
-    st->fs_service_sub.fds_subscriptions &= ~(FD_SUB_WRITE | FD_SUB_WRITE_OOB);
+    FDSUB_UNSUBSCRIBE(&st->fs_service_sub, FD_SUB_WRITE | FD_SUB_WRITE_OOB);
   pthread_mutex_unlock(&st->fs_service_mutex);
 
   eventloop_subscribe_fd(el, st->fs_service_sk, &st->fs_service_sub);
@@ -669,4 +1053,370 @@ void flockservice_fn(struct eventloop *el, int op, void *arg) {
   default:
     fprintf(stderr, "flockservice_fn: Unknown op %d\n", op);
   }
+}
+
+int flockservice_lookup_connection(struct flockservice *svc, uint64_t conn_id,
+                                   struct connection **c) {
+  SHARED_DEFERRED defered_free;
+
+  assert( pthread_rwlock_rdlock(&svc->fs_connections_mutex) == 0 );
+  HASH_FIND(conn_hh, svc->fs_connections, &conn_id, sizeof(conn_id), *c);
+  if ( *c == NULL ) {
+    pthread_rwlock_unlock(&svc->fs_connections_mutex);
+    return -1;
+  } else {
+    // The hash table contains a weak reference to the connection
+    if ( CONN_SAFE_LOCK(*c, &defered_free) == 0 ) {
+      // If we got a connection reference, then store another weak reference for the hash table
+      CONN_WREF(*c);
+      pthread_rwlock_unlock(&svc->fs_connections_mutex);
+      SHARED_DO_DEFERRED(&defered_free);
+      return 0;
+    } else {
+      pthread_rwlock_unlock(&svc->fs_connections_mutex);
+      SHARED_DO_DEFERRED(&defered_free);
+      *c = NULL;
+      return -1;
+    }
+  }
+}
+
+int flockservice_lookup_appliance(struct flockservice *svc, const char *name,
+                                  struct applianceinfo **ai) {
+  return flockservice_lookup_appliance_ex(svc, name, strlen(name), ai);
+}
+
+int flockservice_lookup_appliance_ex(struct flockservice *svc, const char *name,
+                                     int name_sz, struct applianceinfo **ai) {
+  HASH_FIND(ai_hash_ent, svc->fs_appliances, name, name_sz, *ai);
+  if ( *ai == NULL )
+    return -1;
+  else {
+    AI_REF(*ai);
+    return 0;
+  }
+}
+
+void flockservice_remove_appliance(struct flockservice *svc, struct applianceinfo *ai, int reason) {
+  assert(pthread_rwlock_wrlock(&svc->fs_appliances_mutex) == 0);
+  HASH_DELETE(ai_hash_ent, svc->fs_appliances, ai);
+  pthread_rwlock_unlock(&svc->fs_appliances_mutex);
+}
+
+struct sendofferrsplns {
+  struct stunattr *sorl_attr;
+  const struct stunmsg *sorl_msg;
+  size_t sorl_sz;
+};
+
+int get_sendoffer_rsp_lns(void *arg, int *line_index, const char **start, const char **end) {
+  struct sendofferrsplns *sorl = (struct sendofferrsplns *)arg;
+  for ( ; STUN_IS_VALID(sorl->sorl_attr, sorl->sorl_msg, sorl->sorl_sz);
+        sorl->sorl_attr = STUN_NEXTATTR(sorl->sorl_attr) ) {
+    switch ( STUN_ATTR_NAME(sorl->sorl_attr) ) {
+    case STUN_ATTR_KITE_SDP_LINE:
+      if ( STUN_ATTR_PAYLOAD_SZ(sorl->sorl_attr) >= 2 ) {
+        *line_index = ntohs(*((uint16_t *) STUN_ATTR_DATA(sorl->sorl_attr)));
+        if ( *line_index == 0xFFFF ) {
+          if ( STUN_ATTR_PAYLOAD_SZ(sorl->sorl_attr) == 2 )
+            return CONNOFFER_LAST_LINE;
+          else
+            return CONNOFFER_LINE_ERROR;
+        }
+
+        *start = ((char *)STUN_ATTR_DATA(sorl->sorl_attr)) + 2;
+        *end = ((char *)STUN_ATTR_DATA(sorl->sorl_attr)) + STUN_ATTR_PAYLOAD_SZ(sorl->sorl_attr);
+
+        sorl->sorl_attr = STUN_NEXTATTR(sorl->sorl_attr);
+        return CONNOFFER_LINE_RETRIEVED;
+      } else
+        return CONNOFFER_LINE_ERROR;
+    }
+  }
+  return CONNOFFER_NO_MORE_LINES;
+}
+
+static int flockservice_handle_offer_response(struct flockservice *svc,
+                                              const struct stunmsg *msg, int buf_sz) {
+  struct stunattr *attr;
+  struct connection *c;
+  uint64_t conn_id = 0;
+  int has_lines = 0;
+
+  for ( attr = STUN_FIRSTATTR(msg);
+        STUN_IS_VALID(attr, msg, buf_sz);
+        attr = STUN_NEXTATTR(attr) ) {
+    switch ( STUN_ATTR_NAME(attr) ) {
+    case STUN_ATTR_KITE_CONN_ID:
+      if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(conn_id) ) {
+        conn_id = ntohll(*((uint64_t *) STUN_ATTR_DATA(attr)));
+      }
+      break;
+    case STUN_ATTR_KITE_SDP_LINE:
+      has_lines = 1;
+      break;
+    case STUN_ATTR_FINGERPRINT:
+      break;
+    default:
+      fprintf(stderr, "flockservice_handle_offer_response: Unknown attribute %04x\n",
+              STUN_ATTR_NAME(attr));
+      break;
+    }
+  }
+
+  fprintf(stderr, "flockservire_handle_offer_response: %08lx for line %d\n", conn_id, has_lines);
+
+  if ( !has_lines ) {
+    fprintf(stderr, "flockservice_handle_offer_response: Ignoring response with no lines\n");
+    return 0;
+  }
+
+  if ( flockservice_lookup_connection(svc, conn_id, &c) < 0 )
+    return -1;
+
+  if ( connection_verify_tx_id(c, &msg->sm_tx_id) == 0 ) {
+    struct sendofferrsplns lines_cl;
+    lines_cl.sorl_attr = STUN_FIRSTATTR(msg);
+    lines_cl.sorl_msg = msg;
+    lines_cl.sorl_sz  = buf_sz;
+    connection_offer_received(c, get_sendoffer_rsp_lns, &lines_cl);
+  } else
+    fprintf(stderr, "flockservice_handle_sendoffer_response: drop packet because tx id doesn't match\n");
+
+  CONN_UNREF(c);
+
+  return 0;
+}
+
+static int flockservice_handle_startconn_response(struct flockservice *svc,
+                                                  const struct stunmsg *msg, int buf_sz) {
+  struct stunattr *attr;
+  struct connection *c;
+  uint64_t conn_id = 0;
+  int has_personas = 0;
+  int error = -1;
+  char personas_hash[SHA256_DIGEST_LENGTH];
+
+  fprintf(stderr, "flockservice_handle_startconn_response: Got response\n");
+
+  for ( attr = STUN_FIRSTATTR(msg);
+        STUN_IS_VALID(attr, msg, buf_sz);
+        attr = STUN_NEXTATTR(attr) ) {
+    switch ( STUN_ATTR_NAME(attr) ) {
+    case STUN_ATTR_ERROR_CODE:
+      if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(uint16_t) ) {
+        error = ntohs(*((uint16_t *) STUN_ATTR_DATA(attr)));
+      }
+      break;
+    case STUN_ATTR_KITE_CONN_ID:
+      if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(conn_id) ) {
+        conn_id = ntohll(*((uint64_t *) STUN_ATTR_DATA(attr)));
+      }
+      break;
+    case STUN_ATTR_KITE_PERSONAS_HASH:
+      if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(personas_hash) ) {
+        memcpy(personas_hash, (char *) STUN_ATTR_DATA(attr), sizeof(personas_hash));
+        has_personas = 1;
+      }
+      break;
+    default:
+      continue;
+    }
+  }
+
+  fprintf(stderr, "flockservice_handle_startconn_response: Got response %08lx\n", conn_id);
+
+  if ( has_personas ) {
+    char persona_hash_str[SHA256_DIGEST_LENGTH * 2 + 1];
+    fprintf(stderr, "flockservice_handle_startconn_response: Got personas hash %s\n",
+            hex_digest_str((unsigned char *)personas_hash, persona_hash_str,
+                           sizeof(personas_hash)));
+  } else {
+    fprintf(stderr, "flockservice_handle_startconn_response: no personas\n");
+  }
+
+  if ( conn_id == 0 ) return -1;
+
+  if ( flockservice_lookup_connection(svc, conn_id, &c) < 0 ) {
+    return -1;
+  }
+
+  if ( connection_verify_tx_id(c, &msg->sm_tx_id) == 0 ) {
+    if ( STUN_MESSAGE_TYPE(msg) & STUN_ERROR ) {
+      connection_error_received(c, error);
+    } else {
+      connection_confirmation_received(c, has_personas);
+
+      // If we have personas, ask the connection to deliver the personas.
+      if ( connection_wants_personas(c) ) {
+        if ( connection_send_personas(c, (unsigned char *) personas_hash) < 0 ) {
+          connection_signal_error(c, CONNECTION_ERR_COULD_NOT_SEND_PERSONAS);
+          connection_complete(c);
+        }
+      }
+    }
+  } else
+    fprintf(stderr, "flockservice_handle_startconn_response: drop packet because tx id doesn't match\n");
+
+  CONN_UNREF(c);
+
+  return 0;
+}
+
+int flockservice_handle_appliance_registration(struct flockservice *svc,
+                                               struct applianceinfo *app,
+                                               const struct stunmsg *msg, int msg_sz,
+                                               char *rsp_buf, size_t *rsp_sz) {
+  int err, max_rsp_sz = *rsp_sz;
+  const struct stunattr *attr = STUN_FIRSTATTR(msg);
+  struct applianceinfo *old_app;
+  struct stunmsg *rsp_msg = (struct stunmsg *) rsp_buf;
+  struct stunattr *rsp_attr;
+
+  struct sockaddr app_addr;
+
+  int app_name_found = 0;
+  char app_name[KITE_APPLIANCE_NAME_MAX];
+
+  for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, msg_sz); attr = STUN_NEXTATTR(attr) ) {
+    fprintf(stderr, "process stun %p %p %u\n", attr, msg, msg_sz);
+    switch ( STUN_ATTR_NAME(attr) ) {
+    case STUN_ATTR_USERNAME:
+      if ( !app_name_found ) {
+        if ( STUN_ATTR_PAYLOAD_SZ(attr) > 0 ) {
+          app_name_found = 1;
+
+          if ( STUN_ATTR_PAYLOAD_SZ(attr) > (sizeof(app_name) - 1) )
+            return -STUN_SERVER_ERROR;
+          else {
+            memcpy(app_name, STUN_ATTR_DATA(attr), STUN_ATTR_PAYLOAD_SZ(attr));
+            app_name[STUN_ATTR_PAYLOAD_SZ(attr)] = '\0';
+          }
+        } else
+          fprintf(stderr, "Empty username\n");
+      } else
+        fprintf(stderr, "Duplicate username attribute\n");
+      break;
+    case STUN_ATTR_FINGERPRINT:
+    case STUN_ATTR_MESSAGE_INTEGRITY:
+      break;
+    default:
+      fprintf(stderr, "flockservice_handle_appliance_registration: Skipping unknown attribute %x\n", STUN_ATTR_NAME(attr));
+      if ( STUN_ATTR_REQUIRED(STUN_ATTR_NAME(attr)) ) {
+        // TODO report unknown attributes
+        return -STUN_UNKNOWN_ATTRIBUTES;
+      }
+    }
+  }
+
+  if ( !app_name_found )
+    return -STUN_BAD_REQUEST;
+
+  err = applianceinfo_get_peer_addr(app, &app_addr);
+  if ( err < 0 ) {
+    fprintf(stderr, "Could not get peer address from appliance\n");
+    return -1;
+  }
+
+  assert( pthread_rwlock_wrlock(&svc->fs_appliances_mutex) == 0 );
+
+  fprintf(stderr, "Got registration for %s\n", app_name);
+  // TODO sharding
+
+  old_app = NULL;
+  err = flockservice_lookup_appliance(svc, app_name, &old_app);
+  if ( err < 0 ) {
+    fprintf(stderr, "This is a new appliance\n");
+
+    assert( (app->ai_flags & AI_FLAG_ACTIVE) == 0 );
+    app->ai_flags |= AI_FLAG_ACTIVE;
+
+    // Copy name
+    strncpy(app->ai_name, app_name, sizeof(app->ai_name));
+
+    // No need to lock app because it is not active, hence not shared
+    app->ai_shared.sh_refcnt = 1;
+    HASH_ADD(ai_hash_ent, svc->fs_appliances, ai_name, strlen(app->ai_name), app);
+    pthread_rwlock_unlock(&svc->fs_appliances_mutex);
+  } else {
+    fprintf(stderr, "Found old appliance %p for appliance %p\n", old_app, app);
+    pthread_rwlock_unlock(&svc->fs_appliances_mutex);
+
+    if ( old_app != app ) {
+      struct aireconcile reconciliation;
+      reconciliation.air_old = old_app;
+      reconciliation.air_new = app;
+
+      // This appliance is old. Check to see if we need to do any reconciliation
+      err = old_app->ai_appliance_fn(old_app, AI_OP_RECONCILE, &reconciliation);
+
+      if ( err != 0 ) {
+        AI_UNREF(old_app);
+        fprintf(stderr, "TODO reconciliation error %d\n", err);
+        return -1;
+      }
+    }
+
+    AI_UNREF(old_app);
+  }
+
+  STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
+  memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
+  rsp_attr = STUN_FIRSTATTR(rsp_msg);
+  err = stun_add_mapped_address_attrs(&rsp_attr, rsp_msg, max_rsp_sz, &app_addr, sizeof(app_addr));
+  if ( err < 0 ) {
+    fprintf(stderr, "Could not add mapped address attributes\n");
+    return -1;
+  }
+  STUN_FINISH_WITH_FINGERPRINT(rsp_attr, rsp_msg, *rsp_sz, err);
+  *rsp_sz = STUN_MSG_LENGTH(rsp_msg);
+  if ( err == 0 ) return 0;
+  else return -1;
+}
+
+// Connection routines
+
+// Note: all connections in fs_connections are owned by whatever created the connection
+int flockservice_new_connection(struct flockservice *svc, struct connection *conn) {
+  struct connection *existing;
+  if ( pthread_rwlock_wrlock(&svc->fs_connections_mutex) == 0 ) {
+    do {
+      assert(RAND_bytes((unsigned char *)&conn->conn_id, sizeof(conn->conn_id)));
+      HASH_FIND(conn_hh, svc->fs_connections, &conn->conn_id, sizeof(conn->conn_id), existing);
+    } while (existing || conn->conn_id == 0);
+
+    fprintf(stderr, "flockservice_new_connection: new connection is %08lx\n", conn->conn_id);
+
+    CONN_REF(conn);
+    HASH_ADD(conn_hh, svc->fs_connections, conn_id, sizeof(conn->conn_id), conn);
+
+    pthread_rwlock_unlock(&svc->fs_connections_mutex);
+    return 0;
+  } else
+    return -1;
+}
+
+int flockservice_finish_connection(struct flockservice *svc, struct connection *conn) {
+  struct connection *existing;
+
+  assert( pthread_rwlock_wrlock(&svc->fs_connections_mutex) == 0 );
+  HASH_FIND(conn_hh, svc->fs_connections, &conn->conn_id, sizeof(conn->conn_id), existing);
+  if ( existing )
+    HASH_DELETE(conn_hh, svc->fs_connections, conn);
+  pthread_rwlock_unlock(&svc->fs_connections_mutex);
+
+  if ( existing ) CONN_UNREF(existing);
+
+  return 0;
+}
+
+int flockservice_open_cached_personaset(struct flockservice *svc,
+                                        const char *appliance_name, const unsigned char *ps_hash,
+                                        int ps_hash_sz, struct cpersonaset **cps) {
+  fprintf(stderr, "TODO: flockservice_open_cached_personaset\n");
+
+  *cps = (struct cpersonaset *) cmempersonaset_alloc();
+  if ( !(*cps) ) return -1;
+
+  return FLOCKSERVICE_CACHED_PERSONASET_NEW;
 }

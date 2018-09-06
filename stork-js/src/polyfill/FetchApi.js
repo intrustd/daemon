@@ -2,83 +2,169 @@
 import { EventTarget } from 'event-target-shim';
 import { HTTPParser } from 'http-parser-js';
 import { FlockClient } from "../FlockClient.js";
-import { ApplianceChooser } from "../ApplianceChooser.js";
+import { ApplianceChooser, PersonaChooser } from "../ApplianceChooser.js";
 import { parseStorkAppUrl, storkAppCanonicalUrl } from "./Common.js";
 
 var oldFetch = window.fetch;
 
-var globalClients = {};
+var globalFlocks = {};
+var globalAppliance;
 
-function withLoggedInDevice ( flockUrl ) {
-    if ( storkFetch.device === undefined ) {
-        var clientPromise;
-        if ( globalClients.hasOwnProperty(flockUrl) )
-            clientPromise = globalClients[flockUrl];
+class GlobalAppliance {
+    constructor ( flock, applianceName, defClient ) {
+        this.flock = flock;
+        this.applianceName = applianceName;
+        this.defaultPersona = defClient;
+        this.personas = {};
+    }
+
+    getPersonaClient(persona) {
+        if ( this.personas.hasOwnProperty(persona) )
+            return Promise.resolve(this.personas[persona]);
         else {
-            clientPromise = globalClients[flockUrl] =
-                new Promise((resolve, reject) => {
-                    var client = new FlockClient(flockUrl);
-
-                    var removeEventListeners = () => {
-                        client.removeEventListener('open', onOpen);
-                        client.removeEventListener('error', onError);
-                    }
-                    var onOpen = () => {
-                        removeEventListeners()
-                        resolve(client)
-                    }
-                    var onError = (e) => {
-                        removeEventListeners()
-                        reject(e)
-                    }
-
-                    client.addEventListener('open', onOpen);
-                    client.addEventListener('error', onError);
-                }).then((client) => {
-                    return new Promise((resolve, reject) => {
-                        var deviceChooser = new ApplianceChooser(client);
-                        deviceChooser.addEventListener('persona-chosen', (e) => {
-                            console.log("Chose person", e);
-                            deviceChooser.hide();
-                            resolve({client, device: e.device, personaId: e.persona});
-                        });
-                        deviceChooser.addEventListener('cancel', () => {
-                            deviceChooser.hide();
-                            reject(new TypeError("The login was canceled by the user"));
-                        });
-                    });
-                }).then(({client, device, personaId}) => {
-                    console.log("Going to log in", client, device, personaId)
-                    return new Promise((resolve, reject) => {
-                        // TODO password?
-                        var conn = client.startConnection(device, personaId, [])
-
-                        var removeEventListeners = () => {
-                            conn.removeEventListener('open', onOpen);
-                            conn.removeEventListener('error', onError);
-                        };
-                        var onOpen = () => {
-                            removeEventListeners();
-                            globalClients[flockUrl] = Promise.resolve(conn)
-                            resolve(conn);
-                        };
-                        var onError = () => {
-                            removeEventListeners();
-                            reject(new TypeError("Could not initiate appliance connection"));
-                        };
-
-                        conn.addEventListener('open', onOpen);
-                        conn.addEventListener('error', onError);
-
-                        conn.login("") // TODO send some kind of credential (likely a token or something)
-                    });
-                });
+            console.error("TODO getPersonaClient");
         }
+    }
 
-        return clientPromise
-    } else
-        return Promise.resolve(storkFetch.device);
+    getDefaultPersonaClient() {
+        if ( this.defaultPersona.isLoggedIn() ) {
+            return Promise.resolve(this.defaultPersona);
+        } else {
+            return new Promise((resolve, reject) => {
+                var chooser = new PersonaChooser (this.defaultPersona);
+                chooser.addEventListener('persona-chosen', ({personaId, creds}) => {
+                    this.defaultPersona.tryLogin(personaId, creds)
+                        .then(() => { chooser.hide(); resolve(this.defaultPersona); },
+                              () => { chooser.showError(); })
+                });
+                chooser.addEventListener('cancel', () => { reject('canceled'); });
+            });
+        }
+    }
 }
+
+class GlobalFlock {
+    constructor ( flockUrl ) {
+        this.flockUrl = flockUrl;
+        this.defaultAppliance = null;
+        this.appliances = {};
+    }
+
+    getAppliance(applianceName) {
+        // Attempt connect to this appliance
+        if ( this.appliances.hasOwnProperty(applianceName) ) {
+            return Promise.resolve(this.appliances[applianceName]);
+        } else {
+            return new Promise((resolve, reject) => {
+                var client = new FlockClient({ url: this.flockUrl,
+                                               appliance: applianceName });
+                var removeEventListeners = () => {
+                    client.removeEventListener('open', onOpen);
+                    client.removeEventListener('error', onError);
+                }
+                var onOpen = () => {
+                    removeEventListeners();
+                    this.appliances[applianceName] =
+                        new GlobalAppliance(this, applianceName, client);
+                    resolve(this.appliances[applianceName]);
+                };
+                var onError = (e) => {
+                    removeEventListeners();
+                    reject(e);
+                }
+                client.addEventListener('open', onOpen);
+                client.addEventListener('error', onError);
+            });
+        }
+    }
+
+    getDefaultAppliance() {
+        if ( this.defaultAppliance )
+            return Promise.resolve(this.defaultAppliance);
+        else {
+            return new Promise((resolve, reject) => {
+                var chooser = new ApplianceChooser(this.flockUrl);
+                chooser.addEventListener('appliance-chosen', (e) => {
+                    this.getAppliance(e.device)
+                        .then((devClient) => { chooser.hide(); resolve(devClient)},
+                              (e) => { console.error(e); chooser.signalError() });
+                });
+                chooser.addEventListener('cancel', () => reject('canceled'));
+            });
+        }
+    }
+};
+
+// function withLoggedInDevice ( flockUrl ) {
+//     if ( storkFetch.device === undefined ) {
+//         var clientPromise;
+//         if ( globalClients.hasOwnProperty(flockUrl) )
+//             clientPromise = globalClients[flockUrl];
+//         else {
+//             clientPromise = globalClients[flockUrl] =
+//                 new Promise((resolve, reject) => {
+//                     var client = new FlockClient(flockUrl);
+// 
+//                     var removeEventListeners = () => {
+//                         client.removeEventListener('open', onOpen);
+//                         client.removeEventListener('error', onError);
+//                     }
+//                     var onOpen = () => {
+//                         removeEventListeners()
+//                         resolve(client)
+//                     }
+//                     var onError = (e) => {
+//                         removeEventListeners()
+//                         reject(e)
+//                     }
+// 
+//                     client.addEventListener('open', onOpen);
+//                     client.addEventListener('error', onError);
+//                 }).then((client) => {
+//                     return new Promise((resolve, reject) => {
+//                         var deviceChooser = new ApplianceChooser(client);
+//                         deviceChooser.addEventListener('persona-chosen', (e) => {
+//                             console.log("Chose person", e);
+//                             deviceChooser.hide();
+//                             resolve({client, device: e.device, personaId: e.persona});
+//                         });
+//                         deviceChooser.addEventListener('cancel', () => {
+//                             deviceChooser.hide();
+//                             reject(new TypeError("The login was canceled by the user"));
+//                         });
+//                     });
+//                 }).then(({client, device, personaId}) => {
+//                     console.log("Going to log in", client, device, personaId)
+//                     return new Promise((resolve, reject) => {
+//                         // TODO password?
+//                         var conn = client.startConnection(device, personaId, [])
+// 
+//                         var removeEventListeners = () => {
+//                             conn.removeEventListener('open', onOpen);
+//                             conn.removeEventListener('error', onError);
+//                         };
+//                         var onOpen = () => {
+//                             removeEventListeners();
+//                             globalClients[flockUrl] = Promise.resolve(conn)
+//                             resolve(conn);
+//                         };
+//                         var onError = () => {
+//                             removeEventListeners();
+//                             reject(new TypeError("Could not initiate appliance connection"));
+//                         };
+// 
+//                         conn.addEventListener('open', onOpen);
+//                         conn.addEventListener('error', onError);
+// 
+//                         conn.login("") // TODO send some kind of credential (likely a token or something)
+//                     });
+//                 });
+//         }
+// 
+//         return clientPromise
+//     } else
+//         return Promise.resolve(storkFetch.device);
+// }
 
 class HTTPResponseEvent {
     constructor (response) {
@@ -183,7 +269,35 @@ export default function storkFetch (req, init) {
         if ( storkUrl.hasOwnProperty('error') )
             throw new TypeError(storkUrl.error)
         else {
+            var flockUrl = storkFetch.flockUrl;
+            var canonAppUrl = storkAppCanonicalUrl(storkUrl);
+            var appliancePromise, clientPromise;
+
             console.log("Got stork request", storkUrl);
+
+            if ( init.hasOwnProperty('flockUrl') ) {
+                flockUrl = init.flockUrl;
+                delete init.flockUrl;
+            }
+
+            if ( !globalFlocks.hasOwnProperty(flockUrl) ) {
+                globalFlocks[flockUrl] = new GlobalFlock(flockUrl);
+            }
+
+            if ( init.hasOwnProperty('applianceName') ) {
+                appliancePromise = globalFlocks[flockUrl].getAppliance(init.applianceName);
+                delete init.applianceName;
+            } else {
+                appliancePromise = globalFlocks[flockUrl].getDefaultAppliance();
+            }
+
+            if ( init.hasOwnProperty('persona') ) {
+                var persona = init.persona;
+                clientPromise = appliancePromise.then((appliance) => appliance.getPersonaClient(persona));
+                delete init.persona;
+            } else {
+                clientPromise = appliancePromise.then((appliance) => appliance.getDefaultPersonaClient());
+            }
 
             if ( req instanceof Request )
                 req = new Request(req)
@@ -192,8 +306,7 @@ export default function storkFetch (req, init) {
 
             console.log("Request is ", req)
 
-            var canonAppUrl = storkAppCanonicalUrl(storkUrl);
-            return withLoggedInDevice(storkFetch.flockUrl)
+            return clientPromise
                 .then((dev) => { return dev.requestApps([ canonAppUrl ])
                                    .then(() => { return dev; }) })
                 .then((dev) => {
@@ -214,4 +327,4 @@ export default function storkFetch (req, init) {
 }
 
 // TODO allow people to update this URL
-storkFetch.flockUrl = "ws://localhost:6854/";
+storkFetch.flockUrl = "ws://localhost:6853/";

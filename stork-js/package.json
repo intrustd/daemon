@@ -19,7 +19,8 @@
     "jquery": "^3.3.1",
     "mithril": "^1.1.6",
     "popper.js": "^1.14.4",
-    "utf8": "^3.0.0"
+    "utf8": "^3.0.0",
+    "vcard-parser": "^1.0.0"
   },
   "devDependencies": {
     "autoprefixer": "^9.1.2",

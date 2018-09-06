@@ -26,6 +26,9 @@ struct flockstate {
   struct eventloop fs_eventloop;
 };
 
+#define FLOCKSTATE_FROM_SERVICE(svc) STRUCT_FROM_BASE(struct flockstate, fs_service, svc)
+#define FLOCKSTATE_FROM_EVENTLOOP(el) STRUCT_FROM_BASE(struct flockstate, fs_eventloop, el)
+
 int flockstate_init(struct flockstate *st, struct flockconf *conf);
 void flockstate_release(struct flockstate *st);
 

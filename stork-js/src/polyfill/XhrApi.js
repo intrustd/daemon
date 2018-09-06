@@ -146,8 +146,7 @@ export default class StorkXMLHttpRequest extends EventTarget {
     _handleResponseError(err) {
         this._setReadyState(oldXMLHttpRequest.DONE)
         console.error("Error while attempting stork XMLHttpRequest", err)
-        this._sendXHREvent('error',
-                           new ProgressEvent('error', {
+        this.dispatchEvent(new ProgressEvent('error', {
                                lengthComputable: false,
                                loaded: 0,
                                total: 0,

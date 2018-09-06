@@ -1,144 +1,7 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <stdlib.h>
 #include <assert.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 
 #include "local_proto.h"
 #include "commands.h"
-
-static const char *kite_error_code_str(uint16_t code) {
-  switch ( code ) {
-  case KLE_SUCCESS: return "Success";
-  case KLE_NOT_IMPLEMENTED: return "Not implemented";
-  case KLE_BAD_ENTITY: return "Bad entity";
-  case KLE_BAD_OP: return "Bad operation";
-  case KLE_MISSING_ATTRIBUTES: return "Missing attributes";
-  case KLE_INVALID_URL: return "Invalid URL";
-  case KLE_SYSTEM_ERROR: return "System error";
-  default: return "Unknown";
-  }
-}
-
-static const char *kite_entity_str(uint16_t entity) {
-  entity &= 0xFF00;
-
-  switch ( entity ) {
-  case KLM_REQ_ENTITY_PERSONA: return "Persona";
-  case KLM_REQ_ENTITY_APP: return "Application";
-  case KLM_REQ_ENTITY_FLOCK: return "Flock";
-  default: return "Unknown";
-  }
-}
-
-static void kite_print_attr_data(FILE *out, struct kitelocalattr *attr) {
-  uint16_t attr_type = ntohs(attr->kla_name), attr_len = ntohs(attr->kla_length);
-  uint16_t *attr_d16;
-
-  attr_len -= sizeof(*attr);
-
-  switch ( attr_type ) {
-  case KLA_RESPONSE_CODE:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint16_t)) ) {
-      fprintf(out, "  Response code: %d\n", ntohs(*KLA_DATA_UNSAFE(attr, uint16_t *)));
-      return;
-    } else goto unknown;
-  case KLA_ENTITY:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint16_t)) ) {
-      uint16_t etype = ntohs(*KLA_DATA_UNSAFE(attr, uint16_t *));
-      fprintf(out, "  Entity: %s (%x)\n", kite_entity_str(etype), etype);
-      return;
-    } else goto unknown;
-  case KLA_SYSTEM_ERROR:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint32_t)) ) {
-      fprintf(out, "   Error: %s\n", strerror(ntohl(*KLA_DATA_UNSAFE(attr, uint32_t *))));
-      return;
-    } else goto unknown;
-  default: goto unknown;
-  }
-  unknown:
-    fprintf(out, "  Unknown Attribute(%d) with %d bytes of data: \n", attr_type, attr_len);
-}
-
-void display_stork_response(char *buf, int size, const char *success_msg) {
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int found_response = 0, response_code = 0, is_error = 1;
-
-  if ( size < sizeof(*msg) ) {
-    fprintf(stderr, "Response did not contain enough bytes\n");
-    exit(1);
-  }
-
-  msg = (struct kitelocalmsg *) buf;
-  if ( (ntohs(msg->klm_req) & KLM_RESPONSE) == 0 ) {
-    fprintf(stderr, "Response was not a response (%04x)\n", ntohs(msg->klm_req));
-    exit(1);
-  }
-
-  // Go over each attribute
-  for ( attr = KLM_FIRSTATTR(msg, size); attr; attr = KLM_NEXTATTR(msg, attr, size) ) {
-    if ( ntohs(attr->kla_name) == KLA_RESPONSE_CODE ) {
-      uint16_t *code = KLA_DATA_AS(attr, msg, size, uint16_t *);
-      found_response = 1;
-
-      if ( !code ) {
-        fprintf(stderr, "Not enough data in response\n");
-        exit(1);
-      }
-      response_code = ntohs(*code);
-      break;
-    }
-  }
-
-  if ( !found_response ) {
-    fprintf(stderr, "No KLA_RESPONSE_CODE attribute in response\n");
-    exit(1);
-  }
-
-  is_error = response_code != KLE_SUCCESS;
-  if ( !is_error )
-    fprintf(stderr, "%s\n", success_msg);
-  else {
-    fprintf(stderr, "Got error code: %s\n", kite_error_code_str(response_code));
-    for ( attr = KLM_FIRSTATTR(msg, size); attr; attr = KLM_NEXTATTR(msg, attr, size) ) {
-      kite_print_attr_data(stderr, attr);
-    }
-  }
-}
-
-int mk_api_socket() {
-  struct sockaddr_un addr;
-  int err, sk;
-  char *stork_path = getenv("STORK_APPLIANCE_DIR");
-
-  addr.sun_family = AF_UNIX;
-
-  if ( stork_path )
-    err = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/" KITE_LOCAL_API_SOCK, stork_path);
-  else
-    err = strnlen(strncpy(addr.sun_path, KITE_LOCAL_API_SOCK, sizeof(addr.sun_path)),
-                  sizeof(addr.sun_path));
-  assert(err < sizeof(addr.sun_path));
-
-  sk = socket(AF_UNIX, SOCK_SEQPACKET, 0);
-  if ( sk < 0 ) {
-    perror("mk_api_socket: socket");
-    return -1;
-  }
-
-  err = connect(sk, (struct sockaddr *)&addr, sizeof(addr));
-  if ( err < 0 ) {
-    perror("mk_api_socket: connect");
-    close(sk);
-    return -1;
-  }
-
-  return sk;
-}
 
 int join_flock(int argc, char **argv) {
   char buf[KITE_MAX_LOCAL_MSG_SZ];
@@ -147,8 +10,7 @@ int join_flock(int argc, char **argv) {
   char *flock_uri;
   int err, sk = 0, sz = KLM_SIZE_INIT;
 
-  if ( argc < 2 ) {
-    fprintf(stderr, "Expected flock URI on command line\n");
+  if ( argc != 2 ) {
     fprintf(stderr, "Usage: appliancectl join-flock <FLOCK-URI>\n");
     return 1;
   }
@@ -190,4 +52,94 @@ int join_flock(int argc, char **argv) {
   display_stork_response(buf, sz, "Flock request submitted (use list-flocks command to see status)");
 
   close(sk);
+}
+
+int list_flocks(int argc, char **argv) {
+  char buf[KITE_MAX_LOCAL_MSG_SZ];
+  struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
+  struct kitelocalattr *attr;
+  int sz = KLM_SIZE_INIT, sk, err;
+
+  if ( argc > 1 ) {
+    fprintf(stderr, "Usage: appliancectl list-flocks\n");
+    return 1;
+  }
+
+  msg->klm_req = ntohs(KLM_REQ_GET | KLM_REQ_ENTITY_FLOCK);
+  msg->klm_req_flags = htons(KLM_RETURN_MULTIPLE);
+
+  sk = mk_api_socket();
+  if ( sk < 0 ) {
+    fprintf(stderr, "list_flocks: mk_api_socket failed\n");
+    return 3;
+  }
+
+  err = send(sk, buf, sz, 0);
+  if ( err < 0 ) {
+    perror("list_flocks: send");
+    close(sk);
+    return 3;
+  }
+
+  do {
+    sz = recv(sk, buf, sizeof(buf), 0);
+    if ( sz < 0 ) {
+      perror("list_flocks: recv");
+      close(sk);
+      return 4;
+    }
+
+    if ( display_stork_response(buf, sz, NULL) == 0 ) {
+      // Successful response, print result in tabular format
+      uint32_t flock_status = 0xFFFFFFFF;
+      unsigned char *flock_signature_start, *flock_signature_end;
+      char *flock_url_start, *flock_url_end;
+      flock_signature_start = flock_signature_end = NULL;
+      flock_url_start = flock_url_end = NULL;
+
+      assert( KLM_REQ_ENTITY(msg) == KLM_REQ_ENTITY_FLOCK &&
+              KLM_REQ_OP(msg) == KLM_REQ_GET );
+
+      for ( attr = KLM_FIRSTATTR(msg, sz); attr; attr = KLM_NEXTATTR(msg, attr, sz) ) {
+        switch ( ntohs(attr->kla_name) ) {
+        case KLA_FLOCK_URL:
+          flock_url_start = KLA_DATA(attr, msg, sz);
+          flock_url_end = flock_url_start + KLA_PAYLOAD_SIZE(attr);
+          break;
+        case KLA_FLOCK_SIGNATURE:
+          flock_signature_start = KLA_DATA(attr, msg, sz);
+          flock_signature_end = flock_signature_start + KLA_PAYLOAD_SIZE(attr);
+          break;
+        case KLA_FLOCK_STATUS:
+          if ( KLA_PAYLOAD_SIZE(attr) != sizeof(flock_status) ) {
+            fprintf(stderr, "list_flocks: Invalid payload length for KLA_FLOCK_STATUS: %ld\n", KLA_PAYLOAD_SIZE(attr));
+          } else {
+            flock_status = ntohl(*(KLA_DATA_AS(attr, buf, sz, uint32_t *)));
+          }
+        default:
+          break;
+        }
+      }
+
+      if ( !flock_url_start || flock_status == ~0 ) {
+        fprintf(stderr, "list_flocks: missing attributes in response\n");
+        return 6;
+      } else {
+        char flock_signature_hex[flock_signature_start ? (flock_signature_end - flock_signature_start) * 2 + 1 : 1];
+        char *flock_signature_str;
+
+        if ( flock_signature_start )
+          flock_signature_str = hex_digest_str(flock_signature_start, flock_signature_hex,
+                                               flock_signature_end - flock_signature_start);
+        else
+          flock_signature_str = "<none>";
+
+        printf("%.*s %08x %s\n",
+               (int) (flock_url_end - flock_url_start), flock_url_start,
+               flock_status, flock_signature_str);
+      }
+    } else
+      return 5;
+
+  } while ( !KLM_IS_END(msg) );
 }
