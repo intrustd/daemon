@@ -18,6 +18,8 @@ void timerfn(struct eventloop *el, int op, void *arg) {
     assert(did_cancel);
   else
     assert(did_cancel == 0);
+
+  (void)did_cancel;
 }
 
 void timerclfn(struct eventloop *el, int op, void *arg) {

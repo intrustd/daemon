@@ -1211,6 +1211,7 @@ static void send_handshake_response(struct wsconnection *wsc, struct wshs *hs) {
   err = snprintf(accept_header, sizeof(accept_header), "Sec-WebSocket-Accept: %.*s",
                  hs->ws_accept_key_len, hs->ws_accept_key);
   assert(err < sizeof(accept_header));
+  (void)err; // Prevent unused variable in release mode
 
   wsconnection_respond_line(wsc, el, "HTTP/1.1 101 Switching Protocols");
   wsconnection_respond_line(wsc, el, "Upgrade: websocket");

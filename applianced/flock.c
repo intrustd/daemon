@@ -412,6 +412,7 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
     STUN_FINISH_WITH_FINGERPRINT(attr, &rsp, sizeof(rsp), err);
 
     assert(err == 0);
+    (void)err; // Prevent unused error on release
   } else {
     STUN_INIT_MSG(&rsp, STUN_RESPONSE | STUN_ERROR | STUN_KITE_GET_PERSONAS);
     attr = STUN_FIRSTATTR(&rsp);
@@ -428,6 +429,7 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
 
     STUN_FINISH_WITH_FINGERPRINT(attr, &rsp, sizeof(rsp), err);
     assert( err == 0 );
+    (void)err; // Prevent unused error on release
   }
   flock_respond_quick(f, app, &rsp, STUN_MSG_LENGTH(&rsp));
 

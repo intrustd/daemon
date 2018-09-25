@@ -445,6 +445,7 @@ static int personacontainerfn(struct container *c, int op, void *argp, ssize_t a
                    hex_digest_str((const unsigned char *)p->p_persona_id,
                                   persona_id_str, PERSONA_ID_LENGTH));
     assert(err == hostname_len);
+    (void)err;
 
     return 0;
 
