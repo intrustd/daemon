@@ -1,0 +1,59 @@
+cmake_minimum_required(VERSION 2.8.11)
+project(kite)
+
+set(CMAKE_CFLAGS_RELEASE "-O3")
+
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+find_package(PkgConfig)
+pkg_check_modules(OPENSSL REQUIRED openssl)
+pkg_check_modules(ZLIB REQUIRED zlib)
+PKG_SEARCH_MODULE(URIPARSER liburiparser REQUIRED)
+# pkg_check_modules(USRSCTP usrsctp REQUIRED)
+pkg_check_modules(SCTP libsctp REQUIRED)
+pkg_check_modules(CURL libcurl REQUIRED)
+
+find_package(Uthash)
+
+SET(KITE_CFLAGS "${OPENSSL_CFLAGS} ${ZLIB_CFLAGS} ${UTHASH_CFLAGS} ${CMAKE_THREAD_LIBS_INIT} ${URIPARSER_CFLAGS} ${CURL_CFLAGS} -DJSMN_STRICT=1")
+
+include_directories(common)
+add_library(kite-common STATIC common/event.c common/static_bio.c
+  common/directory.c common/stun.c common/util.c common/buffer.c
+  common/sdp.c common/dtls.c common/download.c common/jsmn.c
+  common/process.c )
+target_compile_options(kite-common PUBLIC -Wall -Werror ${KITE_CFLAGS})
+
+add_executable(flockd flockd/main.c flockd/configuration.c flockd/connection.c
+  flockd/state.c flockd/service.c flockd/websocket.c flockd/client.c flockd/appliance.c
+  flockd/personas.c)
+target_link_libraries(flockd PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES})
+target_compile_options(flockd PUBLIC -Wall ${KITE_CFLAGS})
+
+add_executable(applianced applianced/main.c applianced/configuration.c applianced/state.c
+  applianced/bridge.c applianced/local.c applianced/flock.c applianced/persona.c
+  applianced/pconn.c applianced/container.c applianced/update.c applianced/application.c)
+target_link_libraries(applianced PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
+target_compile_options(applianced PUBLIC -Wall ${KITE_CFLAGS})
+
+add_executable(webrtc-proxy webrtc-proxy/main.c)
+target_compile_options(webrtc-proxy PUBLIC ${SCTP_CFLAGS})
+target_link_libraries(webrtc-proxy ${SCTP_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} kite-common ${OPENSSL_LIBRARIES})
+
+add_executable(persona-init init/persona.c init/init_common.c)
+add_executable(app-instance-init init/app_instance.c init/init_common.c)
+
+add_executable(appliancectl appliancectl/main.c appliancectl/common.c
+  appliancectl/flock.c appliancectl/persona.c appliancectl/app.c)
+target_link_libraries(appliancectl kite-common ${OPENSSL_LIBRARIES})
+
+add_executable(timer-test common/tests/timer-test.c)
+target_link_libraries(timer-test kite-common ${CMAKE_THREAD_LIBS_INIT})
+
+add_executable(shared-test common/tests/shared-test.c)
+
