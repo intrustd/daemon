@@ -27,7 +27,7 @@ int join_flock(int argc, char **argv) {
   KLM_SIZE_ADD_ATTR(sz, attr);
 
   assert(KLA_DATA(attr, buf, sizeof(buf)));
-  memcpy(KLA_DATA(attr, buf, sizeof(buf)), flock_uri, strlen(flock_uri));
+  memcpy(KLA_DATA_UNSAFE(attr, void*), flock_uri, strlen(flock_uri));
 
   sk = mk_api_socket();
   if ( sk < 0 ) {
@@ -52,6 +52,8 @@ int join_flock(int argc, char **argv) {
   display_stork_response(buf, sz, "Flock request submitted (use list-flocks command to see status)");
 
   close(sk);
+
+  return EXIT_SUCCESS;
 }
 
 int list_flocks(int argc, char **argv) {
@@ -107,7 +109,7 @@ int list_flocks(int argc, char **argv) {
           flock_url_end = flock_url_start + KLA_PAYLOAD_SIZE(attr);
           break;
         case KLA_FLOCK_SIGNATURE:
-          flock_signature_start = KLA_DATA(attr, msg, sz);
+          flock_signature_start = (unsigned char *)KLA_DATA(attr, msg, sz);
           flock_signature_end = flock_signature_start + KLA_PAYLOAD_SIZE(attr);
           break;
         case KLA_FLOCK_STATUS:
@@ -142,4 +144,6 @@ int list_flocks(int argc, char **argv) {
       return 5;
 
   } while ( !KLM_IS_END(msg) );
+
+  return EXIT_SUCCESS;
 }

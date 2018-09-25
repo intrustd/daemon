@@ -17,12 +17,20 @@
 #include "state.h"
 #include "local.h"
 #include "buffer.h"
+#include "pconn.h"
+#include "update.h"
 
 #define OP_APPSTATE_ACCEPT_LOCAL EVT_CTL_CUSTOM
 #define OP_APPSTATE_SAVE_FLOCK   (EVT_CTL_CUSTOM + 1)
+#define OP_APPSTATE_APPLICATION_UPDATED (EVT_CTL_CUSTOM + 2)
+
+#define FLOCKS_PATH_TEMPLATE "%s/flocks"
+#define APPS_PATH_TEMPLATE "%s/apps"
+#define TMP_APPS_PATH_TEMPLATE "%s/.apps.tmp"
 
 int g_openssl_appstate_ix;
 int g_openssl_flock_data_ix;
+int g_openssl_pconn_data_ix;
 
 static int appstate_certificate_digest(X509 *cert, unsigned char *digest) {
   EVP_PKEY *pubkey = NULL;
@@ -56,6 +64,7 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
   int err, depth;
 
   struct flock *f;
+  struct pconn *pc;
 
   cert = X509_STORE_CTX_get_current_cert(ctx);
   err = X509_STORE_CTX_get_error(ctx);
@@ -63,48 +72,197 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
 
   ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
 
-  f = SSL_get_flock(ssl);
-  if ( !f ) {
-    fprintf(stderr, "appstate_verify_callback: no flock given\n");
-    return 0;
-  }
-
   fprintf(stderr, "Certificate depth %d\n", depth);
 
   if ( depth > FLOCK_MAX_CERT_DEPTH )
     return 0;
 
-  if ( f->f_flags & FLOCK_FLAG_FORCE_ACCEPT )
-    return 1;
-
-  if ( f->f_flags & FLOCK_FLAG_VALIDATE_CERT ) {
-    unsigned char digest_out[sizeof(f->f_expected_digest)];
-    // Check the certificate signature
-    err = appstate_certificate_digest(cert, digest_out);
-    if ( err < 0 ) {
-      fprintf(stderr, "appstate_verify_callback: could not calculate certificate digest\n");
-      return 0;
-    }
-
-    if ( memcmp(digest_out, f->f_expected_digest, sizeof(digest_out)) == 0 ) {
-      fprintf(stderr, "appstate_verify_callback: success\n");
+  f = SSL_get_flock(ssl);
+  if ( f ) {
+    if ( f->f_flags & FLOCK_FLAG_FORCE_ACCEPT )
       return 1;
-    } else {
-      char digest_str[sizeof(digest_out)*2];
-      fprintf(stderr, "appstate_verify_callback: verification failed\n");
-      fprintf(stderr, "     Got %s\n", hex_digest_str(digest_out, digest_str, sizeof(digest_out)));
-      fprintf(stderr, "Expected %s\n", hex_digest_str(f->f_expected_digest, digest_str, sizeof(digest_out)));
-      return 0;
+
+    if ( f->f_flags & FLOCK_FLAG_VALIDATE_CERT ) {
+      unsigned char digest_out[sizeof(f->f_expected_digest)];
+      // Check the certificate signature
+      err = appstate_certificate_digest(cert, digest_out);
+      if ( err < 0 ) {
+        fprintf(stderr, "appstate_verify_callback: could not calculate certificate digest\n");
+        return 0;
+      }
+
+      if ( memcmp(digest_out, f->f_expected_digest, sizeof(digest_out)) == 0 ) {
+        fprintf(stderr, "appstate_verify_callback: success\n");
+        return 1;
+      } else {
+        char digest_str[sizeof(digest_out)*2];
+        fprintf(stderr, "appstate_verify_callback: verification failed\n");
+        fprintf(stderr, "     Got %s\n", hex_digest_str(digest_out, digest_str, sizeof(digest_out)));
+        fprintf(stderr, "Expected %s\n", hex_digest_str(f->f_expected_digest, digest_str, sizeof(digest_out)));
+        return 0;
+      }
     }
+
+    if ( f->f_flags & FLOCK_FLAG_PENDING ) {
+      // New certificate
+      return preverify_ok;
+    }
+
+    return 0;
   }
 
-  if ( f->f_flags & FLOCK_FLAG_PENDING ) {
-    // New certificate
-    return preverify_ok;
+  pc = SSL_get_pconn(ssl);
+  if ( pc ) {
+    fprintf(stderr, "Verifying certificate for pconn %p\n", pc);
+
+    if ( pc->pc_answer_flags & PCONN_ANSWER_HAS_FINGERPRINT ) {
+      if ( pc->pc_remote_cert_fingerprint_digest &&
+           EVP_MD_size(pc->pc_remote_cert_fingerprint_digest) <= sizeof(pc->pc_remote_cert_fingerprint) )  {
+        int digest_size = EVP_MD_size(pc->pc_remote_cert_fingerprint_digest);
+        unsigned char exp_digest[digest_size];
+        unsigned int exp_digest_len = digest_size;
+
+        if ( !X509_digest(cert, pc->pc_remote_cert_fingerprint_digest, exp_digest, &exp_digest_len) ) {
+          fprintf(stderr, "appstate_verify_callback(pconn): could not calculate digest\n");
+          return 0;
+        }
+
+        if ( exp_digest_len != digest_size ) {
+          fprintf(stderr, "appstate_verify_callback(pconn): mismatch digest len\n");
+          return 0;
+        }
+
+        if ( memcmp(exp_digest, pc->pc_remote_cert_fingerprint, digest_size) == 0 ) {
+          fprintf(stderr, "appstate_verify_callback (pconn): verified certificate based on digest\n");
+          return 1;
+        } else {
+          fprintf(stderr, "appstate_verify_callback (pconn): fingerprint verification failed for pconn\n");
+          return 0;
+        }
+      } else {
+        fprintf(stderr, "appstate_verify_callback(pconn): invalid fingerprint type\n");
+        return 0;
+      }
+    } else {
+      fprintf(stderr, "appstate_verify_callback(pconn): pconn has no fingerprint\n");
+      return 0;
+    }
   }
 
   fprintf(stderr, "appstate_verify_callback: unsure how to handle verification\n");
   return 0;
+}
+
+static int appstate_add_app(struct appstate *st, struct app *a) {
+  char apps_path[PATH_MAX], digest_str[sizeof(a->app_current_manifest->am_digest) * 2 + 1];
+  FILE *apps;
+
+  int err;
+
+  err = snprintf(apps_path, sizeof(apps_path), APPS_PATH_TEMPLATE, st->as_conf_dir);
+  if ( err >= sizeof(apps_path) ) {
+    fprintf(stderr, "appstate_add_app: path buffer overflow\n");
+    return -1;
+  }
+
+  apps = fopen(apps_path, "at+");
+  if ( !apps ) {
+    fprintf(stderr, "appstate_add_app: could not open %s\n", apps_path);
+    return -1;
+  } else {
+    fprintf(apps, "%s %s\n", a->app_canonical_url,
+            hex_digest_str(a->app_current_manifest->am_digest,
+                           digest_str, sizeof(a->app_current_manifest->am_digest)));
+    fclose(apps);
+    return 0;
+  }
+}
+
+static int appstate_update_app(struct appstate *st, struct app *a, struct appmanifest *mf) {
+  char apps_path[PATH_MAX], tmp_path[PATH_MAX];
+  char apps_line[1024];
+  FILE *apps, *tmp;
+
+  int err, did_update = 0;
+
+  char dbg_digest_str1[SHA256_DIGEST_LENGTH * 2 + 1];
+  char dbg_digest_str2[SHA256_DIGEST_LENGTH * 2 + 1];
+
+  err = snprintf(apps_path, sizeof(apps_path), APPS_PATH_TEMPLATE, st->as_conf_dir);
+  if ( err >= sizeof(apps_path) ) {
+    fprintf(stderr, "appstate_update_app: path buffer overflow\n");
+    return -1;
+  }
+
+  err = snprintf(tmp_path, sizeof(tmp_path), TMP_APPS_PATH_TEMPLATE, st->as_conf_dir);
+  if ( err >= sizeof(tmp_path) ) {
+    fprintf(stderr, "appstate_update_app: path buffer overflow\n");
+    return -1;
+  }
+
+  apps = fopen(apps_path, "rt");
+  if ( !apps ) {
+    fprintf(stderr, "appstate_update_app: could not open %s\n", apps_path);
+    return -1;
+  }
+
+  tmp = fopen(tmp_path, "wt");
+  if ( !tmp ) {
+    fprintf(stderr, "appstate_update_app: could not open %s\n", tmp_path);
+    fclose(apps);
+    return -1;
+  }
+
+  fprintf(stderr, "upgrade %s from %s to %s\n",
+          a->app_canonical_url,
+          hex_digest_str(a->app_current_manifest->am_digest, dbg_digest_str1, sizeof(a->app_current_manifest->am_digest)),
+          hex_digest_str(mf->am_digest, dbg_digest_str2, sizeof(mf->am_digest)));
+
+  while ( fgets(apps_line, sizeof(apps_line), apps) ) {
+    int line_length = strlen(apps_line);
+    if ( line_length == 0 ) continue;
+
+    if ( apps_line[line_length - 1] == '\n' || feof(apps) ) {
+      char apps_url[1024], mf_digest_str[SHA256_DIGEST_LENGTH * 2 + 1];
+      err = sscanf(apps_line, "%s %64s", apps_url, mf_digest_str);
+      if ( err != 2 ) goto error;
+
+      if ( strcmp(apps_url, a->app_canonical_url) == 0 ) {
+        if ( did_update ) {
+          fprintf(stderr, "appstate_update_app: duplicate app entry\n");
+          goto error;
+        } else {
+          fprintf(stderr, "Doing update\n");
+          hex_digest_str(mf->am_digest, mf_digest_str, sizeof(mf->am_digest));
+          did_update = 1;
+        }
+      }
+
+      fprintf(tmp, "%s %s\n", apps_url, mf_digest_str);
+    } else {
+      goto error;
+    }
+
+    continue;
+
+  error:
+    fclose(apps);
+    fclose(tmp);
+    unlink(tmp_path);
+    fprintf(stderr, "appstate_update_app: could not add app to appliance: line overflow\n");
+    return -1;
+  }
+
+  fclose(apps);
+  fclose(tmp);
+
+  if ( did_update ) {
+    rename(tmp_path, apps_path);
+    return 0;
+  } else {
+    fprintf(stderr, "appstate_update_app: did not update\n");
+    return -1;
+  }
 }
 
 static void appstate_add_flock(struct appstate *st, char *flock_line) {
@@ -113,7 +271,7 @@ static void appstate_add_flock(struct appstate *st, char *flock_line) {
 
   int err;
 
-  err = snprintf(flocks_path, sizeof(flocks_path), "%s/flocks", st->as_conf_dir);
+  err = snprintf(flocks_path, sizeof(flocks_path), FLOCKS_PATH_TEMPLATE, st->as_conf_dir);
   if ( err >= sizeof(flocks_path) ) {
     fprintf(stderr, "appstate_add_flock: path buffer overflow\n");
     return;
@@ -217,12 +375,12 @@ static int appstate_open_keys(struct appstate *as, struct appconf *ac) {
   name = X509_get_subject_name(as->as_cert);
   if ( !name ) goto openssl_error;
 
-  err = X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *)"Kite Appliances", -1, -1, 0);
+  err = X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *)"WebRTC", -1, -1, 0);
   if ( !err ) goto openssl_error;
 
   if ( !X509_set_issuer_name(as->as_cert, name) ) goto openssl_error;
 
-  if ( !X509_sign(as->as_cert, as->as_privkey, EVP_sha1()) ) goto openssl_error;
+  if ( !X509_sign(as->as_cert, as->as_privkey, EVP_sha256()) ) goto openssl_error;
 
   return 0;
 
@@ -242,7 +400,7 @@ static int appstate_generate_name(struct appstate *as) {
   for ( i = 0; i < sizeof(name_components) / sizeof(name_components[0]); ++i ) {
     int word_sz;
 
-    assert(RAND_bytes((unsigned char *)&ix, sizeof(ix)));
+    SAFE_ASSERT(RAND_bytes((unsigned char *)&ix, sizeof(ix)));
 
   try_again:
     ix %= sizeof(words) / sizeof(words[0]);
@@ -377,10 +535,54 @@ static int appstate_open_local(struct appstate *as, struct appconf *ac) {
   return -1;
 }
 
+static int generate_cookie_cb(SSL *ssl, unsigned char *cookie, unsigned int *cookie_len) {
+  SSL_CTX *ctx = SSL_get_SSL_CTX(ssl);
+  struct appstate *as;
+
+  if ( !ctx ) return 0;
+
+  as = SSL_CTX_get_appstate(ctx);
+  if ( !as ) return 0;
+
+  *cookie_len = DTLS1_COOKIE_LENGTH;
+  if ( pthread_mutex_lock(&as->as_dtls_cookies_mutex) == 0 ) {
+    int ret = 1;
+    if ( dtlscookies_generate_cookie(&as->as_dtls_cookies, cookie, cookie_len) < 0 ) {
+      fprintf(stderr, "dtlscookies_generate failed\n");
+      ret = 0;
+    }
+    pthread_mutex_unlock(&as->as_dtls_cookies_mutex);
+
+    return ret;
+  } else return 0;
+}
+
+static int verify_cookie_cb(SSL *ssl, const unsigned char *cookie, unsigned int cookie_len) {
+  SSL_CTX *ctx = SSL_get_SSL_CTX(ssl);
+  struct appstate *as;
+
+  if ( !ctx ) return 0;
+
+  as = SSL_CTX_get_appstate(ctx);
+  if ( !as ) return 0;
+
+  if ( pthread_mutex_lock(&as->as_dtls_cookies_mutex) == 0 ) {
+    int ret;
+    ret = dtlscookies_verify_cookie(&as->as_dtls_cookies, cookie, cookie_len);
+    if ( ret < 0 ) {
+      fprintf(stderr, "dtlscookies_verify_cookie fails\n");
+      ret = 0;
+    }
+    pthread_mutex_unlock(&as->as_dtls_cookies_mutex);
+    return ret;
+  } else
+    return 0;
+}
+
 static int appstate_create_dtls_ctx(struct appstate *as) {
   int err;
 
-  as->as_dtls_ctx = SSL_CTX_new(DTLS_client_method());
+  as->as_dtls_ctx = SSL_CTX_new(DTLS_method());
   if ( !as->as_dtls_ctx ) {
     fprintf(stderr, "appstate_create_dtls_ctx: could not create context\n");
     ERR_print_errors_fp(stderr);
@@ -426,8 +628,10 @@ static int appstate_create_dtls_ctx(struct appstate *as) {
     return -1;
   }
 
-  SSL_CTX_set_verify(as->as_dtls_ctx, SSL_VERIFY_PEER,
+  SSL_CTX_set_verify(as->as_dtls_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                      appstate_verify_callback);
+  SSL_CTX_set_cookie_generate_cb(as->as_dtls_ctx, generate_cookie_cb);
+  SSL_CTX_set_cookie_verify_cb(as->as_dtls_ctx, verify_cookie_cb);
 
   return 0;
 }
@@ -463,7 +667,7 @@ static int appstate_open_persona(struct appstate *as, struct appconf *ac,
 
   memcpy(p->p_persona_id, persona_id, sizeof(p->p_persona_id));
 
-  err = persona_init_fp(p, persona_fp);
+  err = persona_init_fp(p, as, persona_fp);
   if ( err < 0 ) {
     free(p);
     fclose(persona_fp);
@@ -595,7 +799,7 @@ static int appstate_open_flocks(struct appstate *as, struct appconf *ac) {
   UriUriA flock_uri_uri;
   uri_parser.uri = &flock_uri_uri;
 
-  err = snprintf(flocks_path, sizeof(flocks_path), "%s/flocks", as->as_conf_dir);
+  err = snprintf(flocks_path, sizeof(flocks_path), FLOCKS_PATH_TEMPLATE, as->as_conf_dir);
   if ( err >= sizeof(flocks_path) ) {
     fprintf(stderr, "appstate_open_flocks: buffer overflow while writing path\n");
     return -1;
@@ -604,7 +808,10 @@ static int appstate_open_flocks(struct appstate *as, struct appconf *ac) {
   flocks = fopen(flocks_path, "rt");
   if ( !flocks ) {
     fprintf(stderr, "appstate_open_flocks: Could not read flocks file\n");
-    return 0;
+    if ( errno == ENOENT  )
+      return 0;
+    else
+      return -1;
   }
 
   // Read each line
@@ -674,9 +881,93 @@ static int appstate_open_flocks(struct appstate *as, struct appconf *ac) {
   return 0;
 }
 
+static int appstate_open_apps(struct appstate *as, struct appconf *ac) {
+  FILE *apps;
+  int err;
+  char apps_path[PATH_MAX], apps_line[1024];
+
+  err = snprintf(apps_path, sizeof(apps_path), APPS_PATH_TEMPLATE, as->as_conf_dir);
+  if ( err >= sizeof(apps_path) ) {
+    fprintf(stderr, "appstate_open_apps: buffer overflow while writing path\n");
+    return -1;
+  }
+
+  apps = fopen(apps_path, "rt");
+  if ( !apps ) {
+    perror("appstate_open_apps: could not read apps file");
+    if ( errno == ENOENT )
+      return 0;
+    else
+      return -1;
+  }
+
+  while ( fgets(apps_line, sizeof(apps_line), apps) ) {
+    int line_length = strlen(apps_line);
+    if ( line_length == 0 ) continue;
+
+    if ( apps_line[line_length - 1] == '\n' || feof(apps) ) {
+      struct appmanifest *mf;
+      struct app *a;
+      char apps_url[1024], mf_digest_str[SHA256_DIGEST_LENGTH * 2 + 1];
+      unsigned char mf_digest[SHA256_DIGEST_LENGTH];
+      err = sscanf(apps_line, "%s %64s", apps_url, mf_digest_str);
+      if ( err != 2 ) {
+        fclose(apps);
+        fprintf(stderr, "appstate_open_apps: invalid line\n");
+        return -1;
+      }
+
+      if ( !validate_canonical_url(apps_url, NULL, 0, NULL, 0) ) {
+        fclose(apps);
+        fprintf(stderr, "appstate_open_apps: invalid app url: %s\n", apps_url);
+        return -1;
+      }
+
+      if ( parse_hex_str(mf_digest_str, mf_digest, sizeof(mf_digest)) < 0 ) {
+        fclose(apps);
+        fprintf(stderr, "appstate_open_apps: invalid manifest digest %s\n", mf_digest_str);
+        return -1;
+      }
+
+      err = snprintf(apps_path, sizeof(apps_path), "%s/manifests/%s", as->as_conf_dir, mf_digest_str);
+      if ( err >= sizeof(apps_path) ) {
+        fclose(apps);
+        fprintf(stderr, "appstate_open_apps: path overflow while reading manifest\n");
+        return -1;
+      }
+
+      mf = appmanifest_parse_from_file(apps_path, mf_digest);
+      if ( !mf ) {
+        fclose(apps);
+        fprintf(stderr, "appstate_open_apps: could not read app manifest for %s\n", mf_digest_str);
+        return -1;
+      }
+
+      a = application_from_manifest(mf);
+      if ( !a ) {
+        fclose(apps);
+        fprintf(stderr, "appstate_open_apps: could not create app from manifest %s\n", mf_digest_str);
+        return -1;
+      }
+
+      HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_canonical_url, strlen(a->app_canonical_url), a);
+    } else {
+      fclose(apps);
+      fprintf(stderr, "appstate_open_apps: could not add app to appliance: line overflow\n");
+      return -1;
+    }
+  }
+
+  fclose(apps);
+  return 0;
+}
+
 void appstate_clear(struct appstate *as) {
   as->as_appliance_name[0] = '\0';
   as->as_conf_dir = NULL;
+  as->as_webrtc_proxy_path = NULL;
+  as->as_persona_init_path = NULL;
+  as->as_app_instance_init_path = NULL;
   as->as_mutexes_initialized = 0;
   as->as_cert = NULL;
   as->as_privkey = NULL;
@@ -685,10 +976,12 @@ void appstate_clear(struct appstate *as) {
   as->as_personas = NULL;
   as->as_cur_personaset = NULL;
   as->as_apps = NULL;
+  as->as_updates = NULL;
   as->as_local_fd = 0;
   fdsub_clear(&as->as_local_sub);
   bridge_clear(&as->as_bridge);
   eventloop_clear(&as->as_eventloop);
+  dtlscookies_clear(&as->as_dtls_cookies);
 }
 
 int appstate_setup(struct appstate *as, struct appconf *ac) {
@@ -697,6 +990,9 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   appstate_clear(as);
 
   as->as_conf_dir = ac->ac_conf_dir;
+  as->as_webrtc_proxy_path = ac->ac_webrtc_proxy_path;
+  as->as_persona_init_path = ac->ac_persona_init_path;
+  as->as_app_instance_init_path = ac->ac_app_instance_init_path;
 
   err = mkdir_recursive(ac->ac_conf_dir);
   if ( err < 0 ) {
@@ -747,19 +1043,35 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   }
   as->as_mutexes_initialized |= AS_APPS_MUTEX_INITIALIZED;
 
-  if ( appstate_open_flocks(as, ac) < 0 )
+  err = pthread_mutex_init(&as->as_dtls_cookies_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "appstate_setup: could not initialize dtls cookies mutex: %s\n", strerror(err));
     goto error;
+  }
+  as->as_mutexes_initialized |= AS_DTLS_COOKIES_MUTEX_INITIALIZED;
 
-  if ( appstate_open_personas(as, ac) < 0 )
+  if ( dtlscookies_init(&as->as_dtls_cookies,
+                        30, 60 * 5, 32) < 0 ) {
+    fprintf(stderr, "appstate_setup: could not initialize dtls cookies\n");
     goto error;
+  }
 
   if ( !(AC_VALGRIND(ac)) ) {
-    err = bridge_init(&as->as_bridge, ac->ac_iproute_bin);
+    err = bridge_init(&as->as_bridge, as, ac->ac_iproute_bin);
     if ( err < 0 ) {
       fprintf(stderr, "appstate_setup: bridge_init failed\n");
       goto error;
     }
   }
+
+  if ( appstate_open_flocks(as, ac) < 0 )
+    goto error;
+
+  if ( appstate_open_apps(as, ac) < 0 )
+    goto error;
+
+  if ( appstate_open_personas(as, ac) < 0 )
+    goto error;
 
   return 0;
 
@@ -806,6 +1118,10 @@ void appstate_release(struct appstate *as) {
   }
   as->as_mutexes_initialized &= ~AS_APPS_MUTEX_INITIALIZED;
 
+  if ( as->as_mutexes_initialized & AS_DTLS_COOKIES_MUTEX_INITIALIZED )
+    pthread_mutex_destroy(&as->as_dtls_cookies_mutex);
+  as->as_mutexes_initialized &= ~AS_DTLS_COOKIES_MUTEX_INITIALIZED;
+
   // TODO release flocks, personas, and applications
 
   if ( as->as_cur_personaset ) {
@@ -816,6 +1132,7 @@ void appstate_release(struct appstate *as) {
 
 static void appstatefn(struct eventloop *el, int op, void *arg) {
   struct appstate *as = APPSTATE_FROM_EVENTLOOP(el);
+  struct appupdater *au;
   //  struct fdevent *fde;
   struct qdevent *qde;
   struct flock *flk;
@@ -841,7 +1158,7 @@ static void appstatefn(struct eventloop *el, int op, void *arg) {
       fprintf(stderr, "Could not allocate local connection\n");
     }
 
-    eventloop_subscribe_fd(el, as->as_local_fd, &as->as_local_sub);
+    eventloop_subscribe_fd(el, as->as_local_fd, FD_SUB_ACCEPT, &as->as_local_sub);
 
     return;
 
@@ -849,7 +1166,7 @@ static void appstatefn(struct eventloop *el, int op, void *arg) {
     qde = (struct qdevent *)arg;
     flk = STRUCT_FROM_BASE(struct flock, f_on_should_save, qde->qde_sub);
 
-    assert( pthread_mutex_lock(&flk->f_mutex) == 0 );
+    SAFE_MUTEX_LOCK(&flk->f_mutex);
     fprintf(stderr, "Request to save flock %s\n", flk->f_uri_str);
 
     if ( appstate_format_flock_line(flk, flock_line, sizeof(flock_line), pk_digest) == 0 ) {
@@ -857,7 +1174,7 @@ static void appstatefn(struct eventloop *el, int op, void *arg) {
       flk->f_flags |= FLOCK_FLAG_VALIDATE_CERT;
       pthread_mutex_unlock(&flk->f_mutex);
 
-      assert(pthread_rwlock_wrlock(&as->as_flocks_mutex) == 0);
+      SAFE_RWLOCK_WRLOCK(&as->as_flocks_mutex);
       appstate_add_flock(as, flock_line);
       pthread_rwlock_unlock(&as->as_flocks_mutex);
     } else {
@@ -865,6 +1182,20 @@ static void appstatefn(struct eventloop *el, int op, void *arg) {
       fprintf(stderr, "appstatefn: overflow while trying to save flock\n");
     }
 
+    return;
+
+  case OP_APPSTATE_APPLICATION_UPDATED:
+    au = APPUPDATER_FROM_COMPLETION_EVENT(arg);
+    do {
+      struct appupdater *existing;
+      SAFE_RWLOCK_WRLOCK(&as->as_applications_mutex);
+      HASH_FIND(au_hh, as->as_updates, au->au_url, strlen(au->au_url), existing);
+      if ( existing == au ) {
+        HASH_DELETE(au_hh, as->as_updates, existing);
+        APPUPDATER_UNREF(au);
+      } else abort();
+      pthread_rwlock_unlock(&as->as_applications_mutex);
+    } while (0);
     return;
 
   default:
@@ -878,8 +1209,7 @@ void appstate_start_services(struct appstate *as, struct appconf *ac) {
     bridge_start(&as->as_bridge, &as->as_eventloop);
 
   fdsub_init(&as->as_local_sub, &as->as_eventloop, as->as_local_fd, OP_APPSTATE_ACCEPT_LOCAL, appstatefn);
-  FDSUB_SUBSCRIBE(&as->as_local_sub, FD_SUB_ACCEPT);
-  eventloop_subscribe_fd(&as->as_eventloop, as->as_local_fd, &as->as_local_sub);
+  eventloop_subscribe_fd(&as->as_eventloop, as->as_local_fd, FD_SUB_ACCEPT, &as->as_local_sub);
 }
 
 int appstate_create_flock(struct appstate *as, struct flock *f, int is_old) {
@@ -1067,7 +1397,7 @@ int appstate_create_persona(struct appstate *as,
     HASH_FIND(p_hh, as->as_personas, p->p_persona_id, PERSONA_ID_LENGTH, already_existing);
   } while ( already_existing );
 
-  if ( persona_init(p, display_name, display_name_sz, key) < 0 ) {
+  if ( persona_init(p, as, display_name, display_name_sz, key) < 0 ) {
     PERSONA_UNREF(p);
     pthread_rwlock_unlock(&as->as_personas_mutex);
     return -1;
@@ -1101,7 +1431,7 @@ int appstate_lookup_persona(struct appstate *as, const char *pid, struct persona
   struct persona *existing;
   *p = NULL;
 
-  assert( pthread_rwlock_rdlock(&as->as_personas_mutex) == 0 );
+  SAFE_RWLOCK_RDLOCK(&as->as_personas_mutex);
   HASH_FIND(p_hh, as->as_personas, pid, PERSONA_ID_LENGTH, existing);
   pthread_rwlock_unlock(&as->as_personas_mutex);
 
@@ -1120,7 +1450,7 @@ int appstate_get_personaset(struct appstate *as, struct personaset **ps) {
   struct persona *cur_persona, *tmp_persona;
   int ret = 0;
 
-  assert( pthread_rwlock_wrlock(&as->as_personas_mutex) == 0 );
+  SAFE_RWLOCK_WRLOCK(&as->as_personas_mutex);
 
   if ( as->as_cur_personaset ) {
     PERSONASET_REF(as->as_cur_personaset);
@@ -1162,9 +1492,125 @@ int appstate_get_personaset(struct appstate *as, struct personaset **ps) {
   return ret;
 }
 
+struct appupdater *appstate_queue_update_ex(struct appstate *as, const char *uri, size_t uri_len,
+                                            int reason, struct app *app) {
+  if ( pthread_rwlock_wrlock(&as->as_applications_mutex) == 0 ) {
+    struct appupdater *ret;
+    HASH_FIND(au_hh, as->as_updates, uri, uri_len, ret);
+    if ( !ret ) {
+      ret = appupdater_new(as, uri, uri_len, reason, app);
+      if ( ret ) {
+        APPUPDATER_REF(ret);
+        HASH_ADD_KEYPTR(au_hh, as->as_updates, ret->au_url, strlen(ret->au_url), ret);
+        qdevtsub_init(&ret->au_completion_evt, OP_APPSTATE_APPLICATION_UPDATED, appstatefn);
+        appupdater_request_event(ret, &ret->au_completion_evt);
+      }
+    }
+    pthread_rwlock_unlock(&as->as_applications_mutex);
+    return ret;
+  } else
+    return NULL;
+}
+
+struct app *appstate_get_app_by_url(struct appstate *as, const char *canonical) {
+  return appstate_get_app_by_url_ex(as, canonical, strlen(canonical));
+}
+
+struct app *appstate_get_app_by_url_ex(struct appstate *as, const char *canonical, size_t cansz) {
+  if ( pthread_rwlock_rdlock(&as->as_applications_mutex) == 0 ) {
+    struct app *a;
+    HASH_FIND(app_hh, as->as_apps, canonical, cansz, a);
+    if ( a )
+      APPLICATION_REF(a);
+    pthread_rwlock_unlock(&as->as_applications_mutex);
+    return a;
+  } else
+    return NULL;
+}
+
+int appstate_install_app_from_manifest(struct appstate *as, struct appmanifest *mf) {
+  struct app *existing;
+
+  if ( pthread_rwlock_wrlock(&as->as_applications_mutex) == 0 ) {
+    int ret = 0;
+    HASH_FIND(app_hh, as->as_apps, mf->am_canonical, strlen(mf->am_canonical), existing);
+    if ( existing ) {
+      fprintf(stderr, "appstate_install_app_from_manifest: '%s' already exists\n", mf->am_canonical);
+      ret = -1;
+    } else {
+      struct app *a = application_from_manifest(mf);
+      if ( !a ) {
+        fprintf(stderr, "appstate_install_app_from_manifest: could not allocate app\n");
+        ret = -1;
+      } else {
+        ret = appstate_add_app(as, a);
+        if ( ret == 0 ) {
+          HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_canonical_url, strlen(a->app_canonical_url), a);
+        }
+      }
+    }
+    pthread_rwlock_unlock(&as->as_applications_mutex);
+    return ret;
+  } else
+    return -1;
+}
+
+int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct appmanifest *mf) {
+  if ( pthread_rwlock_wrlock(&as->as_applications_mutex) == 0 ) {
+    int ret = 0;
+    struct app *existing;
+    struct appmanifest *old;
+
+    HASH_FIND(app_hh, as->as_apps, mf->am_canonical, strlen(mf->am_canonical), existing);
+    if ( !existing ) {
+      fprintf(stderr, "appstate_update_from_manifest: '%s' does not exist\n", mf->am_canonical);
+      ret = -1;
+    } else {
+      ret = appstate_update_app(as, existing, mf);
+      APPLICATION_REF(existing);
+    }
+
+    pthread_rwlock_unlock(&as->as_applications_mutex);
+
+    if ( ret == 0 ) {
+      if ( pthread_mutex_lock(&existing->app_mutex) == 0 ) {
+        old = existing->app_current_manifest;
+        existing->app_current_manifest = mf;
+
+        // Requests that the instances reset themselves
+        application_request_instance_resets(existing);
+
+        pthread_mutex_unlock(&existing->app_mutex);
+
+        APPMANIFEST_UNREF(old);
+      } else
+        ret = -1;
+      APPLICATION_UNREF(existing);
+    }
+
+    return ret;
+  } else
+    return -1;
+}
+
+int appstate_log_path(struct appstate *as, const char *mf_digest_str, const char *extra,
+                      char *out, size_t out_sz) {
+  int n1, n2;
+
+  n1 = snprintf(out, out_sz, "%s/logs/%s", as->as_conf_dir, mf_digest_str);
+  if ( n1 >= out_sz ) return -1;
+
+  if ( extra ) {
+    n2 = snprintf(out + n1, out_sz - n1, "/%s", extra);
+    if ( (n1 + n2) >= out_sz ) return -1;
+  }
+  return 0;
+}
+
 void init_appliance_global() {
   g_openssl_appstate_ix = SSL_CTX_get_ex_new_index(0, "appstate index", NULL, NULL, NULL);
   g_openssl_flock_data_ix = SSL_get_ex_new_index(0, "flock index", NULL, NULL, NULL);
+  g_openssl_pconn_data_ix = SSL_get_ex_new_index(0, "pconn index", NULL, NULL, NULL);
 }
 
 int SSL_CTX_set_appstate(SSL_CTX *ctx, struct appstate *as) {
@@ -1181,6 +1627,14 @@ int SSL_set_flock(SSL *ssl, struct flock *f) {
 
 struct flock *SSL_get_flock(SSL *ssl) {
   return SSL_get_ex_data(ssl, g_openssl_flock_data_ix);
+}
+
+int SSL_set_pconn(SSL *ssl, struct pconn *pc) {
+  return SSL_set_ex_data(ssl, g_openssl_pconn_data_ix, pc);
+}
+
+struct pconn *SSL_get_pconn(SSL *ssl) {
+  return SSL_get_ex_data(ssl, g_openssl_pconn_data_ix);
 }
 
 X509 *appstate_get_certificate(struct appstate *as) {

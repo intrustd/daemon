@@ -5,6 +5,7 @@
 
 #include "util.h"
 
+// #define BIO_STATIC_DEBUG
 #ifdef BIO_STATIC_DEBUG
 #define dbg_printf(...) fprintf(stderr, __VA_ARGS__)
 #else
@@ -38,7 +39,7 @@ static int static_bio_write(BIO *bio, const char *in, int sz) {
 
   data->bs_ptr += bytes_left;
 
-  dbg_printf("static write returns %d\n", bytes_left);
+  dbg_printf("static write returns %ld\n", bytes_left);
 
   return bytes_left;
 }
@@ -51,8 +52,13 @@ static int static_bio_read(BIO *bio, char *out, int outsz) {
   dbg_printf("static bio read\n");
   if ( !BIO_STATIC_IS_READ(data) ) return -2;
 
+  if ( data->bs_ptr == -2 ) {
+    BIO_set_retry_read(bio);
+    return 0;
+  }
+
   bytes_left = BIO_STATIC_SIZE(data) - BIO_STATIC_OFS(data);
-  dbg_printf("static bio read: bytes %ld %d %d\n", bytes_left, data->bs_ptr, BIO_STATIC_IS_PEEKING(data));
+  dbg_printf("static bio read: bytes %ld %ld %d\n", bytes_left, data->bs_ptr, BIO_STATIC_IS_PEEKING(data));
   if ( bytes_left == 0 ) {
     BIO_set_retry_read(bio);
     return 0;
@@ -66,6 +72,9 @@ static int static_bio_read(BIO *bio, char *out, int outsz) {
 
     if ( !BIO_STATIC_IS_PEEKING(data) )
       data->bs_ptr += bytes_left;
+
+    dbg_printf("static bio after read: (ispeeking=%d) %ld of %ld read\n",
+               BIO_STATIC_IS_PEEKING(data), BIO_STATIC_OFS(data), BIO_STATIC_SIZE(data));
 
     return bytes_left;
   }
@@ -100,9 +109,16 @@ static long static_bio_ctrl(BIO *bio, int op, long larg, void *parg) {
   case BIO_CTRL_DGRAM_SET_PEEK_MODE:
   case BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE:
     if ( larg ) {
-      data->bs_ptr = -1;
-    } else
-      data->bs_ptr = 0;
+      if ( (BIO_STATIC_SIZE(data) - BIO_STATIC_OFS(data)) == 0 )
+        data->bs_ptr = -2;
+      else
+        data->bs_ptr = -1;
+    } else {
+      if ( data->bs_ptr == -1 )
+        data->bs_ptr = 0;
+      else
+        data->bs_ptr = labs(data->bs_sz);
+    }
     return 0;
   default:
     dbg_printf("Unknown bio type %d\n", op);

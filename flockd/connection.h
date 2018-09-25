@@ -8,13 +8,16 @@
 #include "event.h"
 #include "util.h"
 #include "stun.h"
+#include "sdp.h"
 
 // We give connections exactly 2 minutes to establish
 #define CONNECTION_TIMEOUT (60000 * 2)
 // Wait 200 milliseconds for the first reply from appliance
-#define CONNECTION_APPLIANCE_TIMEOUT 200
+#define CONNECTION_APPLIANCE_TIMEOUT 2000
+#define CONNECTION_ICE_COLLECTION_INTERVAL 500
 #define MAX_CONNECTION_RETRY 7
 #define MAX_CREDENTIAL_SZ 256
+#define MAX_CONNECTION_ANSWER_SZ (16 * 1024)
 
 struct connection;
 struct appplianceinfo;
@@ -43,8 +46,9 @@ typedef int(*connectionfn)(struct connection *, int, void*);
 // Parameter is struct sdpln
 #define CONNECTION_OP_SEND_OFFER_LINE         0xA
 #define CONNECTION_OP_COMPLETE_OFFER          0xB
-#define CONNECTION_OP_COMPLETE                0xC
-#define CONNECTION_OP_SEND_PERSONAS           0xD
+#define CONNECTION_OP_COMPLETE_ICE_CANDIDATES 0xC
+#define CONNECTION_OP_COMPLETE                0xD
+#define CONNECTION_OP_SEND_PERSONAS           0xE
 
 // Personas were available, but there was an error fetching them
 #define CONNECTION_ERR_COULD_NOT_SEND_PERSONAS 1
@@ -90,11 +94,14 @@ struct connection {
 
   unsigned char conn_persona_id[SHA256_DIGEST_LENGTH];
   char conn_credential[MAX_CREDENTIAL_SZ];
-  size_t conn_credential_sz;
+   size_t conn_credential_sz;
 
   // The state of establishing the connection with the appliance
   int conn_ai_state;
   int conn_ai_offer_line;
+
+  int conn_ai_appliance_ice_complete : 1;
+  int conn_ai_client_ice_complete : 1;
 
   // The number of times we've tried to send this to the appliance
   int conn_ai_retries;
@@ -107,6 +114,11 @@ struct connection {
 
   struct fcspktwriter conn_outgoing_packet;
   struct stuntxid conn_start_tx_id;
+
+  // Dynamically allocated buffer for storing the SDP answer
+  struct buffer conn_answer_buffer;
+  // The highest offset of the answer buffer that has been transferred to the appliance
+  uint16_t conn_answer_offset;
 };
 
 #define CONN_REF(conn) SHARED_REF(&(conn)->conn_shared)
@@ -141,8 +153,10 @@ struct connection {
 
 int connection_init(struct connection *conn, struct flockservice *svc, connectionfn ctl);
 
-// Mark the connection complete
+// Mark the connection complete. Must not hold mutex!!
 void connection_complete(struct connection *conn);
+// Mark connection complete... must hold mutex
+void connection_complete_unlocked(struct connection *conn);
 
 // Start the connection appliance timeout on the event loop. an
 // appliance must be connected before this time or the connection ends
@@ -154,10 +168,13 @@ int connection_connect_appliance(struct connection *conn,
 int connection_disconnect_appliance(struct connection *conn);
 
 struct applianceinfo *connection_get_appliance(struct connection *conn);
+// Do not hold mutex
 int connection_set_persona(struct connection *conn, const unsigned char *persona_id);
+// Do not hold mutex
 int connection_set_credential(struct connection *conn,
                               const char *credential, size_t credential_sz);
 
+// conn_mutex MUST BE HELD
 #define connection_signal_error(conn, err)                              \
   do {                                                                  \
     int __err_ ## __LINE__ = err;                                       \
@@ -168,16 +185,19 @@ int connection_set_credential(struct connection *conn,
 void connection_confirmation_received(struct connection *conn, int has_personas);
 void connection_error_received(struct connection *conn, int error_code);
 
-#define CONNOFFER_NO_MORE_LINES  1
-#define CONNOFFER_LAST_LINE      2
+#define CONNOFFER_NO_MORE_LINES       1
+#define CONNOFFER_OFFER_COMPLETE      2
+#define CONNOFFER_CANDIDATES_COMPLETE 3
 #define CONNOFFER_LINE_ERROR     (-1)
 #define CONNOFFER_SERVER_ERROR   (-2)
 #define CONNOFFER_LINE_RETRIEVED 0
 #define CONNOFFER_NO_MORE_SPACE  3
 typedef int(*connofferlnfn)(void *, int *, const char **, const char **);
-void connection_offer_received(struct connection *conn, connofferlnfn lines, void *ud);
+void connection_offer_received(struct connection *conn, int answer_offs,
+                               connofferlnfn lines, void *ud);
 
 int connection_send_personas(struct connection *conn, const unsigned char *persona_hash);
+// Mutex must be held
 int connection_start_authentication(struct connection *conn);
 
 int connection_verify_tx_id(struct connection *conn, const struct stuntxid *txid);
@@ -186,5 +206,10 @@ int connection_wants_personas(struct connection *conn);
 int connection_is_complete(struct connection *conn);
 // Start auth process, must hold mutex
 void connection_wait_for_auth(struct connection *conn);
+
+// Mutex must not be held. Writes data into answer buffer. Returns number of bytes written
+int connection_write_answer(struct connection *conn, const char *buf, int next_newline);
+
+void connection_complete_client_ice(struct connection *conn);
 
 #endif

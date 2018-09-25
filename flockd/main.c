@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
   ERR_load_BIO_strings();
   OpenSSL_add_all_algorithms();
   init_static_bio();
+  init_flockd_global();
 
   flockconf_init(&configuration);
 
@@ -50,6 +51,7 @@ int main(int argc, char **argv) {
   flockstate_start_services(&state);
 
   // Start the main loop here
+  fprintf(stderr, "Starting loop\n");
   main_loop(&state);
 
   return 0;

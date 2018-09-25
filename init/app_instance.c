@@ -17,8 +17,8 @@
 #define HC_SCRIPT_PATH    "/app/hc"
 
 char *g_persona_id;
-char *g_app_name;
-char *g_app_domain;
+char *g_app_url;
+char *g_nix_closure;
 
 pid_t g_start_pid = 0;
 pid_t g_hc_pid = 0;
@@ -44,7 +44,7 @@ void dbg_printf(const char *format, ...) {
   va_list ap;
 
   va_start(ap, format);
-  fprintf(stderr, "[%s@%s for %s] ", g_app_name, g_app_domain, g_persona_id);
+  fprintf(stderr, "[%s for %s] ", g_app_url, g_persona_id);
   vfprintf(stderr, format, ap);
   va_end(ap);
 }
@@ -88,6 +88,9 @@ void app_instance_sigchld_handler(int sig) {
   int saved_errno = errno;
   pid_t pid;
   int sts;
+
+  static const char sig_msg[] = "App instance SIGCHLD";
+  write(STDERR_FILENO, sig_msg, strlen(sig_msg));
 
   do {
     pid = waitpid(-1, &sts, WNOHANG);
@@ -159,8 +162,9 @@ int main(int argc, char **argv) {
   }
 
   g_persona_id = argv[1];
-  g_app_name = argv[2];
-  g_app_domain = argv[3];
+  g_app_url = argv[2];
+  g_nix_closure = argv[3];
+
   g_status = NOT_STARTED;
   fcntl(COMM, F_SETFD, FD_CLOEXEC);
 
@@ -169,6 +173,21 @@ int main(int argc, char **argv) {
   close_all_files();
 
   dbg_printf("closed all open files\n");
+
+  dbg_printf("chroot to %s\n", g_nix_closure);
+
+  if ( chroot(g_nix_closure) < 0 ) {
+    perror("app_instance_init: chroot");
+    return 2;
+  }
+
+  // Set cwd to /stork
+  if ( chdir("/stork/") < 0 ) {
+    perror("app_instance_init: chdir");
+    return 3;
+  }
+
+  dbg_printf("Changed directory to /stork\n");
 
   setup_signals();
   setup_custom_signals();
@@ -218,7 +237,8 @@ int main(int argc, char **argv) {
 
   while ( 1 ) {
     n = recv(COMM, buf, STK_MAX_PKT_SZ, 0);
-    if ( n == -1 ) {
+    if ( n == 0 ) break;
+    else if ( n == -1 ) {
       if ( errno == EAGAIN || errno == EINTR ) {
         if ( g_alarm_rung ) {
           g_alarm_rung = 0;

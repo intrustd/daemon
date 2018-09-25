@@ -19,4 +19,6 @@ int list_personas(int argc, char **argv);
 int join_flock(int argc, char **argv);
 int list_flocks(int argc, char **argv);
 
+int register_app(int argc, char **argv);
+
 #endif

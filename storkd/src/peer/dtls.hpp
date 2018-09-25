@@ -17,7 +17,7 @@
 #include <boost/heap/priority_queue.hpp>
 #include <boost/log/trivial.hpp>
 
-#include "certificate.hpp"
+#include "../crypto/certificate.hpp"
 
 namespace stork {
   namespace peer {
@@ -47,11 +47,11 @@ namespace stork {
 
 
     protected:
-      virtual const X509Certificate &ssl_certificate() const =0;
+      virtual const crypto::X509Certificate &ssl_certificate() const =0;
 
       virtual bool gen_cookie(DTLSChannel *c, unsigned char *cookie, unsigned int *cookie_len);
       virtual bool verify_cookie(DTLSChannel *c, const unsigned char *cookie, unsigned int cookie_len);
-      virtual bool verify_peer_cert(DTLSChannel *c, const X509Certificate &cert) =0;
+      virtual bool verify_peer_cert(DTLSChannel *c, const crypto::X509Certificate &cert) =0;
 
       void complete_setup();
 

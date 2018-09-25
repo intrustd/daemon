@@ -13,6 +13,13 @@
 #define OP_FLOCK_REGISTRATION_TIMEOUT (EVT_CTL_CUSTOM + 2)
 #define OP_FLOCK_REFRESH (EVT_CTL_CUSTOM + 3)
 
+// #define FLOCK_DEBUG 1
+#ifdef FLOCK_DEBUG
+#define dbgprintf(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define dbgprintf(...) (void)0
+#endif
+
 static void flock_start_connection(struct flock *f, struct eventloop *el);
 static int flock_receive_response(struct flock *f, struct appstate *app, uint16_t req_code);
 static int flock_receive_request(struct flock *f, struct appstate *app);
@@ -57,6 +64,7 @@ void flock_release(struct flock *f) {
     break;
   case FLOCK_STATE_CONNECTING:
   case FLOCK_STATE_REGISTERING:
+  case FLOCK_STATE_SEND_REGISTRATION:
   case FLOCK_STATE_REGISTERED:
     if ( f->f_socket ) close(f->f_socket);
     if ( f->f_dtls_client ) SSL_free(f->f_dtls_client);
@@ -169,7 +177,7 @@ static void flock_shutdown_connection(struct flock *f, struct eventloop *el) {
   }
 
   if ( f->f_socket ) {
-    eventloop_unsubscribe_fd(el, f->f_socket, &f->f_socket_sub);
+    eventloop_unsubscribe_fd(el, f->f_socket, FD_SUB_ALL, &f->f_socket_sub);
     close(f->f_socket);
     f->f_socket = 0;
   }
@@ -182,18 +190,15 @@ static int flock_handle_ssl_error(struct flock *f, struct eventloop *el, int err
     fprintf(stderr, "flock_handle_ssl_error: Got SSL_ERROR_NONE on accident\n");
     return -1;
   case SSL_ERROR_ZERO_RETURN:
-    fprintf(stderr, "flock_handle_ssl_error: SSL_ERROR_ZERO_RETURN\n");
+    dbgprintf("flock_handle_ssl_error: SSL_ERROR_ZERO_RETURN\n");
     return -1;
   case SSL_ERROR_WANT_READ:
-    fprintf(stderr, "flock_handle_ssl_error: wants read\n");
-    FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_ERROR | FD_SUB_READ);
-    FDSUB_UNSUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE);
-    eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+    dbgprintf("flock_handle_ssl_error: wants read\n");
+    eventloop_subscribe_fd(el, f->f_socket, FD_SUB_ERROR | FD_SUB_READ, &f->f_socket_sub);
     return 0;
   case SSL_ERROR_WANT_WRITE:
-    fprintf(stderr, "flock_handle_ssl_error: wants write\n");
-    FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_ERROR | FD_SUB_WRITE | FD_SUB_READ);
-    eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+    dbgprintf("flock_handle_ssl_error: wants write\n");
+    eventloop_subscribe_fd(el, f->f_socket, FD_SUB_ERROR | FD_SUB_WRITE | FD_SUB_READ, &f->f_socket_sub);
     return 0;
   case SSL_ERROR_WANT_CONNECT:
     fprintf(stderr, "flock_handle_ssl_error: SSL_ERROR_WANT_CONNECT\n");
@@ -248,12 +253,16 @@ static void flock_send_registration(struct flock *f, struct appstate *as) {
   err = SSL_write(f->f_dtls_client, (const void *) &f->f_registration_msg,
                   STUN_MSG_LENGTH(&f->f_registration_msg));
   if ( err <= 0 ) {
+    fprintf(stderr, "SSL error: could not write message\n");
+    ERR_print_errors_fp(stderr);
     goto retry;
   } else {
     if ( err != STUN_MSG_LENGTH(&f->f_registration_msg) ) {
-      fprintf(stderr, "Could not write out entirety of registration message\n");
+      dbgprintf("Could not write out entirety of registration message\n");
       goto retry;
     } else {
+      f->f_flock_state = FLOCK_STATE_REGISTERING;
+
       // This was written successfully, now we have to wait for a response or a timeout
       timersub_set_from_now(&f->f_registration_timeout, FLOCK_TIMEOUT(f, FLOCK_INITIAL_REGISTRATION_RTO));
       eventloop_subscribe_timer(&as->as_eventloop, &f->f_registration_timeout);
@@ -263,6 +272,8 @@ static void flock_send_registration(struct flock *f, struct appstate *as) {
   return;
 
  retry:
+  f->f_flock_state = FLOCK_STATE_REGISTERING;
+
   FLOCK_NEXT_RETRY(f, &as->as_eventloop);
 
   if ( !FLOCK_HAS_FAILED(f) ) {
@@ -303,7 +314,7 @@ static int flock_respond_quick(struct flock *f, struct appstate *app,
       return -1;
     }
   } else {
-    fprintf(stderr, "flock_respond_quick: sent response\n");
+    dbgprintf("flock_respond_quick: sent response\n");
     return 0;
   }
 }
@@ -430,6 +441,9 @@ static int flock_process_sendoffer(struct flock *f, struct appstate *app,
   int line = -1;
   struct stunattr *attr;
   struct pconn *conn;
+  const char *answer = NULL;
+  size_t answer_sz = 0;
+  uint16_t answer_offs = 0;
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, pkt_sz); attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
@@ -441,6 +455,19 @@ static int flock_process_sendoffer(struct flock *f, struct appstate *app,
     case STUN_ATTR_KITE_SDP_LINE:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(uint16_t) ) {
         line = ntohs(*((uint16_t *) STUN_ATTR_DATA(attr)));
+      }
+      break;
+    case STUN_ATTR_KITE_ANSWER:
+      if ( STUN_ATTR_PAYLOAD_SZ(attr) > sizeof(answer_offs) ) {
+        memcpy(&answer_offs, STUN_ATTR_DATA(attr), sizeof(answer_offs));
+        answer_offs = ntohs(answer_offs);
+
+        answer = ((char *)STUN_ATTR_DATA(attr)) + 2;
+        answer_sz = STUN_ATTR_PAYLOAD_SZ(attr) - 2;
+        if ( answer_sz == 0 ) {
+          answer = NULL;
+          answer_offs = 0;
+        }
       }
       break;
     case STUN_ATTR_FINGERPRINT:
@@ -468,7 +495,7 @@ static int flock_process_sendoffer(struct flock *f, struct appstate *app,
   }
 
   pconn_set_request(conn, STUN_REQUEST_TYPE(msg), &msg->sm_tx_id);
-  pconn_recv_sendoffer(conn, line);
+  pconn_recv_sendoffer(conn, line, answer, answer_offs, answer_sz);
 
   return 0;
 }
@@ -505,7 +532,7 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
       break;
     default:
       // TODO check if the attribute is required
-      fprintf(stderr, "flock_process_startconn: unknown stun attr %04x\n", STUN_ATTR_NAME(attr));
+      dbgprintf("flock_process_startconn: unknown stun attr %04x\n", STUN_ATTR_NAME(attr));
       break;
     }
   }
@@ -515,7 +542,7 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
     return -1;
   }
 
-  fprintf(stderr, "flock_process_startconn: starting connection %08lx %p\n", conn_id, f->f_pconns);
+  dbgprintf("flock_process_startconn: starting connection %08lx %p\n", conn_id, f->f_pconns);
 
   HASH_FIND(pc_hh, f->f_pconns, &conn_id, sizeof(conn_id), conn);
   if ( !conn ) {
@@ -584,6 +611,7 @@ static int flock_receive_request(struct flock *f, struct appstate *app) {
     fprintf(stderr, "flock_receive_request: could not read request: %d\n", SSL_get_error(f->f_dtls_client, err));
     return -1;
   } else {
+    dbgprintf("Got request of size %d\n", err);
     return flock_process_request(f, app, rsp_buf, err);
   }
 }
@@ -600,13 +628,12 @@ static int flock_receive_response(struct flock *f, struct appstate *as, uint16_t
     struct stunvalidation sv;
     struct stunmsg *msg = (struct stunmsg *) rsp_buf;
 
-    fprintf(stderr, "Got response of size %d\n", err);
+    dbgprintf("Got response of size %d\n", err);
 
     if ( err >= STUN_MSG_HDR_SZ && (STUN_MESSAGE_TYPE(msg) & (STUN_RESPONSE | STUN_ERROR)) == 0 ) {
       return flock_process_request(f, as, rsp_buf, err);
     } else {
-      sv.sv_flags = STUN_VALIDATE_VERBOSE | STUN_NEED_FINGERPRINT | STUN_NEED_MESSAGE_INTEGRITY |
-        STUN_VALIDATE_RESPONSE | STUN_VALIDATE_TX_ID;
+      sv.sv_flags = STUN_NEED_FINGERPRINT | STUN_VALIDATE_RESPONSE | STUN_VALIDATE_TX_ID;
       sv.sv_req_code = req_code;
       sv.sv_tx_id = &f->f_last_registration_tx;
       sv.sv_user_cb = NULL;
@@ -617,12 +644,25 @@ static int flock_receive_response(struct flock *f, struct appstate *as, uint16_t
 
       err = stun_validate(rsp_buf, err, &sv);
       if ( err != 0 ) {
+        int ret = -1;
         if ( err > 0 ) {
           fprintf(stderr, "STUN validation failed. Error was %d\n", err);
-        } else
-          fprintf(stderr, "STUN server responded with error %d\n", -err);
+        } else {
+          ret = -err;
+          switch ( -err ) {
+          case STUN_CONFLICT:
+            dbgprintf("There was a conflict with another appliance\n");
+            break;
+          case STUN_TOO_EARLY:
+            dbgprintf("The flock had another registration for this appliance and is unwilling to accept new registrations for now\n");
+            break;
+          default:
+            dbgprintf("STUN server responded with error %d\n", -err);
+            break;
+          }
+        }
 
-        return -1;
+        return ret;
       }
 
       // TODO Save ICE candidates
@@ -632,7 +672,7 @@ static int flock_receive_response(struct flock *f, struct appstate *as, uint16_t
 }
 
 static void flock_refresh_registration(struct flock *f) {
-  fprintf(stderr, "Refreshed registration\n");
+  dbgprintf("Refreshed registration\n");
   stun_random_tx_id(&f->f_last_registration_tx);
 }
 
@@ -643,10 +683,10 @@ static void flock_send_pconn_responses(struct flock *f) {
   struct stunmsg *msg = (struct stunmsg *)rsp_buf;
 
   DLIST_ITER(&f->f_pconns_with_response, pc_pconns_with_response_dl, pc, pc_tmp) {
-    assert ( pthread_mutex_lock(&pc->pc_mutex) == 0 );
+    SAFE_MUTEX_LOCK(&pc->pc_mutex);
     DLIST_REMOVE(&f->f_pconns_with_response, pc_pconns_with_response_dl, pc);
 
-    fprintf(stderr, "Writing pconn response\n");
+    dbgprintf("Writing pconn response\n");
     err = pconn_write_response(pc, rsp_buf, sizeof(rsp_buf));
     pthread_mutex_unlock(&pc->pc_mutex);
     if ( err < 0 ) {
@@ -664,13 +704,9 @@ static void flock_send_pconn_responses(struct flock *f) {
       PCONN_UNREF(pc);
       continue;
     } else {
-      fprintf(stderr, "flock_send_pconn_responses: sent pconn response\n");
+      dbgprintf("flock_send_pconn_responses: sent pconn response\n");
       PCONN_UNREF(pc);
     }
-  }
-
-  if ( !DLIST_EMPTY(&f->f_pconns_with_response) ) {
-    FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE | FD_SUB_WRITE_OOB);
   }
 }
 
@@ -693,7 +729,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
         struct addrinfo *cur_entry;
         for ( cur_entry = dnssub_result(&f->f_resolver); cur_entry; cur_entry = cur_entry->ai_next, cand_count ++);
 
-        fprintf(stderr, "DNS resolution succeeded with %d candidates\n", cand_count);
+        dbgprintf("DNS resolution succeeded with %d candidates\n", cand_count);
 
         if ( !RAND_bytes((unsigned char *)&which_cand, sizeof(which_cand)) ) {
           fprintf(stderr, "Could not choose random candidate: ");
@@ -739,7 +775,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     f = STRUCT_FROM_BASE(struct flock, f_socket_sub, fd_ev->fde_sub);
     as = APPSTATE_FROM_EVENTLOOP(el);
 
-    assert( pthread_mutex_lock(&f->f_mutex) == 0 );
+    SAFE_MUTEX_LOCK(&f->f_mutex);
     switch ( f->f_flock_state ) {
     case FLOCK_STATE_CONNECTING:
       fprintf(stderr, "Attempting connection\n");
@@ -762,60 +798,105 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
       } else {
         fprintf(stderr, "The DTLS handshake has been completed\n");
 
-        f->f_flock_state = FLOCK_STATE_REGISTERING;
+        f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
         f->f_retries = 0;
 
-        FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_ERROR | FD_SUB_WRITE);
-        eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+        eventloop_subscribe_fd(el, f->f_socket, FD_SUB_ERROR | FD_SUB_READ | FD_SUB_WRITE,
+                               &f->f_socket_sub);
       }
       break;
 
     case FLOCK_STATE_SUSPENDED:
     case FLOCK_STATE_REGISTERED:
       if ( FD_WRITE_AVAILABLE(fd_ev) ) {
-        FDSUB_UNSUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE | FD_SUB_WRITE_OOB);
         flock_send_pconn_responses(f);
+        dbgprintf("Sent pconn response\n");
       }
 
       if ( FD_READ_PENDING(fd_ev) ) {
-        fprintf(stderr, "Read pending on registered flock socket\n");
+        dbgprintf("Read pending on registered flock socket\n");
         err = flock_receive_request(f, as);
         if ( err < 0 ) {
           fprintf(stderr, "Invalid request\n");
         }
       }
 
-      eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+      eventloop_subscribe_fd(el, f->f_socket,
+                             FD_SUB_READ | FD_SUB_ERROR |
+                             (!(DLIST_EMPTY(&f->f_pconns_with_response)) ? FD_SUB_WRITE : 0),
+                             &f->f_socket_sub);
       break;
 
+    case FLOCK_STATE_SEND_REGISTRATION:
     case FLOCK_STATE_REGISTERING:
 
       if ( FD_WRITE_AVAILABLE(fd_ev) ) {
-        flock_send_registration(f, as);
+        if ( f->f_flock_state == FLOCK_STATE_SEND_REGISTRATION )
+          flock_send_registration(f, as);
 
-        FDSUB_UNSUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE | FD_SUB_WRITE_OOB);
         // Attempt to send out pending connections as well
         flock_send_pconn_responses(f);
-
-        FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_READ | FD_SUB_ERROR);
       }
 
       if ( FD_READ_PENDING(fd_ev) ) {
-        fprintf(stderr, "Read pending on flock socket\n");
+        dbgprintf("Read pending on flock socket\n");
         err = flock_receive_response(f, as, STUN_KITE_REGISTRATION);
         if ( err < 0 ) {
           fprintf(stderr, "Invalid binding response or request\n");
-        } else {
+        } else if ( err == STUN_TOO_EARLY ) {
+          dbgprintf("Scheduling another registration in %d ms\n",
+                    FLOCK_FLAG_TRY_AGAIN_INTERVAL);
+
+          eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
+
+          if ( f->f_retries < FLOCK_MAX_RETRIES ) {
+            f->f_retries++;
+            eventloop_cancel_timer(el, &f->f_refresh_timer);
+            timersub_set_from_now(&f->f_refresh_timer, FLOCK_FLAG_TRY_AGAIN_INTERVAL);
+            eventloop_subscribe_timer(el, &f->f_refresh_timer);
+          } else {
+            fprintf(stderr, "No success response from server\n");
+            f->f_flags |= FLOCK_FLAG_FAILING | FLOCK_FLAG_CONFLICT;
+          }
+        } else if ( err == STUN_CONFLICT ) {
+          f->f_flags |= FLOCK_FLAG_CONFLICT;
+          eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
+        } else if ( err == 0 ) {
           flock_successful_registration(f, as);
+        } else {
+          dbgprintf("Invalid error code from flock_receive_response: %d\n", err);
         }
       }
 
-      eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+      if ( fd_ev->fde_triggered & FD_SUB_ERROR ) {
+        int serr;
+        socklen_t errsz = sizeof(serr);
+        err = getsockopt(f->f_socket, SOL_SOCKET, SO_ERROR, &serr, &errsz);
+        if ( err < 0 ) {
+          perror("getsockopt FD_SUB_ERROR");
+        } else {
+          fprintf(stderr, "ERROR: Got flock socket error: %s\n", strerror(serr));
+        }
+
+        f->f_flags |= FLOCK_FLAG_FAILING;
+        if ( f->f_retries >= FLOCK_MAX_RETRIES ) {
+          fprintf(stderr, "Reached max retries for flock. Setting disabled\n");
+          f->f_retries = 0;
+          f->f_flock_state = FLOCK_STATE_CONNECTING;
+          f->f_flags &= ~FLOCK_FLAG_REGISTRATION_VALID;
+        } else
+          f->f_retries ++;
+      }
+
+      eventloop_subscribe_fd(el, f->f_socket,
+                             FD_SUB_READ | FD_SUB_ERROR |
+                             ((!DLIST_EMPTY(&f->f_pconns_with_response)) ? FD_SUB_WRITE : 0),
+                             &f->f_socket_sub);
 
       break;
 
     default:
-      fprintf(stderr, "flock_fn: Got socket event in state %d\n", f->f_flock_state);
+      dbgprintf("flock_fn: Got socket event in state %d\n", f->f_flock_state);
     }
     pthread_mutex_unlock(&f->f_mutex);
 
@@ -826,10 +907,8 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     f = STRUCT_FROM_BASE(struct flock, f_registration_timeout, tmr_ev->qde_timersub);
     FLOCK_NEXT_RETRY(f, el);
 
-    if ( !FLOCK_HAS_FAILED(f) ) {
-      FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR);
-      eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
-    }
+    dbgprintf("Reg timeout\n");
+    eventloop_subscribe_fd(el, f->f_socket, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
     break;
 
   case OP_FLOCK_REFRESH:
@@ -837,12 +916,12 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     f = STRUCT_FROM_BASE(struct flock, f_refresh_timer, tmr_ev->qde_timersub);
     flock_refresh_registration(f); // Updates the transaction id
 
-    assert( pthread_mutex_lock(&f->f_mutex) == 0 );
-    f->f_flock_state = FLOCK_STATE_REGISTERING;
+    SAFE_MUTEX_LOCK(&f->f_mutex);
+    f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
     pthread_mutex_unlock(&f->f_mutex);
 
-    FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE | FD_SUB_ERROR);
-    eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+    dbgprintf("Refresh timer\n");
+    eventloop_subscribe_fd(el, f->f_socket, FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
     break;
 
   default:
@@ -862,7 +941,7 @@ static void flock_successful_registration(struct flock *f, struct appstate *as) 
   // Stop the registration timeout
   eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
   f->f_retries = 0;
-  f->f_flags &= ~(FLOCK_FLAG_FAILING | FLOCK_FLAG_PENDING);
+  f->f_flags &= ~(FLOCK_FLAG_FAILING | FLOCK_FLAG_PENDING | FLOCK_FLAG_CONFLICT);
   f->f_flags |= FLOCK_FLAG_REGISTRATION_VALID;
 
   // Start the refresh timer
@@ -966,10 +1045,11 @@ static void flock_start_connection(struct flock *f, struct eventloop *el) {
     SSL_set_bio(f->f_dtls_client, sock_bio, sock_bio);
     sock_bio = NULL;
   } else
-    f->f_flock_state = FLOCK_STATE_REGISTERING;
+    f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
 
-  FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE | FD_SUB_ERROR);
-  eventloop_subscribe_fd(el, f->f_socket, &f->f_socket_sub);
+  // write and error for registration events
+  dbgprintf("Start send\n");
+  eventloop_subscribe_fd(el, f->f_socket, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
 
   return;
 
@@ -1002,18 +1082,20 @@ void flock_pconn_expires(struct flock *f, struct pconn *pc) {
 }
 
 void flock_request_pconn_write_unlocked(struct flock *f, struct pconn *pc) {
-  assert( !DLIST_ENTRY_IN_LIST(&f->f_pconns_with_response,
-                               pc_pconns_with_response_dl,
-                               pc) ); // Only one write per pconn allowed
-  PCONN_REF(pc);
-  DLIST_INSERT(&f->f_pconns_with_response, pc_pconns_with_response_dl, pc);
-  FDSUB_SUBSCRIBE(&f->f_socket_sub, FD_SUB_WRITE);
-  eventloop_subscribe_fd(&pc->pc_appstate->as_eventloop, f->f_socket, &f->f_socket_sub);
+  if ( !DLIST_ENTRY_IN_LIST(&f->f_pconns_with_response,
+                            pc_pconns_with_response_dl,
+                            pc) ) { // Only one write per pconn allowed
+    PCONN_REF(pc);
+    DLIST_INSERT(&f->f_pconns_with_response, pc_pconns_with_response_dl, pc);
+    dbgprintf("Request pconn write\n");
+    eventloop_subscribe_fd(&pc->pc_appstate->as_eventloop, f->f_socket, FD_SUB_WRITE,
+                           &f->f_socket_sub);
+  }
 }
 
 void flock_request_pconn_write(struct flock *f, struct pconn *pc) {
-  assert( pthread_mutex_lock(&f->f_mutex) == 0 );
-  assert( pthread_mutex_lock(&pc->pc_mutex) == 0 );
+  SAFE_MUTEX_LOCK(&f->f_mutex);
+  SAFE_MUTEX_LOCK(&pc->pc_mutex);
   flock_request_pconn_write_unlocked(f, pc);
   pthread_mutex_unlock(&pc->pc_mutex);
   pthread_mutex_unlock(&f->f_mutex);

@@ -27,5 +27,8 @@ let stork-config = { config, pkgs, lib, ... }: {
       modules = [ ./modules/top-level.nix (builtins.toPath stork-app-module) ];
     };
 
-in eval.config.stork.toplevel
+    root = eval.config.stork.toplevel;
+
+    pkgs = import <nixpkgs> {};
+in eval.config.stork.manifest
 

@@ -264,6 +264,17 @@ namespace stork {
         FrameWriter< Size, Socket, typename ProtocolProperties<typename Socket::protocol_type>::framing_type >::async_write_frame(m_socket, m_max_frame_size, m_cur_frame, m_cur_frame_size, cb);
       }
 
+      void async_write_raw(const boost::asio::const_buffer &buf,
+                           std::function<void(boost::system::error_code)> cb) {
+        m_cur_frame_size = boost::asio::buffer_size(buf);
+        m_cur_frame.resize(m_cur_frame_size);
+
+        const std::uint8_t *buf_start(boost::asio::buffer_cast<const std::uint8_t*>(buf));
+        std::copy(buf_start, buf_start + m_cur_frame_size, m_cur_frame.begin());
+
+        FrameWriter< Size, Socket, typename ProtocolProperties<typename Socket::protocol_type>::framing_type >::async_write_frame(m_socket, m_max_frame_size, m_cur_frame, m_cur_frame_size, cb);
+      }
+
       template<typename Message>
       std::size_t write(const Message &msg) {
         ProtoBuilder builder(m_buffer);

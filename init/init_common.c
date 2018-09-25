@@ -12,7 +12,11 @@
 #include "init_common.h"
 
 void sigchld_handler(int sig) {
+  static const char msg[] = "Received SIGCHLD\n";
   int saved_errno = errno;
+
+  write(STDERR_FILENO, msg, strlen(msg));
+
   while ( waitpid((-1), 0, WNOHANG) > 0 ) { }
   errno = saved_errno;
 }

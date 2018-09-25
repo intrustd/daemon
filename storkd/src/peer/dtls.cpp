@@ -88,7 +88,7 @@ namespace stork {
           return 0;
         }
 
-        X509Certificate peer_cert(peer_cert_raw);
+        crypto::X509Certificate peer_cert(peer_cert_raw);
         if ( dtls_ctx->verify_peer_cert(channel, peer_cert) )
           return 1;
         else
@@ -133,7 +133,7 @@ namespace stork {
 
     void DTLSContext::complete_setup() {
       // Set the certificate and privatekey
-      const X509Certificate &cert(ssl_certificate());
+      const crypto::X509Certificate &cert(ssl_certificate());
       if ( !SSL_CTX_use_PrivateKey(m_ssl_ctx, cert.raw_private_key()) ) {
         BOOST_LOG_TRIVIAL(error) << "Could not use private key";
         ERR_print_errors_fp(stderr);

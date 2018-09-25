@@ -1,29 +1,39 @@
-import storkFetch from "./FetchApi.js"
+import kiteFetch from "./FetchApi.js"
 import { EventTarget } from 'event-target-shim';
-import { parseStorkAppUrl, storkAppCanonicalUrl } from "./Common.js";
+import { parseKiteAppUrl, kiteAppCanonicalUrl } from "./Common.js";
+import { generateKiteBoundary, makeFormDataStream } from './FormData.js';
 
 var oldXMLHttpRequest = window.XMLHttpRequest
 
-export default class StorkXMLHttpRequest extends EventTarget {
+export default class KiteXMLHttpRequest extends EventTarget {
     constructor (params) {
         super()
 
         this._xhr = new oldXMLHttpRequest(params)
         this._params = params
 
-        // This gets set to true if our request is a stork request
-        this._isstork = false
+        // This gets set to true if our request is a kite request
+        this._iskite = false
     }
 
-    set onreadystatechange(hdl) { return this._setStorkHandler('readystatechange', hdl) }
-    get onreadystatechange() { return this._getStorkHandler('readystatechange') }
-    set ontimeout(hdl) { return this._setStorkHandler('timeout', hdl) }
-    get ontimeout() { return this._getStorkHandler('timeout') }
+    set onreadystatechange(hdl) { return this._setKiteHandler('readystatechange', hdl) }
+    get onreadystatechange() { return this._getKiteHandler('readystatechange') }
+    set ontimeout(hdl) { return this._setKiteHandler('timeout', hdl) }
+    get ontimeout() { return this._getKiteHandler('timeout') }
 
-    _setStorkHandler(evtNm, hdl) {
+    addEventListener(evtNm, hdl) {
+        this._xhr.addEventListener(evtNm, hdl)
+        super.addEventListener(evtNm, hdl)
+    }
+
+    removeEventListener(evtNm, hdl) {
+        this._xhr.removeEventListener('readystatechange', this[evtVarNm])
+        super.removeEventListener(evtNm, hdl)
+    }
+
+    _setKiteHandler(evtNm, hdl) {
         var evtVarNm = '_on' + evtNm
         if ( this.hasOwnProperty(evtVarNm) ) {
-            this._xhr.removeEventListener('readystatechange', this[evtVarNm])
             this.removeEventListener('readystatechange', this[evtVarNm])
         }
 
@@ -31,35 +41,34 @@ export default class StorkXMLHttpRequest extends EventTarget {
             delete this[evtVarNm]
         } else {
             this[evtVarNm] = hdl
-            this._xhr.addEventListener('readystatechange', hdl)
             this.addEventListener('readystatechange', hdl)
         }
     }
 
-    _getStorkHandler(evtNm) {
+    _getKiteHandler(evtNm) {
         var evtVarNm = '_on' + evtNm
         return this[evtVarNm]
     }
 
-    _storkProp(propName, storkGetter) {
-        if ( this._isstork ) {
-            if ( storkGetter === undefined )
+    _kiteProp(propName, kiteGetter) {
+        if ( this._iskite ) {
+            if ( kiteGetter === undefined )
                 return this['_' + propName]
             else
-                return this[storkGetter]()
+                return this[kiteGetter]()
         } else
             return this._xhr[propName]
     }
 
     // Read-only properties
-    get readyState() { return this._storkProp("readyState") }
-    get response() { return this._storkProp("response") }
-    get responseText() { return this._storkProp("responseText") }
-    get responseURL() { return this._storkProp("responseURL") }
-    get responseXML() { return this._storkProp("responseXML") }
-    get status() { return this._storkProp("status") }
-    get statusText() { return this._storkProp("statusText") }
-    get upload() { return this._storkProp("upload") }
+    get readyState() { return this._kiteProp("readyState") }
+    get response() { return this._kiteProp("response") }
+    get responseText() { return this._kiteProp("responseText") }
+    get responseURL() { return this._kiteProp("responseURL") }
+    get responseXML() { return this._kiteProp("responseXML") }
+    get status() { return this._kiteProp("status") }
+    get statusText() { return this._kiteProp("statusText") }
+    get upload() { return this._kiteProp("upload") }
 
     // Read-write properties
     get timeout() { return this._xhr.timeout }
@@ -73,36 +82,36 @@ export default class StorkXMLHttpRequest extends EventTarget {
 
     // Methods
 
-    _callStork(methodName, args) {
-        if ( this._isstork ) {
+    _callKite(methodName, args) {
+        if ( this._iskite ) {
             return this['_' + methodName].apply(this, args)
         } else
             return this._xhr[methodName].apply(this._xhr, args)
     }
 
-    abort() { return this._callStork("abort", arguments) }
-    getAllResponseHeaders() { return this._callStork("getAllResponseHeaders", arguments) }
-    getResponseHeader() { return this._callStork("getResponseHeader", arguments) }
-    overrideMimeType() { return this._callStork("overrideMimeType", arguments) }
-    send() { return this._callStork("send", arguments) }
-    setRequestHeader() { return this._callStork("setRequestHeader", arguments) }
-    sendAsBinary() { return this._callStork("sendAsBinary", arguments) }
+    abort() { return this._callKite("abort", arguments) }
+    getAllResponseHeaders() { return this._callKite("getAllResponseHeaders", arguments) }
+    getResponseHeader() { return this._callKite("getResponseHeader", arguments) }
+    overrideMimeType() { return this._callKite("overrideMimeType", arguments) }
+    send() { return this._callKite("send", arguments) }
+    setRequestHeader() { return this._callKite("setRequestHeader", arguments) }
+    sendAsBinary() { return this._callKite("sendAsBinary", arguments) }
 
     // The open function
     open(method, url, async, user, password) {
         // Check the url
-        var storkUrl = parseStorkAppUrl(url)
+        var kiteUrl = parseKiteAppUrl(url)
 
-        if ( storkUrl.isStork ) {
-            if ( storkUrl.error )
-                throw new TypeError(storkUrl.error)
+        if ( kiteUrl.isKite ) {
+            if ( kiteUrl.error )
+                throw new TypeError(kiteUrl.error)
             else {
                 async = async === undefined ? true : async;
 
-                this._isstork = true
+                this._iskite = true
 
                 if ( !async )
-                    throw new TypeError("Cannot send synchronous stork requests")
+                    throw new TypeError("Cannot send synchronous kite requests")
 
                 this._method = method
                 this._url = url
@@ -118,7 +127,7 @@ export default class StorkXMLHttpRequest extends EventTarget {
             this._xhr.open.apply(this._xhr, arguments)
     }
 
-    // Stork-based implementations
+    // Kite-based implementations
     _sendAsBinary() {
         return this._send.apply(this, arguments)
     }
@@ -136,6 +145,10 @@ export default class StorkXMLHttpRequest extends EventTarget {
     _setReadyState(rs) {
         this._readyState = rs
         this.dispatchEvent(new Event('readystatechange'))
+
+        if ( rs == oldXMLHttpRequest.DONE ) {
+            this.dispatchEvent(new Event('load'))
+        }
     }
 
     _handleTimeout() {
@@ -145,7 +158,7 @@ export default class StorkXMLHttpRequest extends EventTarget {
 
     _handleResponseError(err) {
         this._setReadyState(oldXMLHttpRequest.DONE)
-        console.error("Error while attempting stork XMLHttpRequest", err)
+        console.error("Error while attempting kite XMLHttpRequest", err)
         this.dispatchEvent(new ProgressEvent('error', {
                                lengthComputable: false,
                                loaded: 0,
@@ -188,13 +201,17 @@ export default class StorkXMLHttpRequest extends EventTarget {
         this._headers[header] = value
     }
 
+
     _makeReadableStream (body) {
         if ( body === undefined || body === null ) {
             return null
-        } else if ( body instanceof USVString ) {
-            throw new TypeError("TODO USVString")
+        } else if ( body instanceof String || typeof body == 'string' ) {
+            throw new TypeError("TODO String")
         } else if ( body instanceof FormData ) {
-            throw new TypeError("TODO FormData")
+            var boundary = generateKiteBoundary()
+            this.setRequestHeader("Content-Type", boundary.contentType)
+
+            return makeFormDataStream(body, boundary.boundary)
         } else if ( body instanceof URLSearchParams ) {
             throw new TypeError("TODO URLSearchParams")
         } else if ( body instanceof BufferSource ) {
@@ -205,7 +222,7 @@ export default class StorkXMLHttpRequest extends EventTarget {
     }
 
     _send(body) {
-        if ( this._isstork ) {
+        if ( this._iskite ) {
             var requestInit =
                 { method: this._method,
                   headers: this._headers }
@@ -220,7 +237,13 @@ export default class StorkXMLHttpRequest extends EventTarget {
 
             var timeout = this._makeTimeoutPromise().then(() => { return { type: 'timeout' } })
 
-            var fetchPromise = storkFetch(this._url, requestInit)
+            requestInit.kiteOnProgress = (e) => {
+                console.log("Got progress event", e)
+                this.dispatchEvent(e)
+            }
+
+            console.log("Send XHR request", requestInit)
+            var fetchPromise = kiteFetch(this._url, requestInit)
                 .then((rsp) => { return { type: 'response', rsp: rsp } },
                       (err) => { return { type: 'error', err: err } })
 

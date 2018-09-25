@@ -7,11 +7,15 @@
 #include <time.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/wait.h>
 
 #include "util.h"
 #include "event.h"
+#include "process.h"
 
 #define OP_DNSSUB_START_RESOLUTION EVT_CTL_CUSTOM
+
+int g_cur_sigchld = 0;
 
 // Timer utilities
 
@@ -115,6 +119,20 @@ int eventloop_init(struct eventloop *el) {
   }
   el->el_flags |= EL_FLAG_ASYNC_COND_INIT;
 
+  err = pthread_mutex_init(&el->el_fd_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "eventloop_init: Could not allocate fd mutex\n");
+    goto error;
+  }
+  el->el_flags |= EL_FLAG_FD_MUTEX_INIT;
+
+  err = pthread_mutex_init(&el->el_ps_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "eventloop_init: Could not allocate process mutex\n");
+    goto error;
+  }
+  el->el_flags |= EL_FLAG_PS_MUTEX_INIT;
+
   return 0;
 
  error:
@@ -126,10 +144,13 @@ void eventloop_clear(struct eventloop *el) {
   el->el_epoll_fd = 0;
   el->el_flags = 0;
   el->el_async_thread_cnt = 0;
+  el->el_async_jobs = NULL;
   el->el_tmr_count = 0;
   el->el_next_tmr = NULL;
   el->el_first_finished = el->el_last_finished = NULL;
   el->el_first_async = el->el_last_async = NULL;
+  DLIST_INIT(&el->el_processes);
+  el->el_last_sigchld = __sync_fetch_and_or(&g_cur_sigchld, 0);
 }
 
 void eventloop_release(struct eventloop *el) {
@@ -156,6 +177,14 @@ void eventloop_release(struct eventloop *el) {
   }
   el->el_flags &= ~(EL_FLAG_ASYNC_MUTEX_INIT | EL_FLAG_ASYNC_COND_INIT);
 
+  if ( el->el_flags & EL_FLAG_FD_MUTEX_INIT )
+    pthread_mutex_destroy(&el->el_fd_mutex);
+  el->el_flags &= ~EL_FLAG_FD_MUTEX_INIT;
+
+  if ( el->el_flags & EL_FLAG_PS_MUTEX_INIT )
+    pthread_mutex_destroy(&el->el_ps_mutex);
+  el->el_flags &= ~EL_FLAG_PS_MUTEX_INIT;
+
   if ( el->el_flags & EL_FLAG_TMR_INIT )
     pthread_mutex_destroy(&el->el_tmr_mutex);
   el->el_flags &= ~EL_FLAG_TMR_INIT;
@@ -174,6 +203,12 @@ void sigalrm(int sig) {
   //write(STDERR_FILENO, "SIGALRM\n", 8);
 }
 
+void sigchld(int sig) {
+  int err = write(STDERR_FILENO, "SIGCHLD\n", 8);
+  __sync_fetch_and_add(&g_cur_sigchld, 1);
+  (void) err;
+}
+
 void eventloop_prepare(struct eventloop *el) {
   int err;
   struct sigaction sa;
@@ -184,20 +219,25 @@ void eventloop_prepare(struct eventloop *el) {
 
   err = sigaction(SIGALRM, &sa, NULL);
   if ( err < 0 )
-    perror("sigaction");
+    perror("sigaction SIGALRM");
+
+  sa.sa_handler = sigchld;
+  err = sigaction(SIGCHLD, &sa, NULL);
+  if ( err < 0 )
+    perror("sigaction SIGCHLD");
 }
 
 static struct timersub **eventloop_find_timer_by_idx(struct eventloop *el, uint32_t which) {
   struct timersub **last = NULL;
   uint32_t tmr_mask;
 
-  assert(which <= el->el_tmr_count);
+  SAFE_ASSERT(which <= el->el_tmr_count);
 
   which += 1;
 
   for ( tmr_mask = 0x80000000; tmr_mask; tmr_mask >>= 1 ) {
     if ( last ) {
-      assert(*last);
+      SAFE_ASSERT(*last);
       if ( tmr_mask & which )
         last = &((*last)->ts_right);
       else
@@ -225,14 +265,14 @@ static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *s
 
   if ( el->el_tmr_count > 0 ) {
     parent = *(eventloop_find_timer_by_idx(el, (el->el_tmr_count - 1) >> 1));
-    assert(parent);
+    SAFE_ASSERT(parent);
     if ( (el->el_tmr_count + 1) & 0x1 ) {
       eventloop_dbg_verify_timers(el);
-      assert(parent->ts_left && !parent->ts_right);
+      SAFE_ASSERT(parent->ts_left && !parent->ts_right);
       parent->ts_right = sub;
     } else {
       eventloop_dbg_verify_timers(el);
-      assert(!parent->ts_left && !parent->ts_right);
+      SAFE_ASSERT(!parent->ts_left && !parent->ts_right);
       parent->ts_left = sub;
     }
     sub->ts_parent = parent;
@@ -271,7 +311,7 @@ static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *s
 
         FIX_CHILD_PARENTS(parent);
         FIX_CHILD_PARENTS(sub);
-      } else assert(0);
+      } else abort();
 
       // Now we have to reset the value pointed to in our grandparent
       if ( sub->ts_parent ) {
@@ -280,7 +320,7 @@ static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *s
           grandparent->ts_left = sub;
         else if ( grandparent->ts_right == parent )
           grandparent->ts_right = sub;
-        else assert(0);
+        else abort();
         FIX_CHILD_PARENTS(grandparent);
       } else
         el->el_next_tmr = sub;
@@ -295,17 +335,17 @@ static void eventloop_remove_timer_from_heap(struct eventloop *el, struct timers
 
   // Swap bottom most with us
   cur = root = *bottommost;
-  assert(root);
+  SAFE_ASSERT(root);
 
   // Now remove last element from heap from the heap
   if ( el->el_tmr_count > 1 ) {
     struct timersub *parent = root->ts_parent;
-    assert( parent );
+    SAFE_ASSERT( parent );
     if ( parent->ts_left == root ) {
-      assert(!parent->ts_right);
+      SAFE_ASSERT(!parent->ts_right);
       parent->ts_left = NULL;
     } else {
-      assert(parent->ts_right == root);
+      SAFE_ASSERT(parent->ts_right == root);
       parent->ts_right = NULL;
     }
   }
@@ -387,19 +427,16 @@ static void eventloop_remove_timer_from_heap(struct eventloop *el, struct timers
 int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub) {
   int ret = 0;
 
-  assert( pthread_mutex_lock(&el->el_tmr_mutex) == 0 );
+  SAFE_MUTEX_LOCK(&el->el_tmr_mutex);
 
   // Check if the sub is part of the eventloop
   if ( el->el_next_tmr == sub || sub->ts_parent ) {
     // The subscription is part of the heap
     eventloop_remove_timer_from_heap(el, sub);
-    fprintf(stderr, "Remove heap\n");
     ret = 1;
   } else if ( el->el_first_finished == &sub->ts_queued || (!sub->ts_left && sub->ts_right) ) {
     // The child is part of the queue and needs to be removed from it
     struct qdevtsub *left, *cur;
-
-    fprintf(stderr, "Remove queued\n");
 
     ret = 1;
     // TODO this may be a very expensive operation.
@@ -414,8 +451,9 @@ int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub) {
       fprintf(stderr, "eventloop_cancel_timer: timer not found in completion queue\n");
       abort();
     }
-  } else
+  } else {
     ret = 0;
+  }
 
   sub->ts_parent = sub->ts_left = sub->ts_right = NULL;
 
@@ -425,7 +463,7 @@ int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub) {
 
 static inline void eventloop_queue_unlocked(struct eventloop *el, struct qdevtsub *sub) {
   if ( el->el_first_finished ) {
-    assert(el->el_last_finished);
+    SAFE_ASSERT(el->el_last_finished);
     el->el_last_finished->qe_next = sub;
     el->el_last_finished = sub;
   } else {
@@ -538,12 +576,36 @@ static int eventloop_deliver_timers(struct eventloop *el) {
 
     if ( timeval_lt(&when_tv, &now_tv) ) {
       delivered++;
-      assert(el->el_tmr_count > 0);
+      SAFE_ASSERT(el->el_tmr_count > 0);
       if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
         eventloop_dbg_verify_timers(el);
       eventloop_mark_timer_completed(el);
     } else
       break;
+  }
+
+  return delivered;
+}
+
+static int eventloop_deliver_processes(struct eventloop *el) {
+  int delivered = 0;
+  struct pssub *cur, *tmp;
+
+  DLIST_ITER(&el->el_processes, ps_list, cur, tmp) {
+    int sts;
+    pid_t exited = waitpid(cur->ps_which, &sts, WNOHANG);
+    if ( exited < 0 )
+      perror("eventloop_deliver_processes: waitpid");
+    else if ( exited == cur->ps_which ) {
+      cur->ps_status = sts;
+      eventloop_queue(el, &cur->ps_on_complete);
+      DLIST_REMOVE(&el->el_processes, ps_list, cur);
+      delivered++;
+    } else if ( exited == 0 ) continue;
+    else {
+      fprintf(stderr, "eventloop_deliver_processes: waitpid malfunction: returned a different PID than the one waited for\n");
+      abort();
+    }
   }
 
   return delivered;
@@ -590,7 +652,7 @@ static int eventloop_pop_queued(struct eventloop *el, struct qdevent *evt) {
   if ( pthread_mutex_lock(&el->el_tmr_mutex) != 0 ) return 0;
 
   if ( el->el_first_finished ) {
-    assert(el->el_last_finished);
+    SAFE_ASSERT(el->el_last_finished);
 
     evt->qde_ev.ev_type = EV_TYPE_QUEUED;
     evt->qde_sub = el->el_first_finished;
@@ -630,6 +692,7 @@ void eventloop_run(struct eventloop *el) {
   }
 
   sigdelset(&old_signals, SIGALRM);
+  sigdelset(&old_signals, SIGCHLD);
 
   while (1) {
     struct qdevent evt;
@@ -640,14 +703,23 @@ void eventloop_run(struct eventloop *el) {
       err = epoll_pwait(el->el_epoll_fd, &ev, 1, -1, &old_signals);
       if ( err < 0 ) {
         if ( errno == EINTR ) {
-          fprintf(stderr, "pwait interrupted\n");
+          int cur_sigchld;
+          //          fprintf(stderr, "pwait interrupted\n");
 
           pthread_mutex_lock(&el->el_tmr_mutex);
           eventloop_deliver_timers(el);
           eventloop_reset_timer(el);
           pthread_mutex_unlock(&el->el_tmr_mutex);
 
-          fprintf(stderr, "Done delivering timers\n");
+          //fprintf(stderr, "Done delivering timers\n");
+
+          pthread_mutex_lock(&el->el_ps_mutex);
+          cur_sigchld = __sync_fetch_and_or(&g_cur_sigchld, 0);
+          if ( cur_sigchld != el->el_last_sigchld ) {
+            el->el_last_sigchld = cur_sigchld;
+            eventloop_deliver_processes(el);
+          }
+          pthread_mutex_unlock(&el->el_ps_mutex);
 
           continue;
         } else {
@@ -661,15 +733,32 @@ void eventloop_run(struct eventloop *el) {
         struct fdevent fd_event;
 
         // Dispatch
-        if ( el->el_flags & EL_FLAG_DEBUG )
-          fprintf(stderr, "Dispatching event\n");
 
         sub = (struct fdsub *) ev.data.ptr;
         fd_event.fde_ev.ev_type = EV_TYPE_FD;
         fd_event.fde_sub = sub;
         fd_event.fde_triggered = translate_from_epoll_flags(ev.events);
 
-        sub->fds_fn(el, sub->fds_op, (void *) &fd_event);
+        if ( el->el_flags & EL_FLAG_DEBUG )
+          fprintf(stderr, "Dispatching event %04x\n", fd_event.fde_triggered);
+
+        SAFE_MUTEX_LOCK(&el->el_fd_mutex);
+        if ( el->el_flags & EL_FLAG_DEBUG ) {
+          fprintf(stderr, "Before check %04x\n", sub->fds_subd);
+        }
+        fd_event.fde_triggered &= sub->fds_subd;  // Only deliver events currently subscribed
+        sub->fds_subd &= ~fd_event.fde_triggered; // Remove events that are now being delivered
+        // TODO do we want to re-enable events
+        if ( el->el_flags & EL_FLAG_DEBUG ) {
+          fprintf(stderr, "Dispatching event %04x %04x\n", fd_event.fde_triggered, sub->fds_subd);
+        }
+        pthread_mutex_unlock(&el->el_fd_mutex);
+
+        if ( fd_event.fde_triggered )
+          sub->fds_fn(el, sub->fds_op, (void *) &fd_event);
+        else {
+          fprintf(stderr, "Skipping event because it was unsubscribed while being delivered\n");
+        }
       }
     }
   }
@@ -716,6 +805,8 @@ static void *eventloop_async_thread(void *arg) {
     evt.qde_sub = work_item;
     work_item->qe_fn(el, work_item->qe_op, &evt);
   }
+
+  return NULL;
 }
 
 int eventloop_queue(struct eventloop *el, struct qdevtsub *sub) {
@@ -745,11 +836,11 @@ int eventloop_invoke_async(struct eventloop *el, struct qdevtsub *evt) {
   evt->qe_next = NULL;
 
   if ( el->el_first_async ) {
-    assert(el->el_last_async);
+    SAFE_ASSERT(el->el_last_async);
     el->el_last_async->qe_next = evt;
     el->el_last_async = evt;
   } else {
-    assert(!el->el_last_async);
+    SAFE_ASSERT(!el->el_last_async);
     el->el_last_async = el->el_first_async = evt;
   }
 
@@ -761,7 +852,7 @@ int eventloop_invoke_async(struct eventloop *el, struct qdevtsub *evt) {
     if ( nthreads > 4 ) nthreads = 4; // Use at most four cores
     if ( nthreads == 0 ) nthreads = 1; // Use at least one core
 
-    assert(nthreads > 0 );
+    SAFE_ASSERT(nthreads > 0 );
 
     el->el_async_jobs = malloc(sizeof(*el->el_async_jobs) * nthreads);
     if ( !el->el_async_jobs ) {
@@ -788,6 +879,8 @@ int eventloop_invoke_async(struct eventloop *el, struct qdevtsub *evt) {
   pthread_cond_signal(&el->el_async_cond);
 
   pthread_mutex_unlock(&el->el_async_mutex);
+
+  return 0;
 }
 
 // FD events
@@ -796,7 +889,7 @@ void fdsub_init(struct fdsub *sub, struct eventloop *el, int fd, int op, evtctlf
   struct epoll_event ev;
   int err;
 
-  sub->fds_subscriptions = 0;
+  sub->fds_subd = 0;
   sub->fds_fn = fn;
   sub->fds_op = op;
 
@@ -809,7 +902,7 @@ void fdsub_init(struct fdsub *sub, struct eventloop *el, int fd, int op, evtctlf
 }
 
 void fdsub_clear(struct fdsub *sub) {
-  sub->fds_subscriptions = 0;
+  sub->fds_subd = 0;
   sub->fds_fn = 0;
   sub->fds_op = 0;
 }
@@ -830,35 +923,58 @@ int set_socket_nonblocking(int sk) {
   return 0;
 }
 
-int eventloop_subscribe_fd(struct eventloop *el, int fd, struct fdsub *sub) {
+int eventloop_subscribe_fd(struct eventloop *el, int fd, uint16_t evs, struct fdsub *sub) {
   int err;
   struct epoll_event ev;
-  uint32_t old_subs;
+  uint16_t old_subs;
 
-  ev.events = translate_to_epoll_flags(sub->fds_subscriptions);
+  SAFE_MUTEX_LOCK(&el->el_fd_mutex);
+
+  // Now, add the events into the subscription word. At this point,
+  // the added events will be delivered at most once, and they will
+  // always be waited for.
+  old_subs = sub->fds_subd;
+  sub->fds_subd |= evs;
+
+  ev.events = translate_to_epoll_flags(sub->fds_subd | evs);
   ev.data.ptr = (void *) sub;
-
-  // Now, replace the upper half of the subscription word with the
-  // lower half. The upper half gives the set of subscriptions
-  // currently in place.
-  (sub->fds_subscriptions & 0xFFFF) << 16
-
-  do {
-  } while ( __sync_bool_compare_and_swap(&sub->fds_subscriptions, old_subs, old_subs
 
   err = epoll_ctl(el->el_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
   if ( err < 0 )
     perror("eventloop_subscribe_fd: epoll_ctl");
 
+  pthread_mutex_unlock(&el->el_fd_mutex);
+
+  return evs & ~old_subs;
 }
 
-void eventloop_unsubscribe_fd(struct eventloop *el, int fd, struct fdsub *sub) {
+int eventloop_unsubscribe_fd(struct eventloop *el, int fd, uint16_t evs, struct fdsub *sub) {
   int err;
   struct epoll_event ev;
+  int old_subs;
 
-  err = epoll_ctl(el->el_epoll_fd, EPOLL_CTL_DEL, fd, &ev);
-  if ( err < 0 )
-    perror("eventloop_unsubscribe_fd: epoll_ctl");
+  SAFE_MUTEX_LOCK(&el->el_fd_mutex);
+  old_subs = sub->fds_subd;
+  sub->fds_subd &= ~evs;
+
+  if ( sub->fds_subd == 0 ) {
+    err = epoll_ctl(el->el_epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+    if ( err < 0 )
+      perror("eventloop_unsubscribe_fd: epoll_ctl");
+  } else {
+    ev.events = translate_to_epoll_flags(sub->fds_subd);
+    ev.data.ptr = (void *) sub;
+
+    err = epoll_ctl(el->el_epoll_fd,
+                    old_subs == 0 ? EPOLL_CTL_ADD : EPOLL_CTL_MOD,
+                    fd, &ev);
+    if ( err < 0 )
+      perror("eventloop_unsubscribe_fd: epoll_ctl resubscribe");
+  }
+
+  pthread_mutex_unlock(&el->el_fd_mutex);
+
+  return evs & old_subs;
 }
 
 // Timers
@@ -908,25 +1024,25 @@ void eventloop_subscribe_timer(struct eventloop *el, struct timersub *sub) {
 }
 
 void eventloop_dbg_verify_timers_(struct timersub *t, uint32_t max, uint32_t ix) {
-  if ( ix == max ) assert(!t->ts_left && !t->ts_right);
+  if ( ix == max ) SAFE_ASSERT(!t->ts_left && !t->ts_right);
   else {
     if ( t->ts_right ) {
-      assert(t->ts_left);
-      assert((ix << 1) <= max);
-      assert(((ix << 1) | 1) <= max);
+      SAFE_ASSERT(t->ts_left);
+      SAFE_ASSERT((ix << 1) <= max);
+      SAFE_ASSERT(((ix << 1) | 1) <= max);
       if ( !timespec_lt(&t->ts_when, &t->ts_left->ts_when) ) {
         fprintf(stderr, "timespec(&t->ts_when, &t->ts_left->ts_when) failed at %d\n", ix);
-        assert(0);
+        abort();
       }
-      assert(timespec_lt(&t->ts_when, &t->ts_right->ts_when));
+      SAFE_ASSERT(timespec_lt(&t->ts_when, &t->ts_right->ts_when));
       eventloop_dbg_verify_timers_(t->ts_left, max, ix << 1);
       eventloop_dbg_verify_timers_(t->ts_right, max, (ix << 1) | 1);
     } else if ( (ix << 1) <= max ) {
       if ( !t->ts_left ) {
         fprintf(stderr, "t->ts_left failed at index %d\n", ix);
-        assert(0);
+        abort();
       }
-      assert(timespec_lt(&t->ts_when, &t->ts_left->ts_when));
+      SAFE_ASSERT(timespec_lt(&t->ts_when, &t->ts_left->ts_when));
       eventloop_dbg_verify_timers_(t->ts_left, max, ix << 1);
     }
   }
@@ -1074,7 +1190,7 @@ void eventloop_queue_all(struct eventloop *el, evtqueue *q) {
 }
 
 void evtqueue_queue(evtqueue *queue, struct qdevtsub *evt) {
-  assert( !__sync_fetch_and_or(&evt->qe_next, 0) );
+  SAFE_ASSERT( !__sync_fetch_and_or(&evt->qe_next, 0) );
   evt->qe_next = *queue;
   *queue = evt;
 }

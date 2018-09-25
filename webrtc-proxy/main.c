@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stddef.h>
@@ -16,11 +17,15 @@
 #include <storkd_proto.h>
 
 #define SCTP_DEBUG 1
-#include <usrsctp.h>
+//#include <usrsctp.h>
+#include <netinet/sctp.h>
 
 #include "webrtc.h"
+#include "util.h"
 
 #define WEBRTC_PROXY_DEBUG 1
+
+#define COMM 3
 
 #ifdef WEBRTC_PROXY_DEBUG
 #define log_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -163,7 +168,7 @@ struct stkcmsg {
 #define STORKD_ADDR "10.0.0.1"
 #define STORKD_OPEN_APP_PORT 9998 // The port where we send open app requests
 
-#define OUTGOING_BUF_SIZE    8192
+#define OUTGOING_BUF_SIZE    65536
 #define PROXY_BUF_SIZE 65536
 #define OPEN_APP_MAX_RETRIES 7
 #define MAX_EPOLL_EVENTS     16
@@ -171,6 +176,8 @@ struct stkcmsg {
 #define DFL_EPOLL_EVENTS     (EPOLLIN | EPOLLRDHUP | EPOLLPRI | EPOLLONESHOT)
 
 // Global state
+
+#define SCTP_FUTURE_ASSOC    0
 
 const char *g_capability = NULL;
 
@@ -183,6 +190,10 @@ struct wrtcchan *g_channels = NULL;
 struct wrtcchan **g_channel_htbl = NULL;
 struct stack_ent g_pending_free_channels = STACK_INIT;
 int g_channels_open = 0;
+
+pthread_mutex_t g_closing_chans_mutex = PTHREAD_MUTEX_INITIALIZER;
+wrcchanid *g_closing_chans = NULL;
+int g_closing_chans_pending = 0;
 
 pthread_mutex_t g_addresses_mutex = PTHREAD_MUTEX_INITIALIZER;
 uint32_t g_address_table[ADDR_DESC_TBL_SZ];
@@ -341,18 +352,6 @@ inline void release_channel(struct wrtcchan *c) {
   }
 }
 
-char *strncpy_fixed(char *dst, size_t dstlen, char *src, size_t srclen) {
-  if ( srclen < dstlen ) {
-    memcpy(dst, src, srclen);
-    dst[srclen] = '\0';
-  } else {
-    memcpy(dst, src, dstlen - 1);
-    dst[dstlen - 1] = '\0';
-  }
-
-  return dst;
-}
-
 void insert_chan_in_htbl(struct wrtcchan *c) {
   int hidx = c->wrc_chan_id % g_num_strms;
   for ( ; g_channel_htbl[hidx]; hidx ++ );
@@ -424,8 +423,8 @@ struct wrtcchan *alloc_wrtc_chan(wrcchanid chan_id) {
 
       g_channels[i].wrc_sts = WEBRTC_STS_VALID;
       g_channels[i].wrc_chan_id = chan_id;
-      memset(&g_channels[i].wrc_label, WEBRTC_NAME_MAX, 0);
-      memset(&g_channels[i].wrc_proto, WEBRTC_NAME_MAX, 0);
+      memset(&g_channels[i].wrc_label, 0, WEBRTC_NAME_MAX);
+      memset(&g_channels[i].wrc_proto, 0, WEBRTC_NAME_MAX);
       g_channels[i].wrc_family = 0;
       g_channels[i].wrc_type = 0;
       g_channels[i].wrc_sk = 0;
@@ -473,9 +472,9 @@ void mark_channel_closed(struct wrtcchan *chan) {
   PUSH_STACK(&g_pending_free_channels, chan, wrc_closed_stack);
 }
 
-void rsp_cmsg_error(struct socket *srv, struct wrtcchan *chan, uint8_t req, int rsperr) {
+void rsp_cmsg_error(int srv, struct wrtcchan *chan, uint8_t req, int rsperr) {
   struct stkcmsg msg;
-  struct sctp_sndinfo si;
+  struct sctp_sndrcvinfo sri;
   int err;
 
   log_printf("CMSG error: %d %d\n", chan->wrc_chan_id, rsperr);
@@ -483,39 +482,122 @@ void rsp_cmsg_error(struct socket *srv, struct wrtcchan *chan, uint8_t req, int 
   msg.scm_type = req | SCM_RESPONSE | SCM_ERROR;
   msg.data.scm_error = htonl(rsperr);
 
-  si.snd_sid = WEBRTC_SERVER_SID(chan->wrc_chan_id);
-  si.snd_flags = 0;
-  si.snd_ppid = htonl(WEBRTC_BINARY_PPID);
-  si.snd_context = chan->wrc_chan_id;
-  si.snd_assoc_id = g_webrtc_assoc;
+  memset(&sri, 0, sizeof(sri));
+  sri.sinfo_stream = WEBRTC_SERVER_SID(chan->wrc_chan_id);
+  sri.sinfo_ppid = htonl(WEBRTC_BINARY_PPID);
+  sri.sinfo_context = chan->wrc_chan_id;
+  sri.sinfo_assoc_id = g_webrtc_assoc;
 
-  err = usrsctp_sendv(srv, (void *)&msg, sizeof(msg), NULL, 0,
-                      (void *) &si, sizeof(si),
-                      SCTP_SENDV_SNDINFO, 0);
+  err = sctp_send(srv, (void *) &msg, sizeof(msg), &sri, 0);
   if ( err < 0 ) {
     perror("send_cmsg_error: usrsctp_sendv");
     // TODO close the channel or something
   }
 }
 
-void reset_wrc_chan(struct socket *srv, wrcchanid chan_id) {
+int reset_wrc_chan_ex(int srv, wrcchanid chan_id) {
   struct {
     struct sctp_reset_streams sctp;
-    uint16_t strms[2];
+    uint16_t strms[1];
   } rst;
 
-  rst.sctp.srs_assoc_id = g_webrtc_assoc;
-  rst.sctp.srs_flags = SCTP_STREAM_RESET_INCOMING | SCTP_STREAM_RESET_OUTGOING;
-  rst.sctp.srs_number_streams = 2;
-  rst.sctp.srs_stream_list[0] = WEBRTC_CLIENT_SID(chan_id);
-  rst.sctp.srs_stream_list[1] = WEBRTC_SERVER_SID(chan_id);
+  fprintf(stderr, "Resetting channel %d\n", chan_id);
 
-  if ( usrsctp_setsockopt(srv, IPPROTO_SCTP, SCTP_RESET_STREAMS, &rst, sizeof(rst)) < 0 ) {
-    perror("usrsctp_setsockopt SCTP_RESET_STREAMS");
-  }
+  rst.sctp.srs_assoc_id = g_webrtc_assoc;
+  rst.sctp.srs_flags = SCTP_STREAM_RESET_OUTGOING;
+  rst.sctp.srs_number_streams = 1;
+  rst.sctp.srs_stream_list[0] = WEBRTC_SERVER_SID(chan_id);
+
+  (void)rst;
+  //if ( setsockopt(srv, IPPROTO_SCTP, SCTP_RESET_STREAMS, &rst, sizeof(rst)) < 0 ) {
+  //  perror("usrsctp_setsockopt SCTP_RESET_STREAMS");
+  //  if ( errno == EAGAIN ) {
+  //    return 0;
+  //  } else if ( errno == EINPROGRESS ) {
+  //    return 1;
+  //  } else
+  //    return -1;
+  //} else
+  //  return 1;
+  return 1;
 }
 
-void perform_delayed_closes(struct socket *srv) {
+void reset_wrc_chan(int srv, wrcchanid chan_id) {
+  int i, open_ix = -1;
+  pthread_mutex_lock(&g_closing_chans_mutex);
+  for ( i = 0; i < g_num_strms; ++i ) {
+    if ( g_closing_chans[i] == 0xFFFF ) {
+      if ( open_ix == -1 )
+        open_ix = i;
+    } else if ( g_closing_chans[i] == chan_id ) {
+      open_ix = -2;
+      break;
+    }
+  }
+  if ( open_ix == -1 ) {
+    fprintf(stderr, "WARNING: ran out of space in closing chans?\n");
+  } else if ( open_ix >= 0 ) {
+    g_closing_chans_pending++;
+    g_closing_chans[open_ix] = chan_id;
+  }
+  fprintf(stderr, "Marked %d for delayed close\n", chan_id);
+  pthread_mutex_unlock(&g_closing_chans_mutex);
+}
+
+void do_not_close_channel(wrcchanid chan) {
+  int i = 0;
+  pthread_mutex_lock(&g_closing_chans_mutex);
+  for ( i = 0; i < g_num_strms; ++i ) {
+    if ( g_closing_chans[i] == chan ) {
+      g_closing_chans[i] = 0xFFFF;
+      g_closing_chans_pending --;
+    }
+  }
+  pthread_mutex_unlock(&g_closing_chans_mutex);
+}
+
+void perform_delayed_resets(int srv) {
+
+  pthread_mutex_lock(&g_closing_chans_mutex);
+  if ( g_closing_chans_pending ) {
+    struct sctp_reset_streams *srs;
+    int i, chan_ix;
+    size_t buf_sz = sizeof(struct sctp_reset_streams) + sizeof(uint16_t) * g_closing_chans_pending;
+    srs = malloc(buf_sz);
+    assert(srs);
+
+    srs->srs_assoc_id = g_webrtc_assoc;
+    srs->srs_flags = SCTP_STREAM_RESET_OUTGOING;
+    srs->srs_number_streams = g_closing_chans_pending;
+
+    for ( i = 0, chan_ix = 0; i < g_num_strms; ++i ) {
+      if ( g_closing_chans[i] != 0xFFFF ) {
+        fprintf(stderr, "reset %d\n", g_closing_chans[i]);
+        srs->srs_stream_list[chan_ix] = g_closing_chans[i];
+        chan_ix ++;
+      }
+    }
+
+    assert(chan_ix == g_closing_chans_pending);
+
+//    if ( setsockopt(srv, IPPROTO_SCTP, SCTP_RESET_STREAMS, srs, buf_sz) < 0 &&
+//         errno != EINPROGRESS ) {
+//      perror("sctp_setsockopt SCTP_RESET_STREAMS");
+//      if ( errno == EAGAIN ) {
+//        fprintf(stderr, "perform_delayed_resets: trying again later\n");
+//      }
+//    } else {
+//      fprintf(stderr, "perform_delayed_resets: success\n");
+//
+//      g_closing_chans_pending = 0;
+//      memset(g_closing_chans, 0xFF, g_num_strms * sizeof(*g_closing_chans));
+//    }
+//    free(srs);
+  }
+  pthread_mutex_unlock(&g_closing_chans_mutex);
+}
+
+void perform_delayed_closes(int srv) {
   struct wrtcchan *chan;
 
   CONSUME_STACK(&g_pending_free_channels, chan, struct wrtcchan, wrc_closed_stack) {
@@ -527,7 +609,7 @@ void perform_delayed_closes(struct socket *srv) {
     log_printf("The next thing is %p\n", g_pending_free_channels.next);
   };
 
-  log_printf("We have now closed all delayed channels\n");
+  //  log_printf("We have now closed all delayed channels\n");
 }
 
 void wait_for_write_on_chan(struct wrtcchan *chan) {
@@ -638,12 +720,13 @@ void cancel_pending_writes(struct wrtcchan *chan) {
   }
 }
 
-void chan_sctp_sndinfo(struct wrtcchan *chan, struct sctp_sndinfo *si) {
-  si->snd_sid = WEBRTC_SERVER_SID(chan->wrc_chan_id);
-  si->snd_flags = 0;
-  si->snd_ppid = htonl(WEBRTC_BINARY_PPID);
-  si->snd_context = chan->wrc_chan_id;
-  si->snd_assoc_id = g_webrtc_assoc;
+void chan_sctp_sndrcvinfo(struct wrtcchan *chan, struct sctp_sndrcvinfo *si) {
+  memset(si, 0, sizeof(*si));
+  si->sinfo_stream = WEBRTC_SERVER_SID(chan->wrc_chan_id);
+  si->sinfo_flags = 0;
+  si->sinfo_ppid = htonl(WEBRTC_BINARY_PPID);
+  si->sinfo_context = chan->wrc_chan_id;
+  si->sinfo_assoc_id = g_webrtc_assoc;
 }
 
 int chan_supports_sk_type(struct wrtcchan *chan, int sk_type) {
@@ -714,33 +797,32 @@ void dbg_chan(struct wrtcchan *chan) {
 }
 
 void dbg_assoc_change(struct sctp_assoc_change *sac, int sz) {
-  int ft_cnt = sz - sizeof(*sac), i;
-  uint8_t *fts = (uint8_t *) sac->sac_info;
+  //  int ft_cnt = sz - sizeof(*sac), i;
   fprintf(stderr, "SCTP Association change:\n");
   fprintf(stderr, "  - Num outbound: %d\n", sac->sac_outbound_streams);
   fprintf(stderr, "  -  Num inbound: %d\n", sac->sac_inbound_streams);
   fprintf(stderr, "  -     Assoc ID: %d\n", sac->sac_assoc_id);
   fprintf(stderr, "  -     Supports: ");
 
-  for ( i = 0; i < ft_cnt; ++i )
-    switch ( fts[i] ) {
-    case SCTP_ASSOC_SUPPORTS_PR:
-      fprintf(stderr, "Partial reliability; ");
-      break;
-    case SCTP_ASSOC_SUPPORTS_AUTH:
-      fprintf(stderr, "Auth; ");
-      break;
-    case SCTP_ASSOC_SUPPORTS_ASCONF:
-      fprintf(stderr, "ASCONF; ");
-      break;
-    case SCTP_ASSOC_SUPPORTS_MULTIBUF:
-      fprintf(stderr, "Multibuf; ");
-      break;
-    case  SCTP_ASSOC_SUPPORTS_RE_CONFIG:
-      fprintf(stderr, "Reconfig; ");
-      break;
-    default: break;
-    }
+//  for ( i = 0; i < ft_cnt; ++i )
+//    switch ( fts[i] ) {
+//    case SCTP_PR_SUPPORTED:
+//      fprintf(stderr, "Partial reliability; ");
+//      break;
+//    case SCTP_ASSOC_SUPPORTS_AUTH:
+//      fprintf(stderr, "Auth; ");
+//      break;
+//    case SCTP_ASSOC_SUPPORTS_ASCONF:
+//      fprintf(stderr, "ASCONF; ");
+//      break;
+//    case SCTP_ASSOC_SUPPORTS_MULTIBUF:
+//      fprintf(stderr, "Multibuf; ");
+//      break;
+//    case  SCTP_ASSOC_SUPPORTS_RE_CONFIG:
+//      fprintf(stderr, "Reconfig; ");
+//      break;
+//    default: break;
+//    }
   fprintf(stderr, "\n");
 }
 
@@ -804,14 +886,15 @@ int stkcmsg_has_enough(struct stkcmsg *msg, int sz) {
 }
 
 // proxy_buf is of size PROXY_BUF_SIZE
-void proxy_data(struct socket *srv, struct wrtcchan *chan, char *proxy_buf) {
+void proxy_data(int srv, struct wrtcchan *chan, char *proxy_buf) {
   char addr_buf[INET6_ADDRSTRLEN]; // For forwards compatibility
 
-  struct sctp_sndinfo si;
+  struct sctp_sndrcvinfo sri;
   int err, rsp_sz;
 
-  chan_sctp_sndinfo(chan, &si);
+  chan_sctp_sndrcvinfo(chan, &sri);
 
+ recv_more:
   err = recv(chan->wrc_sk, proxy_buf, PROXY_BUF_SIZE, 0);
   if ( err < 0 ) {
     perror("proxy_data recv");
@@ -859,13 +942,12 @@ void proxy_data(struct socket *srv, struct wrtcchan *chan, char *proxy_buf) {
           // output buffer and it will wait.
           cancel_pending_writes(chan);
 
-          err = usrsctp_sendv(srv, (void *) &rsp, rsp_sz, NULL, 0,
-                              (void *) &si, sizeof(si),
-                              SCTP_SENDV_SNDINFO, 0);
+          err = sctp_send(srv, (void *) &rsp, rsp_sz, &sri, 0);
           if ( err < 0 ) {
-            perror("proxy_data(cmsg): usrsctp_sendv");
+            perror("proxy_data(cmsg): sctp_send");
             // TODO close the channel or something
           }
+
           break;
         default:
           log_printf("Unknown storkd request type: %d\n", STKD_REQ(msg));
@@ -882,36 +964,34 @@ void proxy_data(struct socket *srv, struct wrtcchan *chan, char *proxy_buf) {
     // TODO use some kind of asynchronous notification?
 
     // Now send the data over the usrsctp socket
-    err = usrsctp_sendv(srv, (void *) proxy_buf, err, NULL, 0,
-                        (void *) &si, sizeof(si),
-                        SCTP_SENDV_SNDINFO, 0);
+    err = sctp_send(srv, (void *)proxy_buf, err, &sri, 0);
     if ( err < 0 ) {
-      perror("proxy_data: usrsctp_sendv");
+      perror("proxy_data: sctp_send");
       log_printf("While running %p %d %d\n", proxy_buf, old_sz, chan->wrc_chan_id);
       // TODO close the channel or something
     }
 
+    goto recv_more;
   }
 }
 
-void send_connection_opens_rsp(struct socket *srv, struct wrtcchan *chan) {
+void send_connection_opens_rsp(int srv, struct wrtcchan *chan) {
   struct stkcmsg rsp;
-  struct sctp_sndinfo si;
+  struct sctp_sndrcvinfo sri;
   int err;
 
   rsp.scm_type = SCM_RESPONSE | SCM_REQ_CONNECT;
 
-  chan_sctp_sndinfo(chan, &si);
+  chan_sctp_sndrcvinfo(chan, &sri);
 
-  err = usrsctp_sendv(srv, (void *)&rsp, SCM_CONNECT_RSP_SZ, NULL, 0,
-                      (void *)&si, sizeof(si), SCTP_SENDV_SNDINFO, 0);
+  err = sctp_send(srv, (void *)&rsp, SCM_CONNECT_RSP_SZ, &sri, 0);
   if ( err < 0 ) {
-    perror("send_connection_opens_rsp: usrsctp_sendv");
+    perror("send_connection_opens_rsp: sctp_send");
     // TODO close the channel?
   }
 }
 
-void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
+void flush_chan(int srv, struct wrtcchan *chan, int *new_events) {
   int err, old_sk;
 
   if ( chan->wrc_flags & WRC_HAS_PENDING_CONN ) {
@@ -1002,6 +1082,8 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
       chan->wrc_retries_left = 0;
       chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_ERROR_ON_RETRY);
 
+//      fprintf(stderr, "Sent buffer of size %ld\n%.*s", chan->wrc_msg_sz, (int)chan->wrc_msg_sz, chan->wrc_buffer);
+//      print_hex_dump_fp(stderr, (unsigned char *)chan->wrc_buffer, chan->wrc_msg_sz);
       err = send(chan->wrc_sk, chan->wrc_buffer, chan->wrc_msg_sz, 0);
       if ( err < 0 ) {
         if ( errno == EAGAIN || errno == EWOULDBLOCK ) {
@@ -1017,6 +1099,7 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
           chan->wrc_flags &= ~WRC_HAS_OUTGOING;
         } else {
           // Not all bytes were written
+          fprintf(stderr, "Only %d bytes were sent\n", err);
           memcpy(chan->wrc_buffer, chan->wrc_buffer + err, chan->wrc_msg_sz);
           *new_events |= EPOLLOUT;
         }
@@ -1032,7 +1115,7 @@ void flush_chan(struct socket *srv, struct wrtcchan *chan, int *new_events) {
   }
 }
 
-void state_transition(struct socket *srv, struct wrtcchan *chan, int epev) {
+void state_transition(int srv, struct wrtcchan *chan, int epev) {
   // Perform necessary transitions
   if ( chan->wrc_sts == WEBRTC_STS_OPEN && (epev & EPOLLOUT) &&
        !(epev & EPOLLRDHUP) && !(epev & EPOLLHUP)) {
@@ -1045,7 +1128,7 @@ void state_transition(struct socket *srv, struct wrtcchan *chan, int epev) {
 }
 
 // Run when we get a EPOLLRDHUP or EPOLLHUP on the socket
-int chan_disconnects(struct socket *srv, struct wrtcchan *chan) {
+int chan_disconnects(int srv, struct wrtcchan *chan, int *evts) {
   int sockerr, cerr, err;
   socklen_t sockerrlen = sizeof(sockerr);
 
@@ -1058,7 +1141,9 @@ int chan_disconnects(struct socket *srv, struct wrtcchan *chan) {
     }
 
     if ( sockerr == 0 ) {
-      log_printf("Got HUP or RDHUP but there was no socket error\n");
+      //      log_printf("Got HUP or RDHUP but there was no socket error\n");
+      // *evts &= ~(EPOLLHUP | EPOLLRDHUP);
+      sched_yield();
       return 0;
     } else {
       log_printf("Closing socket due to error: %s\n", strerror(sockerr));
@@ -1084,7 +1169,7 @@ int chan_disconnects(struct socket *srv, struct wrtcchan *chan) {
     log_printf("Got HUP while channel is connected\n");
     mark_channel_closed(chan);
     return -1;
-  }
+  } else abort();
 }
 
 #define UPDATE_TIMEOUT(timeout, millis)     \
@@ -1100,10 +1185,10 @@ int chan_needs_retry(struct wrtcchan *chan, struct timespec *now,
       struct timespec when, ri;
 
       millis_to_timespec(&ri, chan->wrc_retry_interval_millis);
-      log_printf("channel retry interval is %d\n", chan->wrc_retry_interval_millis);
+      //      log_printf("channel retry interval is %d\n", chan->wrc_retry_interval_millis);
       timespec_add(&when, &chan->wrc_last_msg_sent, &ri);
 
-      log_printf("comparing times (%lu,%lu) < (%lu, %lu)\n", now->tv_sec, now->tv_nsec, when.tv_sec, when.tv_nsec);
+      //      log_printf("comparing times (%lu,%lu) < (%lu, %lu)\n", now->tv_sec, now->tv_nsec, when.tv_sec, when.tv_nsec);
 
       if ( timespec_lt(&when, now) ) {
         // If the time to retry is less than now, we need to retry
@@ -1115,9 +1200,9 @@ int chan_needs_retry(struct wrtcchan *chan, struct timespec *now,
         timeout_millis = (when.tv_sec * 1000 + (when.tv_nsec / 1000000));
         timeout_millis -= (now->tv_sec * 1000 + (now->tv_nsec / 1000000));
 
-        log_printf("We have %d milliseconds until we need to wake up\n", timeout_millis);
+        //log_printf("We have %d milliseconds until we need to wake up\n", timeout_millis);
 
-        *timeout = UPDATE_TIMEOUT(*timeout, timeout_millis);
+        UPDATE_TIMEOUT(*timeout, timeout_millis);
 
         return 0;
       }
@@ -1127,13 +1212,14 @@ int chan_needs_retry(struct wrtcchan *chan, struct timespec *now,
 }
 
 void sigusr1_handler(int s) {
-  write(STDERR_FILENO, "SIGUSR1 Received\n", 17);
+  int err = write(STDERR_FILENO, "SIGUSR1 Received\n", 17);
+  (void) err;
 }
 
 void *epoll_thread(void *srv_raw) {
   char proxy_buf[PROXY_BUF_SIZE];
 
-  struct socket *srv = (struct socket *) srv_raw;
+  int srv = *(int *) srv_raw;
   struct epoll_event evs[MAX_EPOLL_EVENTS];
   int i, ev_cnt = 0, timeout = -1, err;
   struct timespec now;
@@ -1182,7 +1268,7 @@ void *epoll_thread(void *srv_raw) {
   pthread_mutex_unlock(&g_channel_mutex);
 
   while (1) {
-    log_printf("Epoll with timeout: %d\n", timeout);
+    //    log_printf("Epoll with timeout: %d\n", timeout);
     ev_cnt = epoll_pwait(g_epollfd, evs, MAX_EPOLL_EVENTS, timeout, &old);
     if ( ev_cnt == -1 ) {
       if ( errno == EINTR ) {
@@ -1195,7 +1281,7 @@ void *epoll_thread(void *srv_raw) {
         exit(6);
       }
     }
-    log_printf("Finished epoll wait: %d\n", ev_cnt);
+    //log_printf("Finished epoll wait: %d\n", ev_cnt);
 
     timeout = -1;
 
@@ -1207,7 +1293,7 @@ void *epoll_thread(void *srv_raw) {
 
       lock_channel(chan);
 
-      log_printf("Got epoll for %d %d\n", chan->wrc_chan_id, ev->events);
+      //log_printf("Got epoll for %d %d\n", chan->wrc_chan_id, ev->events);
 
       state_transition(srv, chan, ev->events);
 
@@ -1224,29 +1310,34 @@ void *epoll_thread(void *srv_raw) {
         proxy_data(srv, chan, proxy_buf);
 
       if ( ev->events & (EPOLLHUP | EPOLLRDHUP) ) {
-        err = chan_disconnects(srv, chan);
+        err = chan_disconnects(srv, chan, &new_events);
         if ( err != 0 ) {
           release_channel(chan);
           continue;
         }
       }
 
-      if ( ev->events & EPOLLOUT )
+      if ( new_events != 0 && (ev->events & EPOLLOUT) )
         // The socket can be written to. Flush any pending messages
         flush_chan(srv, chan, &new_events);
 
       // Rearm the channel
 
-      ev->events = new_events;
-      err = epoll_ctl(g_epollfd, EPOLL_CTL_MOD, chan->wrc_sk, ev);
-      if ( err < 0 ) {
-        perror("epoll_ctl EPOLL_CTL_MOD");
+      if ( new_events != 0 ) {
+        ev->events = new_events;
+        err = epoll_ctl(g_epollfd, EPOLL_CTL_MOD, chan->wrc_sk, ev);
+        if ( err < 0 ) {
+          perror("epoll_ctl EPOLL_CTL_MOD");
+        }
       }
       release_channel(chan);
     }
 
     // Close all channels that were marked close
     perform_delayed_closes(srv);
+
+    // Retry resetting streams
+    perform_delayed_resets(srv);
 
     // Now, go over all open channels and if a timeout has expired,
     // mark the socket as waiting for output as well
@@ -1271,17 +1362,25 @@ void *epoll_thread(void *srv_raw) {
 
 // SCTP Server
 
-void warn_if_ext_not_supported(struct sctp_assoc_change *sac, int sz, const char *nm, uint8_t which) {
-  int ft_cnt = sz - sizeof(*sac), i;
-  uint8_t *fts = (uint8_t *) sac->sac_info;
-  for ( i = 0; i < ft_cnt; ++i ) {
-    if ( fts[i] == which ) return;
+void warn_if_ext_not_supported(int srv, const char *nm, int opt) {
+  struct sctp_assoc_value val;
+  socklen_t val_sz = sizeof(val);
+
+  val.assoc_id = g_webrtc_assoc;
+  val.assoc_value = 0;
+
+  if ( getsockopt(srv, IPPROTO_SCTP, opt,
+                  &val, &val_sz) < 0 ) {
+    perror("warn_if_ext_not_supported: getsockopt");
   }
 
-  fprintf(stderr, "Association does not support %s\n", nm);
+  if ( !val.assoc_value )
+    fprintf(stderr, "Association does not support %s\n", nm);
+  else
+    fprintf(stderr, "Association supports %s\n", nm);
 }
 
-void handle_assoc_change(struct socket *srv, struct sctp_assoc_change *sac, int sz) {
+void handle_assoc_change(int srv, struct sctp_assoc_change *sac, int sz) {
   int err;
 
   if ( sz < sizeof(*sac) ) return;
@@ -1290,45 +1389,84 @@ void handle_assoc_change(struct socket *srv, struct sctp_assoc_change *sac, int 
   case SCTP_COMM_UP:
     dbg_assoc_change(sac, sz);
     if ( g_webrtc_assoc != SCTP_FUTURE_ASSOC ) {
-      struct socket *assoc;
+      int assoc;
       // Close this association
       fprintf(stderr, "Received another association: %d\n", sac->sac_assoc_id);
-      assoc = usrsctp_peeloff(srv, sac->sac_assoc_id);
-      if ( !assoc ) {
-        perror("usrsctp_peeloff");
+      assoc = sctp_peeloff(srv, sac->sac_assoc_id);
+      if ( assoc < 0 ) {
+        perror("sctp_peeloff");
         return;
       }
 
-      if ( usrsctp_shutdown(assoc, SHUT_RDWR) < 0 ) {
-        perror("usrsctp_shutdown");
+      if ( shutdown(assoc, SHUT_RDWR) < 0 ) {
+        perror("shutdown");
         return;
       }
     } else {
       struct sctp_assoc_value sched;
+      struct sctp_paddrparams spp;
+      struct sockaddr_in any_ip;
+      socklen_t optlen;
 
       g_webrtc_assoc = sac->sac_assoc_id;
-      warn_if_ext_not_supported(sac, sz, "SCTP reconfig", SCTP_ASSOC_SUPPORTS_RE_CONFIG);
-      warn_if_ext_not_supported(sac, sz, "SCTP partial reliability", SCTP_ASSOC_SUPPORTS_PR);
+      warn_if_ext_not_supported(srv, "SCTP reconfig", SCTP_RECONFIG_SUPPORTED);
+      warn_if_ext_not_supported(srv, "SCTP partial reliability", SCTP_PR_SUPPORTED);
 
       sched.assoc_id = g_webrtc_assoc;
-      sched.assoc_value = SCTP_SS_PRIORITY;
-      if ( usrsctp_setsockopt(srv, IPPROTO_SCTP, SCTP_PLUGGABLE_SS, &sched, sizeof(sched)) < 0 ) {
-        perror("usrsctp_setsockopt SCTP_PLUGGABLE_SS");
+      sched.assoc_value = SCTP_SS_PRIO;
+      if ( setsockopt(srv, IPPROTO_SCTP, SCTP_STREAM_SCHEDULER, &sched, sizeof(sched)) < 0 ) {
+        perror("setsockopt SCTP_PLUGGABLE_SS");
       }
+
+      sched.assoc_id = g_webrtc_assoc;
+      sched.assoc_value = SCTP_ENABLE_RESET_STREAM_REQ | SCTP_ENABLE_RESET_ASSOC_REQ |
+        SCTP_ENABLE_CHANGE_ASSOC_REQ;
+      if ( setsockopt(srv, IPPROTO_SCTP, SCTP_ENABLE_STREAM_RESET, &sched, sizeof(sched)) < 0) {
+        perror("setsockopt SCTP_ENABLE_STREAM_RESET");
+      }
+
+      sched.assoc_id = g_webrtc_assoc;
+      sched.assoc_value = 0;
+      optlen = sizeof(sched);
+      if ( getsockopt(srv, IPPROTO_SCTP, SCTP_ENABLE_STREAM_RESET, &sched, &optlen) < 0 ) {
+        perror("getsockopt SCTP_ENABLE_STREAM_RESET");
+      } else
+        fprintf(stderr, "SCTP_ENABLE_STREAM_RESET value: %x\n", sched.assoc_value);
+
+      any_ip.sin_family = AF_INET;
+      any_ip.sin_port = 0;
+      any_ip.sin_addr.s_addr = INADDR_ANY;
+
+      memset(&spp, 0, sizeof(spp));
+      spp.spp_assoc_id = g_webrtc_assoc;
+      memcpy(&spp.spp_address, &any_ip, sizeof(any_ip));
+      spp.spp_hbinterval = 30000; // Send a heartbeat every ten seconds
+      spp.spp_pathmaxrxt = 5;
+      if ( setsockopt(srv, IPPROTO_SCTP, SCTP_PEER_ADDR_PARAMS, &spp, sizeof(spp)) < 0 ) {
+        perror("setsockopt SCTP_PEER_ADDR_PARAMS");
+      }
+
 
       g_num_strms = (sac->sac_outbound_streams < sac->sac_inbound_streams ?
                      sac->sac_inbound_streams : sac->sac_outbound_streams);
       g_channels = calloc(sizeof(*g_channels), g_num_strms);
       if ( !g_channels ) {
-        perror("calloc");
+        perror("calloc g_channels");
         exit(200);
       }
 
       g_channel_htbl = calloc(sizeof(*g_channel_htbl), g_num_strms);
       if ( !g_channel_htbl ) {
-        perror("calloc");
+        perror("calloc g_channel_htbl");
         exit(201);
       }
+
+      g_closing_chans = calloc(sizeof(*g_closing_chans), g_num_strms);
+      if ( !g_closing_chans ) {
+        perror("calloc g_closing_chans");
+        exit(202);
+      }
+      memset(g_closing_chans, 0xFF, sizeof(*g_closing_chans) * g_num_strms);
 
       // Launch proxy thread
       err = pthread_barrier_init(&g_epoll_barrier, NULL, 2);
@@ -1339,7 +1477,7 @@ void handle_assoc_change(struct socket *srv, struct sctp_assoc_change *sac, int 
       }
 
       err = pthread_create(&g_epoll_thread, NULL,
-                           epoll_thread, (void *) srv);
+                           epoll_thread, (void *) &srv);
       if ( err != 0 ) {
         errno = err;
         perror("pthread_create");
@@ -1370,7 +1508,7 @@ void handle_assoc_change(struct socket *srv, struct sctp_assoc_change *sac, int 
   }
 }
 
-void handle_notification(struct socket *srv, union sctp_notification *nf, int sz) {
+void handle_notification(int srv, union sctp_notification *nf, int sz) {
   switch ( nf->sn_header.sn_type ) {
   case SCTP_ASSOC_CHANGE:
     handle_assoc_change(srv, &nf->sn_assoc_change, sz);
@@ -1411,13 +1549,15 @@ int write_open_app_req(struct wrtcchan *chan, char *app_name, int app_name_len) 
   *((uint32_t *)buf) = htonl(app_name_len);
   memcpy(buf + 4, app_name, app_name_len);
   memcpy(buf + 4 + app_name_len, g_capability, cap_len);
+
+  return 0;
 }
 
-void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
+void handle_chan_msg(int srv, struct wrtcchan *chan,
                      void *buf, int sz) {
-  int app_name_len, send_buf_len, err, rsp_sz;
+  int app_name_len, err, rsp_sz;
   struct stkcmsg rsp, *msg = (struct stkcmsg *)buf;
-  struct sctp_sndinfo si;
+  struct sctp_sndrcvinfo sri;
   struct sockaddr_in endpoint;
 
   lock_channel(chan);
@@ -1427,7 +1567,7 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
     goto reset;
   }
 
-  chan_sctp_sndinfo(chan, &si);
+  chan_sctp_sndrcvinfo(chan, &sri);
 
   switch ( STK_CMSG_REQ(msg) ) {
   case SCM_REQ_OPEN_APP:
@@ -1445,6 +1585,7 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
       if ( err < 0 ) {
         int saved_errno = errno;
         perror("write_open_app_req");
+        errno = saved_errno;
         rsp_cmsg_error(srv, chan, STK_CMSG_REQ(msg), STKD_ERROR_SYSTEM_ERROR);
         break;
       }
@@ -1501,16 +1642,12 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
               rsp.data.scm_error = translate_stk_connection_error(errno);
             } else {
               if ( err == 0 ) {
-                int old_sk = chan->wrc_sk;
-
                 mark_channel_connected(chan);
                 arm_channel(chan);
 
                 rsp_sz = SCM_CONNECT_RSP_SZ;
                 rsp.scm_type = SCM_RESPONSE | SCM_REQ_CONNECT;
               } else {
-                struct wrcpendingconn *pconn = (struct wrcpendingconn *) chan->wrc_buffer;
-
                 // The connection is in progress
                 chan->wrc_family = AF_INET;
                 chan->wrc_type = msg->data.scm_connect.scm_sk_type;
@@ -1528,10 +1665,8 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
 
       // send the response, if any
       if ( rsp_sz > 0 ) {
-        chan_sctp_sndinfo(chan, &si);
-        err = usrsctp_sendv(srv, (void *) &rsp, rsp_sz, NULL, 0,
-                            (void *) &si, sizeof(si),
-                            SCTP_SENDV_SNDINFO, 0);
+        chan_sctp_sndrcvinfo(chan, &sri);
+        err = sctp_send(srv, (void *) &rsp, rsp_sz, &sri, 0);
         if ( err < 0 ) {
           perror("SCM_REQ_CONNECT usrsctp_sendv");
           goto reset;
@@ -1566,7 +1701,7 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
       };
 
       if ( (chan->wrc_msg_sz + data_sz) <= chan->wrc_buf_sz ) {
-        uint8_t *outgoing_buf = chan->wrc_buffer + chan->wrc_msg_sz;
+        uint8_t *outgoing_buf = (unsigned char *) (chan->wrc_buffer + chan->wrc_msg_sz);
 
         if ( chan->wrc_type == SOCK_DGRAM ) {
           // Include frame
@@ -1621,26 +1756,26 @@ void handle_chan_msg(struct socket *srv, struct wrtcchan *chan,
   return;
 }
 
-void handle_msg(struct socket *srv,
-                struct sctp_rcvinfo *rcv, int rcv_sz,
+void handle_msg(int srv,
+                struct sctp_sndrcvinfo *rcv,
                 void *buf, int sz) {
   struct wrtcmsg *control;
   struct wrtcchan *chan;
   struct sctp_stream_value ss_prio;
-  struct sctp_sndinfo si;
+  struct sctp_sndrcvinfo sri;
   wrcchanid chan_id;
   uint8_t ack;
   ssize_t err;
   int sk;
   struct sockaddr_in remote;
 
-  switch ( ntohl(rcv->rcv_ppid) ) {
+  switch ( ntohl(rcv->sinfo_ppid) ) {
   case WEBRTC_BINARY_PPID:
-    chan = find_chan(WEBRTC_CHANID(rcv->rcv_sid));
+    chan = find_chan(WEBRTC_CHANID(rcv->sinfo_stream));
     if ( !chan ) {
       // Channel does not exist, we should reset the streams
-      fprintf(stderr, "Could not find channel: %d\n", WEBRTC_CHANID(rcv->rcv_sid));
-      reset_wrc_chan(srv, chan_id);
+      fprintf(stderr, "Could not find channel: %d\n", WEBRTC_CHANID(rcv->sinfo_stream));
+      reset_wrc_chan(srv, WEBRTC_CHANID(rcv->sinfo_stream));
       break;
     }
 
@@ -1655,8 +1790,10 @@ void handle_msg(struct socket *srv,
 
     switch ( control->wm_type ) {
     case WEBRTC_MSG_OPEN:
-      chan_id = WEBRTC_CHANID(rcv->rcv_sid);
+      chan_id = WEBRTC_CHANID(rcv->sinfo_stream);
       fprintf(stderr, "Request to open WebRTC data channel %d\n", chan_id);
+
+      do_not_close_channel(chan_id);
 
       chan = alloc_wrtc_chan(chan_id);
       if ( !chan ) {
@@ -1696,8 +1833,14 @@ void handle_msg(struct socket *srv,
         break;
       }
 
-      strncpy_fixed(chan->wrc_label, WEBRTC_NAME_MAX, WEBRTC_MSG_LABEL(control), ntohs(control->wm_lbllen));
-      strncpy_fixed(chan->wrc_proto, WEBRTC_NAME_MAX, WEBRTC_MSG_PROTO(control), ntohs(control->wm_prolen));
+      strncpy_fixed(chan->wrc_label, WEBRTC_NAME_MAX,
+                    WEBRTC_MSG_LABEL(control), ntohs(control->wm_lbllen));
+      chan->wrc_label[MIN(ntohs(control->wm_lbllen), WEBRTC_NAME_MAX - 1)] = '\0';
+
+      strncpy_fixed(chan->wrc_proto, WEBRTC_NAME_MAX, WEBRTC_MSG_PROTO(control),
+                    ntohs(control->wm_prolen));
+      chan->wrc_proto[MIN(ntohs(control->wm_prolen), WEBRTC_NAME_MAX - 1)] = '\0';
+
       dbg_chan(chan);
 
       fprintf(stderr, "Opening WebRTC channel\n");
@@ -1731,28 +1874,26 @@ void handle_msg(struct socket *srv,
       ss_prio.assoc_id = g_webrtc_assoc;
       ss_prio.stream_id = WEBRTC_CLIENT_SID(chan_id);
       ss_prio.stream_value = 0xFFFF - control->wm_prio;
-      if ( usrsctp_setsockopt(srv, IPPROTO_SCTP, SCTP_SS_VALUE, &ss_prio, sizeof(ss_prio)) < 0 ) {
-        perror("usrsctp_setsockopt SCTP_SS_VALUE (client)");
+      if ( setsockopt(srv, IPPROTO_SCTP, SCTP_STREAM_SCHEDULER_VALUE, &ss_prio, sizeof(ss_prio)) < 0 ) {
+        perror("setsockopt SCTP_STREAM_SCHEDULER_VALUE (client)");
       }
 
       ss_prio.stream_id = WEBRTC_SERVER_SID(chan_id);
-      if ( usrsctp_setsockopt(srv, IPPROTO_SCTP, SCTP_SS_VALUE, &ss_prio, sizeof(ss_prio)) < 0 ) {
-        perror("usrsctp_setsockopt SCTP_SS_VALUE (server)");
+      if ( setsockopt(srv, IPPROTO_SCTP, SCTP_STREAM_SCHEDULER_VALUE, &ss_prio, sizeof(ss_prio)) < 0 ) {
+        perror("setsockopt SCTP_STREAM_SCHEDULER_VALUE (server)");
       }
 
       // Send ACK message now
-      si.snd_sid = WEBRTC_SERVER_SID(chan_id);
-      si.snd_flags = 0;
-      si.snd_ppid = htonl(WEBRTC_CONTROL_PPID);
-      si.snd_context = chan_id;
-      si.snd_assoc_id = g_webrtc_assoc;
+      memset(&sri, 0, sizeof(sri));
+      sri.sinfo_stream = WEBRTC_SERVER_SID(chan_id);
+      sri.sinfo_ppid = htonl(WEBRTC_CONTROL_PPID);
+      sri.sinfo_context = chan_id;
+      sri.sinfo_assoc_id = g_webrtc_assoc;
 
       ack = WEBRTC_MSG_OPEN_ACK;
-      err = usrsctp_sendv(srv, (void *)&ack, sizeof(ack), NULL, 0,
-                          (void *) &si, sizeof(si),
-                          SCTP_SENDV_SNDINFO, 0);
+      err = sctp_send(srv, (void *)&ack, sizeof(ack), &sri, 0);
       if ( err < 0 ) {
-        perror("usrsctp_sendv WEBRTC_MSG_OPEN_ACK");
+        perror("sctp_send WEBRTC_MSG_OPEN_ACK");
         dealloc_wrtc_chan(chan);
         return;
       }
@@ -1764,7 +1905,7 @@ void handle_msg(struct socket *srv,
     }
     break;
   default:
-    fprintf(stderr, "Unknown PPID %d\n", ntohl(rcv->rcv_ppid));
+    fprintf(stderr, "Unknown PPID %d\n", ntohl(rcv->sinfo_ppid));
   }
 }
 
@@ -1775,33 +1916,45 @@ void usage() {
 
 int main(int argc, char **argv) {
   uint16_t port;
-  int on = 1, i = 0;
-  struct socket *sock;
-  struct sctp_udpencaps encaps;
+  //  int on = 1, i = 0;
+  int sock;
 
-  struct sctp_event event;
-  uint16_t event_types[] = {
-    SCTP_ASSOC_CHANGE,
-    SCTP_STREAM_RESET_EVENT,
-    SCTP_REMOTE_ERROR,
-    SCTP_SHUTDOWN_EVENT,
-    SCTP_ADAPTATION_INDICATION,
-    SCTP_PARTIAL_DELIVERY_EVENT
-  };
+  struct sctp_event_subscribe subs;
+//  struct sctp_event event;
+//  uint16_t event_types[] = {
+//    SCTP_ASSOC_CHANGE,
+//    SCTP_STREAM_RESET_EVENT,
+//    SCTP_REMOTE_ERROR,
+//    SCTP_SHUTDOWN_EVENT,
+//    SCTP_ADAPTATION_INDICATION,
+//    SCTP_PARTIAL_DELIVERY_EVENT
+//  };
 
   struct sockaddr_in addr;
 
   char name[INET_ADDRSTRLEN];
-  socklen_t infolen, from_len;
-  struct sctp_rcvinfo rcv_info;
-  unsigned int infotype;
+  socklen_t from_len;
+  struct sctp_sndrcvinfo rcv_info;
   int flags, n;
 
+  uint8_t kite_sts = 1;
+  int comm_up = 0;
+  //  int autoclose_interval = 60; // Close the association in 60 seconds
+  //  struct linger sctp_linger;
+
   struct sctp_initmsg init;
+  struct sctp_assoc_value reseto;
 
   char buffer[PROXY_BUF_SIZE];
 
-  sigset_t block;
+  //  sigset_t block;
+  if ( fcntl(COMM, F_GETFD) >= 0 ) {
+    fprintf(stderr, "webrtc-proxy: running in kite\n");
+    comm_up = 1;
+  } else {
+    fprintf(stderr, "webrtc-proxy: running in debug mode\n");
+    comm_up = 0;
+  }
 
   if ( argc < 3 ) {
     usage();
@@ -1813,20 +1966,23 @@ int main(int argc, char **argv) {
 
   memset(g_address_table, 0xFF, sizeof(g_address_table));
 
-  usrsctp_init(port, NULL, debug_printf);
+  //usrsctp_init(port, NULL, debug_printf);
   //  usrsctp_sysctl_set_sctp_debug_on(SCTP_DEBUG_ALL);
 
-  sock = usrsctp_socket(AF_INET, SOCK_SEQPACKET, IPPROTO_SCTP,
-                        NULL, NULL, 0, NULL);
+  sock = socket(AF_INET, SOCK_SEQPACKET, IPPROTO_SCTP);
   if ( !sock ) {
-    perror("usrsctp_socket");
+    perror("socket");
     return 1;
   }
 
-  if ( usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_RECVRCVINFO, &on, sizeof(on)) < 0 ) {
-    perror("usrsctp_setsockopt SCTP_RECVRCVINFO");
-    return 1;
-  }
+//  if ( setsockopt(sock, SOL_SOCKET, SO_DEBUG, &yes, sizeof(yes)) < 0 ) {
+//    perror("setsockopt SO_DEBUG");
+//  }
+
+//  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_RECVRCVINFO, &on, sizeof(on)) < 0 ) {
+//    perror("setsockopt SCTP_RECVRCVINFO");
+//    return 1;
+//  }
 
   g_max_strms = sysconf(_SC_OPEN_MAX);
 
@@ -1834,52 +1990,96 @@ int main(int argc, char **argv) {
   init.sinit_max_instreams  = g_max_strms * 2;
   init.sinit_max_attempts   = 0;
   init.sinit_max_init_timeo = 0;
-  if ( usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_INITMSG, &init, sizeof(init)) < 0 ) {
-    perror("usrsctp_setsockopt SCTP_INITMSG");
-    return 1;
-  }
-
-  // Set usrsctp to use remote encapsulation
-  memset(&encaps, 0, sizeof(encaps));
-  encaps.sue_address.ss_family = AF_INET;
-  encaps.sue_port = htons(port);
-  if ( usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_REMOTE_UDP_ENCAPS_PORT, (void *)&encaps, sizeof(encaps)) < 0 ) {
-    perror("usrsctp_setsockopt SCTP_REMOTE_UDP_ENCAPS_PORT");
+  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_INITMSG, &init, sizeof(init)) < 0 ) {
+    perror("setsockopt SCTP_INITMSG");
     return 1;
   }
 
   // Register events
-  memset(&event, 0, sizeof(event));
-  event.se_assoc_id = SCTP_FUTURE_ASSOC;
-  event.se_on = 1;
-  for ( i = 0; i < sizeof(event_types)/sizeof(event_types[0]); ++i ) {
-    event.se_type = event_types[i];
-    if ( usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event)) < 0 ) {
-      perror("usrsctp_setsockopt SCTP_EVENT");
-    }
+  memset(&subs, 0, sizeof(subs));
+  subs.sctp_data_io_event = 1;
+  subs.sctp_association_event = 1;
+  subs.sctp_address_event = 0;
+  subs.sctp_send_failure_event = 1;
+  subs.sctp_peer_error_event = 1;
+  subs.sctp_shutdown_event = 1;
+  subs.sctp_partial_delivery_event = 1;
+  subs.sctp_adaptation_layer_event = 0;
+  subs.sctp_authentication_event = 0;
+  subs.sctp_sender_dry_event = 0;
+  subs.sctp_stream_reset_event = 1;
+  subs.sctp_assoc_reset_event = 1;
+  subs.sctp_stream_change_event = 1;
+
+  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_EVENTS, &subs, sizeof(subs)) < 0 ) {
+    perror("setsockopt SCTP_EVENTS");
+    return 1;
   }
 
-  memset(&addr, sizeof(addr), 0);
+//  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_AUTOCLOSE, &autoclose_interval, sizeof(autoclose_interval)) < 0 ) {
+//    perror("setsockopt SCTP_AUTOCLOSE");
+//    return 1;
+//  }
+//
+//  sctp_linger.l_onoff = 1;
+//  sctp_linger.l_linger = 0; // Cause the association to shutdown via ABORT
+//  if ( setsockopt(sock, SOL_SOCKET, SO_LINGER, &sctp_linger, sizeof(sctp_linger)) < 0 ) {
+//    perror("setsockopt SO_LINGER");
+//    return 1;
+//  }
+//
+//  memset(&event, 0, sizeof(event));
+//  event.se_assoc_id = SCTP_FUTURE_ASSOC;
+//  event.se_on = 1;
+//  for ( i = 0; i < sizeof(event_types)/sizeof(event_types[0]); ++i ) {
+//    event.se_type = event_types[i];
+//    if ( usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event)) < 0 ) {
+//      perror("usrsctp_setsockopt SCTP_EVENT");
+//    }
+//  }
+
+  reseto.assoc_id = 0;
+  reseto.assoc_value = 1;
+  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_RECONFIG_SUPPORTED, &reseto, sizeof(reseto)) < 0 ) {
+    perror("setsockopt SCTP_RECONFIG_SUPPORTED");
+    return 1;
+  }
+
+  reseto.assoc_id = 0;
+  reseto.assoc_value = SCTP_ENABLE_RESET_STREAM_REQ | SCTP_ENABLE_RESET_ASSOC_REQ |
+    SCTP_ENABLE_CHANGE_ASSOC_REQ;
+  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_ENABLE_STREAM_RESET, &reseto, sizeof(reseto)) < 0) {
+    perror("setsockopt SCTP_ENABLE_STREAM_RESET");
+    return 1;
+  }
+
+  memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(5000); // TODO accept this port on command line
+  addr.sin_port = htons(port); // TODO accept this port on command line
   addr.sin_addr.s_addr = INADDR_ANY;
-  if ( usrsctp_bind(sock, (struct sockaddr *) &addr, sizeof(addr)) < 0 ) {
-    perror("usrsctp_bind");
+  if ( sctp_bindx(sock, (struct sockaddr *) &addr, 1, SCTP_BINDX_ADD_ADDR) < 0 ) {
+    perror("sctp_bind");
     return 1;
   }
 
-  if ( usrsctp_listen(sock, 5) < 0 ) {
-    perror("usrsctp_listen");
+  if ( listen(sock, 5) < 0 ) {
+    perror("listen");
     return 1;
+  }
+
+  if ( comm_up ) {
+    if ( write(COMM, &kite_sts, 1) != 1 )
+      perror("webrtc-proxy: write(COMM)");
+    close(COMM);
   }
 
   while (1) {
     from_len = sizeof(addr);
     flags = 0;
-    infolen = sizeof(rcv_info);
-    n = usrsctp_recvv(sock, (void *) &buffer, sizeof(buffer),
-                      (struct sockaddr *)&addr, &from_len,
-                      (void *) &rcv_info, &infolen, &infotype, &flags);
+    fprintf(stderr, "webrtc-proxy: going to read from port %d\n", port);
+    n = sctp_recvmsg(sock, (void *) &buffer, sizeof(buffer),
+                     (struct sockaddr *)&addr, &from_len,
+                     (void *) &rcv_info, &flags);
 
     if ( n > 0 ) {
       if ( flags & MSG_NOTIFICATION ) {
@@ -1890,10 +2090,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Message of length %llu received from %s:%u on stream %u with SSN %u and TSN %u, PPID %u, complete %d\n",
                 (unsigned long long) n,
                 inet_ntop(AF_INET, &addr.sin_addr, name, sizeof(name)), ntohs(addr.sin_port),
-                rcv_info.rcv_sid, rcv_info.rcv_ssn, rcv_info.rcv_tsn,
-                ntohl(rcv_info.rcv_ppid), (flags & MSG_EOR) ? 1 : 0);
+                rcv_info.sinfo_stream, rcv_info.sinfo_ssn, rcv_info.sinfo_tsn,
+                ntohl(rcv_info.sinfo_ppid), (flags & MSG_EOR) ? 1 : 0);
 
-        handle_msg(sock, &rcv_info, infolen, &buffer, n);
+        handle_msg(sock, &rcv_info, &buffer, n);
       }
     } else {
       perror("usrsctp_recvv");

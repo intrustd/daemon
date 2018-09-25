@@ -3,7 +3,7 @@
 
   options = with lib; {
     stork.app-domain = mkOption {
-      type = types.uri;
+      type = types.string;
       description = "App domain uri";
     };
     stork.app-name = mkOption {
@@ -56,6 +56,31 @@
       internal = true;
       description = "The top-level package";
     };
+
+    stork.manifest = mkOption {
+      type = types.package;
+      internal = true;
+      description = "Manifest build";
+    };
+
+    stork.meta = mkOption {
+      type = types.submodule {
+        options = {
+          name = mkOption {
+            type = types.str;
+            default = config.stork.app-name;
+            description = "Human-readable nme of package";
+          };
+
+          authors = mkOption {
+            type = types.listOf types.str;
+            default = [];
+            description = "Names of package authors";
+          };
+        };
+      };
+      description = "Meta description about package";
+    };
   };
 
   config = {
@@ -91,6 +116,14 @@
       "/share/kservicestype5"
       "/share/kxmlgui5"
     ];
+
+    stork.manifest = pkgs.writeText "${config.stork.app-name}-manifest"
+      (builtins.toJSON {
+        name = config.stork.meta.name;
+#        authors = config.stork.meta.authors;
+        canonical = "kite+app://${config.stork.app-domain}/${config.stork.app-name}";
+        nix-closure = config.stork.toplevel;
+      });
 
     stork.toplevel =
       let startScript = pkgs.writeScript "start-script" ''

@@ -4,7 +4,7 @@
 #include <boost/asio.hpp>
 
 #include "configuration.hpp"
-#include "backend.hpp"
+#include "registry.hpp"
 
 namespace stork {
   namespace flock {
@@ -26,18 +26,19 @@ namespace stork {
 
       class Manager {
       public:
-        Manager(boost::asio::io_service &svc, const Configuration &conf, IBackend &backend);
+        Manager(boost::asio::io_service &svc, const Configuration &conf);
 
         inline boost::asio::io_service &service() { return m_io_service; };
         inline const Configuration &config() const { return m_config; }
-        inline IBackend &backend() const { return m_backend; }
+        inline ApplianceRegistry &registry() { return m_registry; }
+        inline const ApplianceRegistry &registry() const { return m_registry; }
 
         int run();
 
       private:
         boost::asio::io_service &m_io_service;
         const Configuration &m_config;
-        IBackend &m_backend;
+        ApplianceRegistry m_registry;
 
         StunServer m_stun_server;
 

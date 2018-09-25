@@ -20,6 +20,10 @@ struct stkinitmsg {
 
 #define STK_ARGS(msg) ((msg)->after)
 
-#define STK_REQ_RUN 1
+#define STK_REQ_RUN 0x0001
+
+// The process follows the kite initialization protocol. Set this flag
+// to wait for the process to really start
+#define STK_RUN_FLAG_KITE 0x00000001
 
 #endif

@@ -8,9 +8,9 @@
 #include "checklist.hpp"
 #include "../appliance.hpp"
 #include "../util/array.hpp"
+#include "../crypto/certificate.hpp"
 #include "session.hpp"
 #include "ice.hpp"
-#include "certificate.hpp"
 #include "dtls.hpp"
 // #include "push_pull_socket.hpp"
 
@@ -49,7 +49,7 @@ namespace stork {
 
       inline bool valid() const { return !m_received_sdp || m_received_sdp_valid; }
       bool connectable() const;
-      inline const X509Certificate &local_cert() const { return m_local_cert; }
+      inline const crypto::X509Certificate &local_cert() const { return m_local_cert; }
 
       inline std::uint64_t tie_breaker() const { return m_tie_breaker; }
 
@@ -125,8 +125,8 @@ namespace stork {
       virtual void on_receive_ice_candidate(const IceCandidate &c);
       virtual void on_ice_complete(boost::system::error_code ec);
 
-      virtual bool verify_peer_cert(DTLSChannel *c, const X509Certificate &cert) override;
-      virtual const X509Certificate &ssl_certificate() const override;
+      virtual bool verify_peer_cert(DTLSChannel *c, const crypto::X509Certificate &cert) override;
+      virtual const crypto::X509Certificate &ssl_certificate() const override;
 
       virtual std::shared_ptr<PeerInitiator> initiator_shared_from_this() =0;
     private:
@@ -146,7 +146,7 @@ namespace stork {
       bool m_received_sdp, m_received_sdp_valid;
       PeerSessionDescription m_session_description, m_session_answer;
 
-      X509Certificate m_local_cert;
+      crypto::X509Certificate m_local_cert;
 
       // Accept at most 8 candidates for now
       boost::upgrade_mutex m_candidate_mutex;

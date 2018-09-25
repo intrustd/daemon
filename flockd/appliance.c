@@ -54,8 +54,11 @@ int applianceinfo_init(struct applianceinfo *info, shfreefn do_free) {
 void applianceinfo_release(struct applianceinfo *info) {
   int i;
 
-  for ( i = 0; i < sizeof(info->ai_personas) / sizeof(info->ai_personas[0]); ++i )
-    PERSONASFETCHER_UNREF(info->ai_personas[i]);
+  for ( i = 0; i < sizeof(info->ai_personas) / sizeof(info->ai_personas[0]); ++i ) {
+    if ( info->ai_personas[i] ) {
+      PERSONASFETCHER_UNREF(info->ai_personas[i]);
+    }
+  }
 
   if ( info->ai_flags & AI_FLAG_INITIALIZED ) {
     pthread_mutex_destroy(&info->ai_mutex);
@@ -156,11 +159,11 @@ static void aipf_free(const struct shared *sh, int level) {
 static void aipersonasfetcher_send_packet(struct aipersonasfetcher *aipf) {
   struct applianceinfo *app;
 
-  assert( pthread_mutex_lock(&aipf->aipf_fetcher.pf_mutex) == 0 );
+  SAFE_MUTEX_LOCK(&aipf->aipf_fetcher.pf_mutex);
   app = aipf->aipf_appliance;
   assert(app);
   AI_REF(app);
-  assert( pthread_mutex_unlock(&aipf->aipf_fetcher.pf_mutex) == 0 );
+  SAFE_MUTEX_UNLOCK(&aipf->aipf_fetcher.pf_mutex);
 
   fprintf(stderr, "aipersonasfetcher_start: sending packet\n");
   AI_WREF(app);
@@ -203,11 +206,15 @@ static void aipersonasfetcher_evtfn(struct eventloop *el, int op, void *arg) {
     this = STRUCT_FROM_BASE(struct aipersonasfetcher, aipf_req_timeout, evt->qde_sub);
 
     if ( AIPF_LOCK(this) == 0 ) {
-      this->aipf_req_retries++;
-      if ( this->aipf_req_retries >= AI_PERSONAS_FETCH_MAX_RETRIES ) {
-        aipersonasfetcher_failed(this);
-      } else
-        aipersonasfetcher_send_packet(this);
+      if ( this->aipf_fetcher.pf_is_complete ) {
+        fprintf(stderr, "aipersonasfetcher_evtfn: timeout... but we're complete!\n");
+      } else {
+        this->aipf_req_retries++;
+        if ( this->aipf_req_retries >= AI_PERSONAS_FETCH_MAX_RETRIES ) {
+          aipersonasfetcher_failed(this);
+        } else
+          aipersonasfetcher_send_packet(this);
+      }
       AIPF_UNREF(this);
     }
     break;
@@ -227,7 +234,7 @@ static int aipf_control(struct personasfetcher *pf, int op, void *arg) {
     AIPF_REF(aipf);
     fprintf(stderr, "aipf_control: received stun: %.*s\n", grs->grs_payload_length, grs->grs_payload);
 
-    assert(pthread_mutex_lock(&pf->pf_mutex) == 0);
+    SAFE_MUTEX_LOCK(&pf->pf_mutex);
     if ( memcmp(&aipf->aipf_tx_id, grs->grs_tx_id, sizeof(aipf->aipf_tx_id)) == 0 ) {
       assert(pf->pf_cached);
       actual_ofs = cps_tell(pf->pf_cached);
@@ -288,8 +295,11 @@ static int aipf_control(struct personasfetcher *pf, int op, void *arg) {
     }
 
     // If we have completed, mark ourselves complete
-    if ( has_completed )
+    if ( has_completed ) {
       personasfetcher_mark_complete(pf, aipf->aipf_el, 1);
+      if ( eventloop_cancel_timer(aipf->aipf_el, &aipf->aipf_req_timeout) )
+        AIPF_WUNREF(aipf);
+    }
 
     AIPF_UNREF(aipf);
     return ret;
@@ -453,4 +463,12 @@ int applianceinfo_receive_persona_response(struct applianceinfo *info,
     return 0;
   } else
     return -1;
+}
+
+X509 *applianceinfo_get_peer_certificate(struct applianceinfo *info) {
+  X509 *ret;
+  if ( info->ai_appliance_fn(info, AI_OP_GET_CERTIFICATE, &ret) < 0 ) {
+    ret = NULL;
+  }
+  return ret;
 }

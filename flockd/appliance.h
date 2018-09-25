@@ -19,6 +19,7 @@ typedef int (*appliancefn)(struct applianceinfo *, int, void *);
 #define AI_OP_RECONCILE        1
 #define AI_OP_GET_PEER_ADDR    2
 #define AI_OP_SEND_PACKET      3
+#define AI_OP_GET_CERTIFICATE  4
 
 // Keep at most the last 3 persona sets
 #define AI_MAX_PERSONAS        3
@@ -99,6 +100,8 @@ struct applianceinfo {
 int applianceinfo_init(struct applianceinfo *info, shfreefn free);
 void applianceinfo_clear(struct applianceinfo *info);
 void applianceinfo_release(struct applianceinfo *info);
+
+X509 *applianceinfo_get_peer_certificate(struct applianceinfo *info);
 
 struct personasfetcher *applianceinfo_lookup_personas(struct applianceinfo *info,
                                                       struct eventloop *el,

@@ -438,7 +438,7 @@ namespace stork {
         b.stream(*m_data_stream);
     }
 
-    bool PeerInitiator::verify_peer_cert(DTLSChannel *c, const X509Certificate &peer_cert) {
+    bool PeerInitiator::verify_peer_cert(DTLSChannel *c, const crypto::X509Certificate &peer_cert) {
       std::uint8_t peer_fingerprint[SHA256_DIGEST_LENGTH];
       if ( m_session_description.data_stream() &&
            m_session_description.data_stream()->has_fingerprint &&
@@ -453,7 +453,7 @@ namespace stork {
       }
     }
 
-    const X509Certificate &PeerInitiator::ssl_certificate() const {
+    const crypto::X509Certificate &PeerInitiator::ssl_certificate() const {
       return m_local_cert;
     }
 

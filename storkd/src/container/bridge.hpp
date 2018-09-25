@@ -12,7 +12,7 @@
 #include "../nix.hpp"
 #include "../backend.hpp"
 #include "../application/application.hpp"
-#include "../peer/certificate.hpp"
+#include "../crypto/certificate.hpp"
 
 namespace stork {
   namespace container {

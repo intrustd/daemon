@@ -1,3 +1,5 @@
+#include <string.h>
+#include <arpa/inet.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
 
@@ -9,7 +11,7 @@ int parse_hex_str(const char *digest, unsigned char *out, int out_sz) {
   for ( i = 0; digest[i] != '\0' && (i / 2) < out_sz; i++ ) {
     int v1, v2;
 
-    v1 = hex_value(digest[i]), v2;
+    v1 = hex_value(digest[i]);
     if ( v1 < 0 ) return -1;
 
     // Next character in octet
@@ -28,11 +30,28 @@ int parse_hex_str(const char *digest, unsigned char *out, int out_sz) {
 }
 
 char *hex_digest_str(const unsigned char *digest, char *out, int digest_sz) {
-  int i = 0, ofs;
+  int i = 0;
   for ( i = 0; i < digest_sz; ++i ) {
     sprintf(out + (i * 2), "%02x", digest[i]);
   }
   return out;
+}
+
+int parse_decimal(int *out, const char *buf, int buf_sz) {
+  int i = 0;
+
+  *out = 0;
+
+  for ( i = 0; i < buf_sz && buf[i] != '\0'; ++i ) {
+    int val = dec_value(buf[i]);
+    if ( val < 0 ) break;
+
+    *out = *out * 10 + val;
+  }
+
+  if ( i == 0 ) return -1;
+
+  return i;
 }
 
 void find_newline(const char *buf, int buf_sz, int *next_newline, int *nl_length) {
@@ -150,7 +169,7 @@ int atoi_ex(char *s, char *e, int *out) {
 int random_printable_string(char *out, size_t out_sz) {
   static const char readable_chars[] =
     "0123456789abcdefghcijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*(){}[]~`<>.,";
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ+/";
   size_t i;
   int ix;
 
@@ -166,4 +185,140 @@ int random_printable_string(char *out, size_t out_sz) {
   }
 
   return 1;
+}
+
+int format_address(struct sockaddr *sa, socklen_t sa_sz,
+                   char *out, size_t out_sz,
+                   uint16_t *port) {
+  switch ( sa->sa_family ) {
+  case AF_INET:
+    if ( out_sz >= INET_ADDRSTRLEN && sa_sz >= sizeof(struct sockaddr_in) ) {
+      struct sockaddr_in *sin = (struct sockaddr_in *) sa;
+      if ( !inet_ntop(AF_INET, &sin->sin_addr, out, out_sz) ) {
+        perror("format_address: inet_ntop");
+        return -1;
+      }
+      *port = ntohs(sin->sin_port);
+      return 0;
+    } else
+      return -1;
+
+  case AF_INET6:
+    if ( out_sz >= INET6_ADDRSTRLEN && sa_sz >= sizeof(struct sockaddr_in6) ) {
+      struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) sa;
+      if ( !inet_ntop(AF_INET6, &sin6->sin6_addr, out, out_sz) ) {
+        perror("format_address: inet_ntop");
+        return -1;
+      }
+      *port = ntohs(sin6->sin6_port);
+      return 0;
+    } else
+      return -1;
+
+  default:
+    if ( out_sz > 0 ) {
+      out[0] = '\0';
+    }
+    *port = 0;
+    return -1;
+  }
+}
+
+int parse_address(const char *str, size_t str_sz, uint16_t port,
+                  struct sockaddr *sa, socklen_t *sa_sz) {
+  char nt_addr[INET6_ADDRSTRLEN];
+  struct in_addr in;
+  struct in6_addr in6;
+
+  strncpy_safe(nt_addr, str, sizeof(nt_addr));
+  fprintf(stderr, "parse_address: %s\n", nt_addr);
+
+  if ( inet_pton(AF_INET, nt_addr, &in.s_addr) ) {
+    if ( *sa_sz >= sizeof(struct sockaddr_in) ) {
+      struct sockaddr_in *sin = (struct sockaddr_in *) sa;
+      *sa_sz = sizeof(*sin);
+      sin->sin_family = AF_INET;
+      sin->sin_port = htons(port);
+      memcpy(&sin->sin_addr, &in, sizeof(sin->sin_addr));
+      return 0;
+    } else
+      return -1;
+  }
+
+  STATIC_ASSERT(sizeof(kite_sock_addr) >= sizeof(struct sockaddr_in6), "kite_sock_addr is not big enough");
+  fprintf(stderr, "Attempt to parse ipv6 %d\n", inet_pton(AF_INET6, nt_addr, in6.s6_addr));
+  if ( inet_pton(AF_INET6, nt_addr, in6.s6_addr) ) {
+    if ( *sa_sz >= sizeof(struct sockaddr_in6) ) {
+      struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) sa;
+      *sa_sz = sizeof(*sin6);
+      sin6->sin6_family = AF_INET6;
+      sin6->sin6_port = htons(port);
+      memcpy(&sin6->sin6_addr, &in6, sizeof(sin6->sin6_addr));
+      return 0;
+    } else
+      return -1;
+  }
+
+  return -1;
+}
+
+void dump_address(FILE *out, void *addr, socklen_t addr_sz) {
+  char addr_out[INET6_ADDRSTRLEN];
+  uint16_t port;
+  if ( format_address(addr, addr_sz, addr_out, sizeof(addr_out), &port) < 0 ) {
+    fprintf(out, "<unknown-address>");
+  } else
+    fprintf(out, "%s:%u", addr_out, port);
+}
+
+int kite_sock_addr_equal(kite_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz) {
+  if ( a->sa_family == ksa->ksa.sa_family ) {
+    switch ( a->sa_family ) {
+    case AF_INET6:
+      if ( a_sz >= sizeof(ksa->ksa_ipv6) ) {
+        struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)a;
+        return memcmp(a6->sin6_addr.s6_addr, ksa->ksa_ipv6.sin6_addr.s6_addr, 16) == 0 &&
+          a6->sin6_port == ksa->ksa_ipv6.sin6_port;
+      } else
+        return 0;
+    case AF_INET:
+      if ( a_sz >= sizeof(ksa->ksa_ipv4) ) {
+        struct sockaddr_in *a4 = (struct sockaddr_in *)a;
+        return a4->sin_addr.s_addr == ksa->ksa_ipv4.sin_addr.s_addr &&
+          a4->sin_port == ksa->ksa_ipv4.sin_port;
+      } else
+        return 0;
+      break;
+
+    case AF_UNSPEC:
+    default:
+      return 0;
+    }
+  } else
+    return 0;
+}
+
+#define PRINT_CHAR fprintf(fp, "%02x ", *data); data++
+void print_hex_dump_fp(FILE *fp, const unsigned char *data, int data_sz) {
+  for ( ; data_sz > 0; data_sz -= 16 ) {
+    switch ( (data_sz >= 16) ? 15 : data_sz ) {
+    case 15: PRINT_CHAR;
+    case 14: PRINT_CHAR;
+    case 13: PRINT_CHAR;
+    case 12: PRINT_CHAR;
+    case 11: PRINT_CHAR;
+    case 10: PRINT_CHAR;
+    case 9: PRINT_CHAR;
+    case 8: PRINT_CHAR;
+    case 7: PRINT_CHAR;
+    case 6: PRINT_CHAR;
+    case 5: PRINT_CHAR;
+    case 4: PRINT_CHAR;
+    case 3: PRINT_CHAR;
+    case 2: PRINT_CHAR;
+    case 1: PRINT_CHAR;
+    default:
+    case 0: PRINT_CHAR; fprintf(fp, "\n");
+    }
+  }
 }

@@ -5,6 +5,11 @@ struct appconf {
   const char *ac_conf_dir;
   const char *ac_iproute_bin;
 
+  const char *ac_kitepath;
+  const char *ac_webrtc_proxy_path;
+  const char *ac_persona_init_path;
+  const char *ac_app_instance_init_path;
+
   uint32_t ac_flags;
 };
 

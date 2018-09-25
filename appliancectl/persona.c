@@ -10,6 +10,7 @@
 
 int create_persona_usage() {
   fprintf(stderr, "Usage: appliancectl create-persona [--display-name <name>] [--password <pw>]\n");
+  return 1;
 }
 
 int create_persona(int argc, char **argv) {
@@ -27,7 +28,7 @@ int create_persona(int argc, char **argv) {
   char *display_name = NULL;
   char *password = NULL;
 
-  while ( c = getopt_long(argc, argv, "h", options, &optind) ) {
+  while ( (c = getopt_long(argc, argv, "h", options, &optind)) ) {
     if ( c == -1 ) break;
 
     switch ( c ) {
@@ -79,6 +80,7 @@ int create_persona(int argc, char **argv) {
   if ( err < 0 ) {
     perror("create_persona: recv");
     close(sk);
+    return 2;
   }
 
   display_stork_response(buf, err, "Successfully created persona");

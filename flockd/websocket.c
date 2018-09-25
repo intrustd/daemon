@@ -13,11 +13,10 @@
 struct wsconnection {
   struct connection wsc_conn;
 
-  pthread_mutex_t wsc_mutex;
-
   int wsc_mode;
-  int wsc_proto_mode;
-  int wsc_corking_mode;
+  unsigned int wsc_proto_mode : 4;
+  unsigned int wsc_corking_mode : 2;
+  unsigned int wsc_nl_mode : 2;
 
   int wsc_websocket;
   struct fdsub wsc_wsk_sub;
@@ -46,17 +45,49 @@ struct wsconnection {
 #define WSC_PROTO_GET_APPLIANCE     2
 #define WSC_PROTO_LOGIN             3
 #define WSC_PROTO_GET_CREDENTIAL    4
-#define WSC_PROTO_ICE               5
+#define WSC_PROTO_RECEIVING_ANSWER  5
+
+#define WSC_NL_NONE 0
+#define WSC_NL_CR1  1
+#define WSC_NL_NL1  2
+#define WSC_NL_CR2  3
+
+#define WSC_PROTO_MODE_NEEDS_LINE(mode) ((mode) != WSC_PROTO_RECEIVING_ANSWER)
 
 #define WSC_PROTO_HANDSHAKE_VALUE "start"
 
 #define WSC_REF(wsc)   CONN_REF(&(wsc)->wsc_conn)
 #define WSC_WREF(wsc)  CONN_WREF(&(wsc)->wsc_conn)
+#define WSC_WUNREF(wsc)  CONN_WUNREF(&(wsc)->wsc_conn)
 #define WSC_LOCK(wsc)  CONN_LOCK(&(wsc)->wsc_conn)
 #define WSC_UNREF(wsc) CONN_UNREF(&(wsc)->wsc_conn)
 
-#define WSC_SUBSCRIBE_FD(wsc) \
-  eventloop_subscribe_fd((wsc)->wsc_conn.conn_el, (wsc)->wsc_websocket, &(wsc)->wsc_wsk_sub)
+#define WSC_SUBSCRIBE_WRITE(wsc) do {                   \
+    uint16_t __did_sub ## __LINE__;                     \
+    WSC_WREF(wsc); /* For FD_SUB_WRITE */               \
+    WSC_WREF(wsc); /* For FD_SUB_ERROR */               \
+    __did_sub ## __LINE__ = eventloop_subscribe_fd      \
+      ((wsc)->wsc_conn.conn_el, (wsc)->wsc_websocket,   \
+       FD_SUB_WRITE | FD_SUB_ERROR,                     \
+       &(wsc)->wsc_wsk_sub);                            \
+    if ( (__did_sub ## __LINE__ & FD_SUB_WRITE) == 0 )  \
+      WSC_WUNREF(wsc);                                  \
+    if ( (__did_sub ## __LINE__ & FD_SUB_ERROR) == 0 )  \
+      WSC_WUNREF(wsc);                                  \
+  } while (0)
+#define WSC_SUBSCRIBE_READ(wsc) do {                    \
+    uint16_t __did_sub ## __LINE__;                     \
+    WSC_WREF(wsc); /* For FD_SUB_READ */                \
+    WSC_WREF(wsc); /* For FD_SUB_ERROR */               \
+    __did_sub ## __LINE__ = eventloop_subscribe_fd      \
+      ((wsc)->wsc_conn.conn_el, (wsc)->wsc_websocket,   \
+       FD_SUB_READ | FD_SUB_ERROR,                      \
+       &(wsc)->wsc_wsk_sub);                            \
+    if ( (__did_sub ## __LINE__ & FD_SUB_READ) == 0 )   \
+      WSC_WUNREF(wsc);                                  \
+    if ( (__did_sub ## __LINE__ & FD_SUB_ERROR) == 0 )  \
+      WSC_WUNREF(wsc);                                  \
+  } while (0)
 
 #define WSC_HAS_SPACE(wsc, len) (((wsc)->wsc_outgoing_sz + (len)) <= sizeof((wsc)->wsc_outgoing_buf))
 #define WSC_SPACE_LEFT(wsc) (sizeof((wsc)->wsc_outgoing_buf) - (wsc)->wsc_outgoing_sz)
@@ -89,13 +120,13 @@ static void wsconnection_respond_line_ex(struct wsconnection *conn, struct event
 static void wsconnection_set_cork(struct wsconnection *conn);
 static int wsconnection_write_personas(struct wsconnection *wsc);
 
+// Returns 1 if two nls have been reached, otherwise, updates the
+// internal state and returns 0
+static int wsconnection_nl_mode(struct wsconnection *wsc, const char *buf, int *sz);
+
 static int parse_ws_handshake(struct wsconnection *wsc, struct wshs *hs, int *req_end);
 static void send_http_error(struct wsconnection *wsc, struct wshs *hs);
 static void send_handshake_response(struct wsconnection *wsc, struct wshs *hs);
-
-#define wsconnection_await_read(wsc, el) do {          \
-    FDSUB_SUBSCRIBE(&(wsc)->wsc_wsk_sub, FD_SUB_READ); \
-  } while(0)
 
 static void wsconnection_set_cork(struct wsconnection *conn) {
   if ( conn->wsc_corking_mode == WSC_NO_CORK )
@@ -114,6 +145,11 @@ static void wsconnection_remove_cork(struct wsconnection *conn) {
 
 static int wsconnection_write_personas(struct wsconnection *wsc) {
   int bytes_read, bytes_written, bytes_to_read;
+
+  fprintf(stderr, "wsconnection_write_personas: %p %p %d\n",
+          wsc, wsc->wsc_conn.conn_personas_writer.pw_cps,
+          PERSONASWRITER_IS_VALID(&wsc->wsc_conn.conn_personas_writer));
+  assert(PERSONASWRITER_IS_VALID(&wsc->wsc_conn.conn_personas_writer));
   bytes_written = personaswriter_size(&wsc->wsc_conn.conn_personas_writer);
 
   bytes_to_read = WSC_SPACE_LEFT(wsc) >  bytes_written ?
@@ -132,7 +168,7 @@ static int wsconnection_write_personas(struct wsconnection *wsc) {
 
     wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, temp_buf, bytes_read);
 
-    WSC_SUBSCRIBE_FD(wsc);
+    WSC_SUBSCRIBE_WRITE(wsc);
   } else
     return 1;
 
@@ -144,19 +180,19 @@ void websocket_fn(struct eventloop *el, int op, void *arg) {
   int new_sk;
   struct wsconnection *conn;
 
-  struct sockaddr addr;
+  kite_sock_addr addr;
   unsigned int addr_sz = sizeof(addr);
 
   st = FLOCKSTATE_FROM_EVENTLOOP(el);
 
   switch ( op ) {
   case WS_EVENT_ACCEPT:
-    new_sk = accept(st->fs_websocket_sk, &addr, &addr_sz);
+    new_sk = accept(st->fs_websocket_sk, &addr.ksa, &addr_sz);
     if ( new_sk < 0 ) {
       perror("websocket_fn: accept");
       return;
     }
-    eventloop_subscribe_fd(el, st->fs_websocket_sk, &st->fs_websocket_sub);
+    eventloop_subscribe_fd(el, st->fs_websocket_sk, FD_SUB_ACCEPT, &st->fs_websocket_sub);
 
     if ( set_socket_nonblocking(new_sk) < 0 ) {
       perror("websocket_fn: set_socket_nonblocking");
@@ -187,12 +223,6 @@ void websocket_fn(struct eventloop *el, int op, void *arg) {
   }
 }
 
-static int wsconnection_onwspacket(struct wsconnection *wsc, struct eventloop *el,
-                                   const char *buf, int sz) {
-  fprintf(stderr, "wsconnection_onwspacket(%d): %.*s\n", sz, sz, buf);
-  return 0;
-}
-
 static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *el,
                                     const char *buf, int next_newline) {
   struct applianceinfo *appliance;
@@ -210,35 +240,27 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
     } else {
       wsconnection_respond_line(wsc, el, "400 Must use 'start'");
     }
-    wsconnection_await_read(wsc, el);
+    WSC_SUBSCRIBE_READ(wsc);
     return 0;
   case WSC_PROTO_GET_APPLIANCE:
     if ( flockservice_lookup_appliance_ex(wsc->wsc_conn.conn_svc, buf, next_newline,
                                           &appliance) < 0 ) {
       wsconnection_respond_line(wsc, el, "404 Not Found");
     } else {
-      if ( pthread_mutex_lock(&wsc->wsc_conn.conn_mutex) == 0 ) {
-        if ( connection_connect_appliance(&wsc->wsc_conn, appliance) < 0 ) {
-          AI_UNREF(appliance);
-          pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
-          wsconnection_respond_line(wsc, el, "500 Internal Server Error");
-          connection_complete(&wsc->wsc_conn);
-          return -1;
-        } else {
-          pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
-          AI_UNREF(appliance);
-          // We do not send a 100 Continue response because we want to
-          // wait for confirmation from the appliance
-          // wsconnection_respond_line(wsc, el, "100 Continue");
-          wsc->wsc_proto_mode = WSC_PROTO_NO_READS;
-        }
-      } else {
+      if ( connection_connect_appliance(&wsc->wsc_conn, appliance) < 0 ) {
         wsconnection_respond_line(wsc, el, "500 Internal Server Error");
-        connection_complete(&wsc->wsc_conn);
+        connection_complete_unlocked(&wsc->wsc_conn);
+        AI_UNREF(appliance);
         return -1;
+      } else {
+        // We do not send a 100 Continue response because we want to
+        // wait for confirmation from the appliance
+        // wsconnection_respond_line(wsc, el, "100 Continue");
+        wsc->wsc_proto_mode = WSC_PROTO_NO_READS;
       }
+      AI_UNREF(appliance);
     }
-    wsconnection_await_read(wsc, el);
+    WSC_SUBSCRIBE_READ(wsc);
     return 0;
   case WSC_PROTO_LOGIN:
     if ( next_newline != (sizeof(persona_id) * 2) ) {
@@ -249,20 +271,21 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
       } else {
         if ( connection_set_persona(&wsc->wsc_conn, persona_id) < 0 ) {
           wsconnection_respond_line(wsc, el, "500 Internal Server Error");
-          connection_complete(&wsc->wsc_conn);
+          connection_complete_unlocked(&wsc->wsc_conn);
           return -1;
         }
         wsc->wsc_proto_mode = WSC_PROTO_GET_CREDENTIAL;
       }
     }
-    wsconnection_await_read(wsc, el);
+    WSC_SUBSCRIBE_READ(wsc);
     return 0;
   case WSC_PROTO_GET_CREDENTIAL:
     if ( connection_set_credential(&wsc->wsc_conn, buf, next_newline) < 0 ) {
       wsconnection_respond_line(wsc, el, "406 Invalid credential");
-      wsconnection_await_read(wsc, el);
+      WSC_SUBSCRIBE_READ(wsc);
       return 0;
     } else {
+      fprintf(stderr, "Websocket: got credential... start uthentication\n");
       if ( connection_start_authentication(&wsc->wsc_conn) < 0 ) {
         wsconnection_respond_line(wsc, el, "500 Internal Server Error");
         return -1;
@@ -271,6 +294,26 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
         return 0;
       }
     }
+  case WSC_PROTO_RECEIVING_ANSWER:
+    // In this mode, data is not broken up by lines, but rather is fed
+    // straight into the SDP parser
+    //
+    // This mode ends when we receive two newlines in a row
+    //
+    // Send the data straight into the receive buffer
+    fprintf(stderr, "Received answer data %.*s\n", next_newline, buf);
+    if ( !wsc->wsc_conn.conn_ai_client_ice_complete ) {
+      if ( wsconnection_nl_mode(wsc, buf, &next_newline) ) { // New line was encountered, and next_newline is updated to reflect that
+        wsc->wsc_proto_mode = WSC_PROTO_NO_READS;
+        connection_complete_client_ice(&wsc->wsc_conn);
+      }
+
+      fprintf(stderr, "Writing answer data \n");
+      if ( connection_write_answer(&wsc->wsc_conn, buf, next_newline) < next_newline ) {
+        wsconnection_respond_line(wsc, el, "413 Request too large");
+      }
+    }
+    return 0;
   case WSC_PROTO_NO_READS:
     fprintf(stderr, "Received line while input not allowed\n");
     return -1;
@@ -289,9 +332,14 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
   if ( bytes_available > 0 ) {
     err = recv(wsc->wsc_websocket, wsc->wsc_pkt_buf + wsc->wsc_pkt_sz, bytes_available, 0);
     if ( err <= 0 ) {
-      perror("wsconnection_onread: socket error\n");
-      connection_complete(&wsc->wsc_conn);
-      return -1;
+      if ( errno == EWOULDBLOCK ) {
+        fprintf(stderr, "wsconnection_onread: encountered EWOULDBLOCK...\n");
+        return 0;
+      } else {
+        perror("wsconnection_onread: socket error");
+        connection_complete_unlocked(&wsc->wsc_conn);
+        return -1;
+      }
     }
 
     wsc->wsc_pkt_sz += err;
@@ -350,6 +398,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
                 send_handshake_response(wsc, &handshake);
                 wsc->wsc_mode = WSC_MODE_WEBSOCKET;
                 wsc->wsc_proto_mode = WSC_PROTO_LOGIN;
+                WSC_SUBSCRIBE_READ(wsc);
               }
 
               AI_UNREF(appliance);
@@ -362,6 +411,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
       } else if ( err > 0 ) {
         // Need more
         fprintf(stderr, "Need more HTTP data\n");
+        WSC_SUBSCRIBE_READ(wsc);
       } else {
         // Actual error
         send_http_error(wsc, &handshake);
@@ -369,13 +419,12 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
       break;
     case WSC_MODE_WEBSOCKET:
       // Read the next websocket frame, if available
-      fprintf(stderr, "TODO parse websocket\n");
       while ( wsc->wsc_pkt_sz > 1 ) {
         unsigned int wsc_len = ((unsigned char) wsc->wsc_pkt_buf[1]) & ~WS_MASK;
         int mask_offs = 2, i = 0;
         unsigned char masking[4];
 
-        fprintf(stderr, "wsconnection_onread: got buffer: %02x %02x\n", wsc->wsc_pkt_buf[0], wsc->wsc_pkt_buf[1]);
+        fprintf(stderr, "wsconnection_onread: got buffer: %02x %02x\n", (unsigned char)wsc->wsc_pkt_buf[0], (unsigned char) wsc->wsc_pkt_buf[1]);
 
         if ( (wsc->wsc_pkt_buf[1] & WS_MASK) == 0 ) {
           fprintf(stderr, "wsconnection_onread: masking bit must be set in client-to-server communication: %02x %02x\n", wsc->wsc_pkt_buf[0], wsc->wsc_pkt_buf[1]);
@@ -440,7 +489,14 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
       break;
     case WSC_MODE_FLOCKP:
       while ( wsc->wsc_pkt_sz > 0 ) {
-        find_newline(wsc->wsc_pkt_buf, wsc->wsc_pkt_sz, &next_newline, &nl_length);
+        if ( WSC_PROTO_MODE_NEEDS_LINE(wsc->wsc_proto_mode) )
+          find_newline(wsc->wsc_pkt_buf, wsc->wsc_pkt_sz, &next_newline, &nl_length);
+        else {
+          // When no line breaking is needed, then the entire buffer is passed in
+          next_newline = wsc->wsc_pkt_sz;
+          nl_length = 0;
+        }
+
         if ( next_newline >= 0 ) {
           if ( wsconnection_onprotoline(wsc, el, wsc->wsc_pkt_buf, next_newline) < 0 ) {
             connection_complete(&wsc->wsc_conn);
@@ -504,8 +560,6 @@ static int wsconnection_dowrite(struct wsconnection *wsc, struct eventloop *el) 
     wsc->wsc_outgoing_pos %= sizeof(wsc->wsc_outgoing_buf);
   }
 
-  FDSUB_UNSUBSCRIBE(&wsc->wsc_wsk_sub, FD_SUB_WRITE);
-
   if ( wsc->wsc_outgoing_sz == 0 ) {
     if ( eventloop_queue(el, &wsc->wsc_has_more_outgoing) )
       WSC_WREF(wsc);
@@ -523,91 +577,102 @@ static void wsconnectionfn(struct eventloop *el, int op, void *arg) {
   struct fdevent *fde = (struct fdevent *) arg;
   struct qdevent *qde = (struct qdevent *) arg;
   struct wsconnection *wsc;
-  int locked = 0, did_read = 0, did_write = 0, is_complete;
+  int locked = 0;
 
   switch ( op ) {
   case OP_WEBSOCKET_EVT:
     wsc = STRUCT_FROM_BASE(struct wsconnection, wsc_wsk_sub, fde->fde_sub);
     SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "wsconnectionfn starting");
 
-    is_complete = connection_is_complete(&wsc->wsc_conn);
-    if ( FD_WRITE_AVAILABLE(fde) ) { // Writes are controlled via a strong reference
+
+    if ( FD_WRITE_AVAILABLE(fde) && WSC_LOCK(wsc) == 0 ) {
+      // Writes are controlled via a strong reference (wsconnection_respond_buffer)
+      // and a weak reference WSC_SUBSCRIBE_FD
       fprintf(stderr, "Doing write\n");
-      assert(pthread_mutex_lock(&wsc->wsc_mutex) == 0);
+
+      SAFE_MUTEX_LOCK(&wsc->wsc_conn.conn_mutex);
       locked = 1;
-      did_write = 1;
       WSC_REF(wsc);
+
       SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "wsconnectionfn calling dowrite");
       if ( wsconnection_dowrite(wsc, el) < 0 ) {
-        pthread_mutex_unlock(&wsc->wsc_mutex);
-        WSC_UNREF(wsc);
+        pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
+        WSC_UNREF(wsc); // WSC_REF above
+        WSC_UNREF(wsc); // WSC_LOCK in condition
         return;
       }
+
+      WSC_UNREF(wsc); // WSC_LOCK in condition
     }
 
-    if ( FD_READ_PENDING(fde) || FD_ERROR_PENDING(fde) ) {
+    if ( FD_READ_PENDING(fde) && WSC_LOCK(wsc) == 0 ) {
       fprintf(stderr, "Doing read\n");
       if ( !locked ) {
-        assert( pthread_mutex_lock(&wsc->wsc_mutex) == 0 );
+        SAFE_MUTEX_LOCK(&wsc->wsc_conn.conn_mutex);
+        WSC_REF(wsc);
         locked = 1;
       }
 
-      if ( WSC_LOCK(wsc) == 0 ) {
-        SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "wsconnectionfn after lock");
-        did_read = 1;
-
-        if ( FD_READ_PENDING(fde) ) {
-          if ( wsconnection_onread(wsc, el) < 0 ) {
-            pthread_mutex_unlock(&wsc->wsc_mutex);
-            WSC_UNREF(wsc); // In response to WSC_LOCK above
-            return;
-          }
-        }
-
-        if ( FD_ERROR_PENDING(fde) ) {
-          fprintf(stderr, "Got HUP on websocket\n");
-          connection_complete(&wsc->wsc_conn);
-        }
+      if ( wsc->wsc_conn.conn_ai_state == CONN_AI_STATE_COMPLETE ) {
+        fprintf(stderr, "Ignoring websocket event because we are complete\n");
+        SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "wsconnectionfn: complete");
+        pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
+        WSC_UNREF(wsc); // In response to WSC_LOCK above
+        WSC_UNREF(wsc); // In response to WSC_REF for lock
       } else {
-        fprintf(stderr, "wsconnectionfn: warning weak lock failed\n");
-        SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "after fail");
+        if ( wsconnection_onread(wsc, el) < 0 ) {
+          pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
+          WSC_UNREF(wsc); // In response to WSC_LOCK above
+          WSC_UNREF(wsc); // In response to WSC_REF for lock
+          return;
+        }
       }
+
+      WSC_UNREF(wsc); // In response to WSC_LOCK above
+    }
+
+    if ( FD_ERROR_PENDING(fde) && WSC_LOCK(wsc) == 0 ) {
+      fprintf(stderr, "Got HUP on websocket\n");
+      WSC_REF(wsc);
+      if ( !locked ) {
+        SAFE_MUTEX_LOCK(&wsc->wsc_conn.conn_mutex);
+        WSC_REF(wsc);
+        locked = 1;
+      }
+      connection_complete_unlocked(&wsc->wsc_conn);
+      WSC_UNREF(wsc); // WSC_LOCK above
     }
 
     fprintf(stderr, "wsconnectionfn: done handling %d\n", locked);
-    if ( is_complete ) {
-      FDSUB_UNSUBSCRIBE(&wsc->wsc_wsk_sub, FD_SUB_READ | FD_SUB_READ_OOB | FD_SUB_ERROR);
-    }
+    SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "after done handling");
     if ( locked ) {
-      if ( FDSUB_SUBSCRIBE(&wsc->wsc_wsk_sub, 0) & (FD_SUB_READ | FD_SUB_READ_OOB) &&
-           did_read )
-        WSC_WREF(wsc); // If we want more reads and we read something, then get a new weak reference
-      fprintf(stderr, "Resubscribe fd %08x\n", FDSUB_SUBSCRIBE(&wsc->wsc_wsk_sub, 0));
-      WSC_SUBSCRIBE_FD(wsc);
-
-      if ( did_read ) WSC_UNREF(wsc); // In response to WSC_LOCK above
-      if ( did_write ) WSC_UNREF(wsc); // In response to WSC_REF
+      if ( wsc->wsc_conn.conn_ai_state != CONN_AI_STATE_COMPLETE ) {
+        if ( wsc->wsc_proto_mode != WSC_PROTO_NO_READS )
+          WSC_SUBSCRIBE_READ(wsc);
+        if ( wsc->wsc_outgoing_sz > 0 )
+          WSC_SUBSCRIBE_WRITE(wsc);
+      }
 
       SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "after request processing");
 
-      pthread_mutex_unlock(&wsc->wsc_mutex);
+      pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
+      WSC_UNREF(wsc); // In response to lock acquired during mutex lock
     }
     break;
   case OP_WEBSOCKET_HAS_MORE_SPACE:
     wsc = STRUCT_FROM_BASE(struct wsconnection, wsc_has_more_outgoing, qde->qde_sub);
     if ( WSC_LOCK(wsc) == 0 ) {
-      if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
+      if ( pthread_mutex_lock(&wsc->wsc_conn.conn_mutex) == 0 ) {
         int finished = 0;
-        if ( PERSONASWRITER_IS_VALID(&wsc->wsc_conn.conn_personas_writer) ) {
-          finished = wsconnection_write_personas(wsc);
+        if ( wsc->wsc_conn.conn_ai_state == CONN_AI_STATE_SENDING_PERSONAS ) {
+          if ( PERSONASWRITER_IS_VALID(&wsc->wsc_conn.conn_personas_writer) ) {
+            finished = wsconnection_write_personas(wsc);
+          }
         }
-        pthread_mutex_unlock(&wsc->wsc_mutex);
 
-        if ( finished ) {
-          assert( pthread_mutex_lock(&wsc->wsc_conn.conn_mutex) == 0 );
+        if ( finished )
           connection_wait_for_auth(&wsc->wsc_conn);
-          pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
-        }
+        pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
       }
       fprintf(stderr, "TODO Websocket has more space... should write out personas\n");
       WSC_UNREF(wsc);
@@ -621,106 +686,113 @@ static void wsconnectionfn(struct eventloop *el, int op, void *arg) {
 static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
   struct wsconnection *wsc = STRUCT_FROM_BASE(struct wsconnection, wsc_conn, c);
   struct sdpln *ln;
+  uint16_t old_subs;
 
   switch ( op ) {
+    // Mutex is held
   case CONNECTION_OP_COMPLETE:
     return 0;
 
   case CONNECTION_OP_RELEASE_WEAK:
     fprintf(stderr, "wsconnectionctlfn: closing websocket\n");
-    close(wsc->wsc_websocket);
+    if ( wsc->wsc_websocket != 0 ) {
+      int old_sk = wsc->wsc_websocket;
+      wsc->wsc_websocket = 0;
+      old_subs = eventloop_unsubscribe_fd(wsc->wsc_conn.conn_el, old_sk,
+                                          FD_SUB_ALL, &wsc->wsc_wsk_sub);
+      if ( old_subs & FD_SUB_READ )
+        WSC_WUNREF(wsc);
+      if ( old_subs & FD_SUB_WRITE )
+        WSC_WUNREF(wsc);
+      if ( old_subs & FD_SUB_ERROR )
+        WSC_WUNREF(wsc);
+      SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "After close");
+      close(old_sk);
+    }
     return 0;
 
   case CONNECTION_OP_RELEASE:
     fprintf(stderr, "wsconnectionctlfn: cleaning up\n");
-    pthread_mutex_destroy(&wsc->wsc_mutex);
     return 0;
 
+    // conn_mutex is not held
   case CONNECTION_OP_APP_REQ_SENT:
     return 0;
 
+    // conn_mutex is held
   case CONNECTION_OP_TIMEOUT:
-    if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
-      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "408 Request Timeout");
-      WSC_SUBSCRIBE_FD(wsc);
-      pthread_mutex_unlock(&wsc->wsc_mutex);
-    }
+    wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "408 Request Timeout");
+    WSC_SUBSCRIBE_WRITE(wsc);
     return 0;
 
+    // conn_mutex is held
   case CONNECTION_OP_START_AUTH:
   case CONNECTION_OP_START_LOGIN:
   case CONNECTION_OP_START_ICE:
-    if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
-      if ( op == CONNECTION_OP_START_LOGIN )
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "105 Fetching Personas");
-      else if ( op == CONNECTION_OP_START_AUTH ) {
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "403 Authenticate Now");
-        wsc->wsc_proto_mode = WSC_PROTO_LOGIN;
-      } else {
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "200 Begin ICE");
-        wsc->wsc_proto_mode = WSC_PROTO_ICE;
-        wsconnection_set_cork(wsc);
-      }
-      WSC_SUBSCRIBE_FD(wsc);
-      // If there are personas... wait
-      pthread_mutex_unlock(&wsc->wsc_mutex);
+    if ( op == CONNECTION_OP_START_LOGIN )
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "105 Fetching Personas");
+    else if ( op == CONNECTION_OP_START_AUTH ) {
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "403 Authenticate Now");
+      wsc->wsc_proto_mode = WSC_PROTO_LOGIN;
+    } else {
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "200 Begin ICE");
+      wsc->wsc_proto_mode = WSC_PROTO_RECEIVING_ANSWER;
+      wsconnection_set_cork(wsc);
     }
+    WSC_SUBSCRIBE_WRITE(wsc);
     return 0;
 
+    // conn_muetx is held
   case CONNECTION_OP_SIGNAL_ERROR:
-    if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
-      wsconnection_remove_cork(wsc);
-      switch ( *((int *) arg) ) {
-      case CONNECTION_ERR_COULD_NOT_SEND_PERSONAS:
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "503 Personas Not Available");
-        break;
-      case CONNECTION_ERR_NO_CONNECTION:
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "502 Appliance rejected connection");
-        break;
-      case CONNECTION_ERR_INVALID_CREDENTIALS:
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "401 Unauthorized");
-        break;
-      case CONNECTION_ERR_SERVER:
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "500 Internal Server Error");
-        break;
-      default:
-        wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "500 Internal Server Error");
-        break;
-      }
-      WSC_SUBSCRIBE_FD(wsc);
-      pthread_mutex_unlock(&wsc->wsc_mutex);
+    wsconnection_remove_cork(wsc);
+    switch ( *((int *) arg) ) {
+    case CONNECTION_ERR_COULD_NOT_SEND_PERSONAS:
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "503 Personas Not Available");
+      break;
+    case CONNECTION_ERR_NO_CONNECTION:
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "502 Appliance rejected connection");
+      break;
+    case CONNECTION_ERR_INVALID_CREDENTIALS:
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "401 Unauthorized");
+      break;
+    case CONNECTION_ERR_SERVER:
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "500 Internal Server Error");
+      break;
+    default:
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "500 Internal Server Error");
+      break;
     }
+    WSC_SUBSCRIBE_WRITE(wsc);
     return 0;
 
+    // conn_mutex is held
   case CONNECTION_OP_SEND_OFFER_LINE:
     ln = (struct sdpln *)arg;
-    if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
-      if ( WSC_HAS_SPACE(wsc, ln->sl_end - ln->sl_start) ) {
-        // If we have space, write the line
-        wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, ln->sl_start, ln->sl_end - ln->sl_start);
-        if ( wsc->wsc_mode == WSC_MODE_WEBSOCKET )
-          wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, "\r\n", 2);
-        WSC_SUBSCRIBE_FD(wsc);
-        pthread_mutex_unlock(&wsc->wsc_mutex);
-        return 1;
-      } else {
-        pthread_mutex_unlock(&wsc->wsc_mutex);
-        return 0;
-      }
-    }
-    return -1;
-
-  case CONNECTION_OP_COMPLETE_OFFER:
-    if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
-      wsconnection_remove_cork(wsc);
-      fprintf(stderr, "offer completed... added cork\n");
-      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "150 Offer Complete");
-      WSC_SUBSCRIBE_FD(wsc);
-      pthread_mutex_unlock(&wsc->wsc_mutex);
+    if ( WSC_HAS_SPACE(wsc, ln->sl_end - ln->sl_start) ) {
+      // If we have space, write the line
+      wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, ln->sl_start, ln->sl_end - ln->sl_start);
+      if ( wsc->wsc_mode == WSC_MODE_WEBSOCKET )
+        wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, "\r\n", 2);
+      WSC_SUBSCRIBE_WRITE(wsc);
+      return 1;
+    } else {
       return 0;
     }
     return -1;
 
+    // conn_mutex is held
+  case CONNECTION_OP_COMPLETE_ICE_CANDIDATES:
+  case CONNECTION_OP_COMPLETE_OFFER:
+    wsconnection_remove_cork(wsc);
+    fprintf(stderr, "offer completed... removed cork\n");
+    if ( op == CONNECTION_OP_COMPLETE_OFFER )
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "150 Offer Complete");
+    else
+      wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "151 Candidates Complete");
+    WSC_SUBSCRIBE_WRITE(wsc);
+    return 0;
+
+    // conn_mutex is held
   case CONNECTION_OP_SEND_PERSONAS:
     // We start sending personas by adding a 'cork'. This has no
     // effect for flock protocol connections, but causes the FIN bit
@@ -733,22 +805,16 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
     // many bytes were actually written. If this number is less than
     // WSC_VCF_CHUNK_SIZE we stop. Otherwise, we subscribe to the write
     // event.
-    if ( pthread_mutex_lock(&wsc->wsc_mutex) == 0 ) {
-      int finished = 0;
 
-      WSC_REF(wsc);
+    WSC_REF(wsc);
 
+    if ( PERSONASWRITER_IS_VALID(&wsc->wsc_conn.conn_personas_writer) ) {
       wsconnection_set_cork(wsc);
-      finished = wsconnection_write_personas(wsc);
-      pthread_mutex_unlock(&wsc->wsc_mutex);
-
-      if ( finished ) {
-        assert( pthread_mutex_lock(&wsc->wsc_conn.conn_mutex) == 0 );
+      if ( wsconnection_write_personas(wsc) )
         connection_wait_for_auth(&wsc->wsc_conn);
-        pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
       }
-      WSC_UNREF(wsc);
-    }
+
+    WSC_UNREF(wsc);
     return 0;
 
   default:
@@ -758,11 +824,10 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
 }
 
 static int wsconnection_init(struct wsconnection *conn, struct flockstate *st, int newsk) {
-  if ( pthread_mutex_init(&conn->wsc_mutex, NULL) != 0 ) return -1;
-
   conn->wsc_mode = WSC_MODE_STARTING;
   conn->wsc_proto_mode = WSC_PROTO_HANDSHAKE;
   conn->wsc_corking_mode = WSC_NO_CORK;
+  conn->wsc_nl_mode = WSC_NL_NONE;
   conn->wsc_websocket = newsk;
 
   fdsub_init(&conn->wsc_wsk_sub, &st->fs_eventloop, conn->wsc_websocket,
@@ -778,9 +843,8 @@ static int wsconnection_init(struct wsconnection *conn, struct flockstate *st, i
 
 static void wsconnection_start_service(struct wsconnection *conn, struct eventloop *el) {
   conn->wsc_conn.conn_el = el;
-  FDSUB_SUBSCRIBE(&conn->wsc_wsk_sub, FD_SUB_READ | FD_SUB_ERROR);
-  WSC_WREF(conn); // We always have a weak reference when the socket is in use
-  WSC_SUBSCRIBE_FD(conn);
+  WSC_SUBSCRIBE_READ(conn);
+  SHARED_DEBUG(&conn->wsc_conn.conn_shared, "after start");
 }
 
 static void wsconnection_respond_line(struct wsconnection *conn, struct eventloop *el,
@@ -806,7 +870,6 @@ static void wsconnection_respond_buffer(struct wsconnection *conn, struct eventl
   if ( conn->wsc_outgoing_sz == 0 ) {
     WSC_REF(conn);
     SHARED_DEBUG(&conn->wsc_conn.conn_shared, "After referencing in write line");
-    FDSUB_SUBSCRIBE(&conn->wsc_wsk_sub, FD_SUB_WRITE);
   }
 
   while ( bytes_left > 0 ) {
@@ -1127,7 +1190,7 @@ static int parse_ws_handshake(struct wsconnection *wsc, struct wshs *hs, int *re
       hs->ws_error = 400;
       return -1;
     default:
-      assert(0);
+      abort();
     }
   }
 
@@ -1156,7 +1219,7 @@ static void send_handshake_response(struct wsconnection *wsc, struct wshs *hs) {
   //  wsconnection_respond_line(wsc, el, "Sec-WebSocket-Protocol: kite+flock");
   wsconnection_respond_line(wsc, el, "");
 
-  WSC_SUBSCRIBE_FD(wsc);
+  WSC_SUBSCRIBE_WRITE(wsc);
 }
 
 static void send_http_error(struct wsconnection *wsc, struct wshs *hs) {
@@ -1181,5 +1244,46 @@ static void send_http_error(struct wsconnection *wsc, struct wshs *hs) {
 
   wsconnection_respond_line(wsc, el, "");
 
-  WSC_SUBSCRIBE_FD(wsc);
+  WSC_SUBSCRIBE_WRITE(wsc);
+}
+
+static int wsconnection_nl_mode(struct wsconnection *wsc, const char *buf, int *sz) {
+  int i;
+
+  for ( i = 0; i < *sz; ++i ) {
+    switch ( buf[i] ) {
+    case '\r':
+      switch ( wsc->wsc_nl_mode ) {
+      case WSC_NL_NONE:
+      case WSC_NL_CR1:
+      case WSC_NL_CR2:
+        wsc->wsc_nl_mode = WSC_NL_CR1;
+        break;
+      case WSC_NL_NL1:
+        wsc->wsc_nl_mode = WSC_NL_CR2;
+        break;
+      default: abort();
+      }
+      break;
+
+    case '\n':
+      switch ( wsc->wsc_nl_mode ) {
+      case WSC_NL_NONE:
+      case WSC_NL_CR1:
+        wsc->wsc_nl_mode = WSC_NL_NL1;
+        break;
+      case WSC_NL_NL1:
+      case WSC_NL_CR2:
+        *sz = i;
+        return 1;
+      default: abort();
+      }
+      break;
+
+    default:
+      wsc->wsc_nl_mode = WSC_NL_NONE;
+    }
+  }
+
+  return 0;
 }

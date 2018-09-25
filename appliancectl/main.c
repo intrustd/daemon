@@ -13,6 +13,9 @@ static struct {
 
   { "join-flock", join_flock },
   { "list-flocks", list_flocks },
+
+  { "register-app", register_app },
+
   { NULL, 0 }
 };
 

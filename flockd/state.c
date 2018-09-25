@@ -13,6 +13,8 @@
 #include "service.h"
 #include "websocket.h"
 
+int g_openssl_flockservice_ix;
+
 void flockstate_clear(struct flockstate *st) {
   st->fs_flock_cert = NULL;
   st->fs_flock_privkey = NULL;
@@ -162,7 +164,8 @@ static int flockstate_add_shard_by_hostname(struct flockstate *st, const char *h
   struct addrinfo hints, *addrs, *cur_addr;
   int err, this_shard_idx;
 
-  assert(snprintf(port_s, sizeof(port_s), "%d", port) < sizeof(port_s));
+  err = snprintf(port_s, sizeof(port_s), "%d", port);
+  assert(err < sizeof(port_s));
 
   hints.ai_flags = AI_NUMERICSERV;
   hints.ai_family = AF_INET;
@@ -170,7 +173,11 @@ static int flockstate_add_shard_by_hostname(struct flockstate *st, const char *h
   hints.ai_protocol = IPPROTO_UDP;
 
   err = getaddrinfo(hostname, port_s, &hints, &addrs);
-  if ( err != 0 ) return -1;
+  if ( err != 0 ) {
+    fprintf(stderr, "flockstate_add_shard_by_hostname: getaddrinfo(%s, %s) failed: %s\n",
+            hostname, port_s, gai_strerror(err));
+    return -1;
+  }
 
   this_shard_idx = st->fs_shards.fs_shard_count++;
 
@@ -258,6 +265,18 @@ int flockstate_set_conf(struct flockstate *st, struct flockconf *conf) {
 void flockstate_start_services(struct flockstate *st) {
   flockservice_start(&st->fs_service, &st->fs_eventloop);
 
-  FDSUB_SUBSCRIBE(&st->fs_websocket_sub, FD_SUB_READ);
-  eventloop_subscribe_fd(&st->fs_eventloop, st->fs_websocket_sk, &st->fs_websocket_sub);
+  eventloop_subscribe_fd(&st->fs_eventloop, st->fs_websocket_sk,
+                         FD_SUB_ACCEPT, &st->fs_websocket_sub);
+}
+
+void init_flockd_global() {
+  g_openssl_flockservice_ix = SSL_CTX_get_ex_new_index(0, "flockservice index", NULL, NULL, NULL);
+}
+
+int SSL_CTX_set_flockservice(SSL_CTX *ctx, struct flockservice *fs) {
+  return SSL_CTX_set_ex_data(ctx, g_openssl_flockservice_ix, fs);
+}
+
+struct flockservice *SSL_CTX_get_flockservice(SSL_CTX *ctx) {
+  return SSL_CTX_get_ex_data(ctx, g_openssl_flockservice_ix);
 }

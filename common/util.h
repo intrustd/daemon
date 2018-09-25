@@ -8,6 +8,9 @@
 #include <unistd.h>
 #include <openssl/bio.h>
 #include <openssl/opensslconf.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
 
 #if !defined(OPENSSL_THREADS)
 # error OpenSSL built without threads support
@@ -198,6 +201,9 @@ int mkdir_recursive(const char *path);
 // Returns 0 if the src cannot fit in dst
 int strncpy_safe(char *dst, const char *src, size_t sz);
 
+#define strncpy_fixed(dst, dst_sz, src, src_sz) \
+  strncpy((dst), (src), (src_sz) < ((dst_sz) - 1) ? (src_sz) + 1 : (dst_sz) - 1)
+
 int recv_fd(int fd, size_t num, int *fds);
 int send_fd(int fd, size_t num, int *fds);
 
@@ -216,6 +222,7 @@ static inline int dec_value(char c) {
 
 int parse_hex_str(const char *digest, unsigned char *out, int out_sz);
 char *hex_digest_str(const unsigned char *digest, char *buf, int digest_sz);
+int parse_decimal(int *out, const char *buf, int buf_sz);
 
 // Doubly-linked lists
 
@@ -252,15 +259,16 @@ char *hex_digest_str(const unsigned char *digest, char *buf, int digest_sz);
       (head)->dh_first = (head)->dh_last = NULL;                 \
     }                                                            \
   } while (0)
-#define DLIST_INSERT(head, dl, entry)                            \
-  if ( (head)->dh_first ) {                                      \
-    assert((head)->dh_last);                                     \
-    (entry)->dl.dl_prev = (head)->dh_last;                       \
-    (head)->dh_last->dl.dl_next = (entry);                       \
-    (head)->dh_last = (entry);                                   \
-  } else {                                                       \
-    (head)->dh_first = (head)->dh_last = entry;                  \
-  }
+#define DLIST_INSERT(head, dl, entry) do {                           \
+    if ( (head)->dh_first ) {                                        \
+      assert((head)->dh_last);                                       \
+      (entry)->dl.dl_prev = (head)->dh_last;                         \
+      (head)->dh_last->dl.dl_next = (entry);                         \
+      (head)->dh_last = (entry);                                     \
+    } else {                                                         \
+      (head)->dh_first = (head)->dh_last = entry;                    \
+    }                                                                \
+  } while (0)
 #define DLIST_REMOVE(head, dl, entry)                                \
   do {                                                               \
     if ( (head)->dh_first == (entry) ) {                             \
@@ -281,7 +289,9 @@ char *hex_digest_str(const unsigned char *digest, char *buf, int digest_sz);
 #define DLIST_ENTRY_IN_LIST(head, dl, entry)                    \
   ( ( (entry)->dl.dl_next && (entry)->dl.dl_prev ) ||           \
     ( (entry)->dl.dl_next && (entry) == (head)->dh_first ) ||   \
-    ( (entry)->dl.dl_prev && (entry) == (head)->dh_last ) )
+    ( (entry)->dl.dl_prev && (entry) == (head)->dh_last ) ||    \
+    ( (head)->dh_first == (entry) &&                            \
+      (head)->dh_last == (entry)) )
 
 // Find the next newline in the buffer. Either '\n' or '\r\n' count as a newline, but not '\r'.
 //
@@ -305,5 +315,51 @@ int atoi_ex(char *s, char *e, int *out);
 //
 // Returns 1 on success, 0 otherwise
 int random_printable_string(char *out, size_t out_sz);
+
+int format_address(struct sockaddr *sa, socklen_t sa_sz,
+                   char *out, size_t out_sz,
+                   uint16_t *port);
+int parse_address(const char *str, size_t str_sz, uint16_t port,
+                  struct sockaddr *sa, socklen_t *sa_sz);
+
+void dump_address(FILE *f, void *addr, socklen_t addr_sz);
+
+#ifdef NDEBUG
+#define SAFE_ASSERT(c) ((void) (c))
+#else
+#define SAFE_ASSERT(c) do {                                             \
+    if ( !(c) ) {                                                       \
+      fprintf(stderr, "SAFE_ASSERT: " __FILE__ ": %d: " #c ": failed\n", __LINE__); \
+      abort();                                                          \
+    }                                                                   \
+  } while (0)
+#endif
+
+#define STATIC_ASSERT(c, s) _Static_assert(c, s)
+
+#define SAFE_MUTEX_LOCK(m) SAFE_ASSERT(pthread_mutex_lock((m)) == 0)
+#define SAFE_MUTEX_UNLOCK(m) SAFE_ASSERT(pthread_mutex_unlock((m)) == 0)
+#define SAFE_RWLOCK_WRLOCK(m) SAFE_ASSERT(pthread_rwlock_wrlock((m)) == 0)
+#define SAFE_RWLOCK_RDLOCK(m) SAFE_ASSERT(pthread_rwlock_rdlock((m)) == 0)
+
+// Our own custom socket address structure for all the types we're interested in
+typedef union {
+  struct sockaddr ksa;
+  struct sockaddr_in ksa_ipv4;
+  struct sockaddr_in6 ksa_ipv6;
+} kite_sock_addr;
+
+int kite_sock_addr_equal(kite_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz);
+
+void print_hex_dump_fp(FILE *fp, const unsigned char *data, int data_sz);
+
+// fixed strings
+//struct fixedstr {
+//  char *fs_start, *fs_end;
+//};
+//
+//#define fixedstrlen(fs) ((size_t)((fs)->fs_end - (fs)->fs_start))
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 #endif

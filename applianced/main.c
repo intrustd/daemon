@@ -1,3 +1,4 @@
+#include <signal.h>
 #include <openssl/ssl.h>
 
 #include "state.h"
@@ -37,6 +38,8 @@ int main(int argc, char **argv) {
 
   bridge_enable_debug(&state.as_bridge, "pkts.out");
 
+  //  eventloop_set_debug(&state.as_eventloop, EL_FLAG_DEBUG | EL_FLAG_DEBUG_VERBOSE);
+
   nprocs = sysconf(_SC_NPROCESSORS_ONLN);
   for ( i = 1; i < nprocs; ++i ) {
     pthread_t new_thread;
@@ -46,6 +49,15 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+
+  // Try to launch a persona thingy
+//  do {
+//    sigset_t blkd, old;
+//    sigfillset(&blkd);
+//    pthread_sigmask(SIG_SETMASK, &blkd, &old);
+//    persona_run_ping_test(state.as_personas);
+//    pthread_sigmask(SIG_SETMASK, &old, &blkd);
+//  } while(0);
 
   appstate_start_services(&state, &configuration);
   main_loop(&state);

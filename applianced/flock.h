@@ -22,6 +22,7 @@
 
 #define FLOCK_INITIAL_REGISTRATION_RTO 150 // 150 milliseconds
 #define FLOCK_SEND_FAIL_INTERVAL       500 // After a socket failure, wait a half second
+#define FLOCK_FLAG_TRY_AGAIN_INTERVAL  1000
 #define FLOCK_SEND_REGISTRATION_INTERVAL 10000 // Send a new registration every 10 seconds
 #define FLOCK_MAX_RETRIES              7
 
@@ -88,16 +89,18 @@ struct flock {
 #define FLOCK_STATE_PENDING     1
 // The flock address has been resolved, and we are in the process of sending the DTLS handshake
 #define FLOCK_STATE_CONNECTING  2
-// The DTLS connection has been established and we are sending a registration message
-#define FLOCK_STATE_REGISTERING 3
+// DTLS connection established and we need to send a registration message
+#define FLOCK_STATE_SEND_REGISTRATION 3
+// The DTLS connection has been established, we have sent a registration message and are waiting
+#define FLOCK_STATE_REGISTERING 4
 // The connection has been established and we have confirmed registration
-#define FLOCK_STATE_REGISTERED  4
+#define FLOCK_STATE_REGISTERED  5
 // The remote server has not responded in a while, and we have given up trying to connect again for now
-#define FLOCK_STATE_SUSPENDED   5
+#define FLOCK_STATE_SUSPENDED   6
 // The DTLS handshake resulted in a certificate we did not accept
-#define FLOCK_STATE_SRV_CRT_REJ 6
+#define FLOCK_STATE_SRV_CRT_REJ 7
 // The domainn name could not be resolved
-#define FLOCK_STATE_NM_NOT_RES  7
+#define FLOCK_STATE_NM_NOT_RES  8
 
 #define FLOCK_FLAG_INITIALIZED        0x01
 // We have been requested to force acceptance of the server certificate
@@ -116,6 +119,8 @@ struct flock {
 #define FLOCK_FLAG_STUN_ONLY          0x80
 // Only use this flock for kite registration
 #define FLOCK_FLAG_KITE_ONLY          0x100
+// The flock encountered a conflict during registration
+#define FLOCK_FLAG_CONFLICT           0x200
 
 void flock_clear(struct flock *f);
 void flock_release(struct flock *f);

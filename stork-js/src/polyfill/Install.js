@@ -1,8 +1,8 @@
-import storkFetch from './FetchApi.js'
-import storkXMLHttpRequest from './XhrApi.js'
+import kiteFetch from './FetchApi.js'
+import kiteXMLHttpRequest from './XhrApi.js'
 
 export default function () {
-    console.log("Installing Stork polyfills")
-    window.XMLHttpRequest = storkXMLHttpRequest
-    window.fetch = storkFetch
+    console.log("Installing Kite polyfills")
+    window.XMLHttpRequest = kiteXMLHttpRequest
+    window.fetch = kiteFetch
 }

@@ -6,12 +6,17 @@
 #include <sys/time.h>
 #include <netdb.h>
 
+#include "util.h"
+
 struct timersub;
 struct qdevtsub;
+struct pssub;
 
 struct eventloop {
   int      el_epoll_fd;
   uint32_t el_flags;
+
+  pthread_mutex_t el_fd_mutex;
 
   pthread_mutex_t el_async_mutex;
   pthread_cond_t el_async_cond;
@@ -23,6 +28,10 @@ struct eventloop {
   uint32_t el_tmr_count;
   struct timersub *el_next_tmr;
   struct qdevtsub *el_first_finished, *el_last_finished;
+
+  pthread_mutex_t el_ps_mutex;
+  int el_last_sigchld;
+  DLIST_HEAD(struct pssub) el_processes;
 };
 
 #define EL_FLAG_DEBUG             0x00000001
@@ -31,8 +40,10 @@ struct eventloop {
 #define EL_FLAG_TMR_INIT          0x80000000
 #define EL_FLAG_ASYNC_MUTEX_INIT  0x40000000
 #define EL_FLAG_ASYNC_COND_INIT   0x20000000
+#define EL_FLAG_FD_MUTEX_INIT     0x10000000
+#define EL_FLAG_PS_MUTEX_INIT     0x08000000
 
-#define EL_FLAG_DEBUG_MASK    0x0000000F
+#define EL_FLAG_DEBUG_MASK        0x0000000F
 
 int eventloop_init(struct eventloop *el);
 void eventloop_clear(struct eventloop *el);
@@ -59,7 +70,7 @@ typedef void (*evtctlfn)(struct eventloop *el, int, void *);
 
 // files
 struct fdsub {
-  uint32_t fds_subd;
+  uint16_t fds_subd;
   evtctlfn fds_fn;
   int      fds_op;
 };
@@ -72,6 +83,7 @@ struct fdsub {
 #define FD_SUB_READ_OOB   0x10
 #define FD_SUB_WRITE_OOB  0x20
 #define FD_SUB_ERROR      0x40
+#define FD_SUB_ALL        (FD_SUB_READ | FD_SUB_WRITE | FD_SUB_HUP | FD_SUB_RDHUP | FD_SUB_READ_OOB | FD_SUB_WRITE_OOB | FD_SUB_ERROR)
 
 #define STATE_FROM_FDSUB(type, field, sub) STRUCT_FROM_BASE(type, field, sub)
 // #define FDSUB_SUBSCRIBE(fds, s) __sync_or_and_fetch(&(fds)->fds_subscriptions, (s) & 0xFFFF)
@@ -87,11 +99,11 @@ int set_socket_nonblocking(int fd);
 // Adds the given events to the fd
 //
 // Returns the bit mask of which subscriptions were installed
-int eventloop_subscribe_fd(struct eventloop *el, int fd, uint32_t evs, struct fdsub *sub);
+int eventloop_subscribe_fd(struct eventloop *el, int fd, uint16_t evs, struct fdsub *sub);
 // Removes teh given events from the fd
 //
 // Returns the bit mask of subscriptions that were removed
-int eventloop_unsubscribe_fd(struct eventloop *el, int fd, uint32_t evs, struct fdsub *sub);
+int eventloop_unsubscribe_fd(struct eventloop *el, int fd, uint16_t evs, struct fdsub *sub);
 
 struct qdevtsub {
   struct qdevtsub *qe_next;
@@ -212,6 +224,7 @@ struct qdevent {
 
 typedef struct qdevtsub *evtqueue;
 #define evtqueue_init(q) (*(q) = NULL)
+#define evtqueue_is_empty(q) ((q) == NULL)
 
 // Enqueue all in the queue and reset queue
 void eventloop_queue_all(struct eventloop *el, evtqueue *q);

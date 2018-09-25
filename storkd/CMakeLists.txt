@@ -17,10 +17,10 @@ PKG_SEARCH_MODULE(URIPARSER liburiparser REQUIRED)
 SET(USED_LIBS ${Boost_LOG_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_RANDOM_LIBRARY})
 
 ADD_LIBRARY(stork STATIC src/persona/profile.cpp src/nix.cpp src/proto.cpp
-  src/local_proto.cpp src/uri.cpp
-  src/unarchiver.cpp src/application/application.cpp src/flock/proto.cpp src/backend_common.cpp
+  src/local_proto.cpp src/uri.cpp src/crypto/certificate.cpp src/crypto/context.cpp
+  src/unarchiver.cpp src/application/application.cpp src/backend_common.cpp
   src/peer/initiator.cpp src/peer/session.cpp src/peer/ice.cpp src/peer/stun.cpp
-  src/peer/certificate.cpp src/peer/dtls.cpp)
+  src/peer/dtls.cpp src/flock/appliance_proto.cpp)
 TARGET_COMPILE_OPTIONS(stork PUBLIC -D BOOST_ALL_DYN_LINK -std=c++1z -Wall -I../common/)
 TARGET_LINK_LIBRARIES(stork ${USED_LIBS} ${OPENSSL_LIBRARIES} ${URIPARSER_LIBRARIES})
 
@@ -39,8 +39,9 @@ ADD_EXECUTABLE(storkctl src/storkctl.cpp src/storkctl/command.cpp
 TARGET_COMPILE_OPTIONS(storkd PUBLIC -std=c++1z -Wall)
 TARGET_LINK_LIBRARIES(storkctl stork ${USED_LIBS})
 
-ADD_EXECUTABLE(flockd src/flock/flockd.cpp src/flock/configuration.cpp src/flock/manager.cpp
-  src/flock/backend.cpp)
+ADD_EXECUTABLE(flockd
+  src/flock/flockd.cpp src/flock/configuration.cpp src/flock/manager.cpp
+  src/flock/registry.cpp)
 TARGET_COMPILE_OPTIONS(flockd PUBLIC -std=c++1z -Wall)
 TARGET_LINK_LIBRARIES(flockd stork ${USED_LIBS})
 

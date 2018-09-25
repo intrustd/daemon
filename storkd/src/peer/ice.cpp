@@ -389,7 +389,10 @@ namespace stork {
             } else {
               boost::unique_lock l(shared->m_completion_mutex);
               for ( ; entry != boost::asio::ip::udp::resolver::iterator(); entry++ ) {
-                // TODO we should actually trickle ICE candidates over, rather than wait for all to be collected, because sometimes, we will just never receive a response
+                // TODO we should actually trickle ICE candidates
+                // over, rather than wait for all to be collected,
+                // because sometimes, we will just never receive a
+                // response
                 shared->m_stun_resolution_complete ++;
                 auto collector(std::make_shared<StunCollector>(shared->m_service, entry->endpoint(), shared));
                 collector->async_collect();

@@ -54,6 +54,7 @@ struct kitelocalattr {
 #define KLA_FLOCK_STATUS       0x000C
 #define KLA_PERSONA_DISPLAYNM  0x000D
 #define KLA_PERSONA_PASSWORD   0x000E
+#define KLA_FORCE              0x000F
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001

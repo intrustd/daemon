@@ -152,7 +152,7 @@ void personasfetcher_release(struct personasfetcher *pf) {
 }
 
 void personasfetcher_mark_complete(struct personasfetcher *pf, struct eventloop *el, int sts) {
-  assert ( pthread_mutex_lock(&pf->pf_mutex) == 0 );
+  SAFE_MUTEX_LOCK(&pf->pf_mutex);
   if ( pf->pf_is_complete == 0 ) {
     pf->pf_is_complete = sts;
     eventloop_queue_all(el, &pf->pf_completion);
@@ -162,7 +162,7 @@ void personasfetcher_mark_complete(struct personasfetcher *pf, struct eventloop 
 
 void personasfetcher_request_event(struct personasfetcher *pf, struct eventloop *el,
                                    struct qdevtsub *evt) {
-  assert ( pthread_mutex_lock(&pf->pf_mutex) == 0 );
+  SAFE_MUTEX_LOCK(&pf->pf_mutex);
   if ( pf->pf_is_complete == 0 )
     evtqueue_queue(&pf->pf_completion, evt);
   else
@@ -178,6 +178,8 @@ int personasfetcher_init_personaswriter(struct personasfetcher *pf,
       w->pw_offset = 0;
       if ( cps_get_reader(pf->pf_cached, &w->pw_cps) < 0 )
         ret = -1;
+
+      assert(w->pw_cps);
     } else
       ret = -1;
     pthread_mutex_unlock(&pf->pf_mutex);

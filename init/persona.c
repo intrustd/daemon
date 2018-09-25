@@ -17,8 +17,10 @@ char *g_persona_id;
 pid_t do_run(struct stkinitmsg *pkt, int sz) {
   char *args, *end;
   char **argv = NULL, **envv = NULL;
-  int i;
+  int i, err;
   pid_t child_pid;
+
+  int kite_pipe[2];
 
   args = STK_ARGS(pkt);
   end = ((char *) pkt) + sz;
@@ -55,16 +57,50 @@ pid_t do_run(struct stkinitmsg *pkt, int sz) {
 
   fprintf(stderr, "[Persona %s] Running command\n", g_persona_id);
 
+  if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
+    err = pipe(kite_pipe);
+    if ( err < 0 ) {
+      perror("pipe");
+      goto err;
+    }
+  }
+
   child_pid = vfork();
   if ( child_pid < 0 ) goto err;
   else if ( child_pid == 0 ) {
+    if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
+      close(kite_pipe[0]);
+
     fprintf(stderr, "[Persona %s] Going to run %s\n", g_persona_id, argv[0]);
 
     close(COMM);
+    if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
+      err = dup2(kite_pipe[1], COMM);
+      if ( err < 0 ) {
+        perror("dup2(kite_pipe[1], COMM)");
+        exit(EXIT_FAILURE);
+      }
+    }
+
     execve(argv[0], argv+1, envv);
     perror("execve");
+    exit(EXIT_FAILURE);
   } else {
+    uint8_t sts;
+
+    if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
+      close(kite_pipe[1]);
+
     fprintf(stderr, "[Persona %s] launched with pid %d\n", g_persona_id, child_pid);
+
+    if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
+      err = read(kite_pipe[0], &sts, 1);
+      if ( err != 1 ) {
+        perror("read(kite_pipe[0])");
+      }
+
+      close(kite_pipe[0]);
+    }
   }
 
  done:
@@ -124,6 +160,8 @@ int main(int argc, char **argv) {
   // Continuously read from COMM socket
   while ( 1 ) {
     n = recv(COMM, buf, STK_MAX_PKT_SZ, 0);
+    if ( n == 0 ) break;
+
     if ( n == -1 ) {
       if ( errno == EAGAIN || errno == EINTR )
         continue;

@@ -57,6 +57,38 @@ let stdenv = pkgs.stdenv;
        '';
    };
 
+   lksctp-tools-1-0-18 = stdenv.mkDerivation rec {
+     name = "lksctp-tools-1.0.18";
+
+     src = pkgs.fetchurl {
+       url = "https://github.com/sctp/lksctp-tools/archive/lksctp-tools-1.0.18.tar.gz";
+       sha256 = "14q0pjhskyx5j1z0v9141zmxyqjwl7niiqi4adv6882g0za7bvwh";
+     };
+
+     preConfigure = ''
+       autoreconf
+     '';
+
+     nativeBuildInputs = [ pkgs.autoreconfHook ];
+
+     preInstall = ''
+     mkdir -p $out/include/netinet
+     cp ./src/include/netinet/sctp.h $out/include/netinet/sctp.h
+     '';
+
+     meta = with stdenv.lib; {
+       description = "Linux Kernel Stream Control Transmission Protocol Tools.";
+       homepage = http://lksctp.sourceforge.net/;
+       license = with licenses; [ gpl2 lgpl21 ]; # library is lgpl21
+       platforms = platforms.linux;
+     };
+   };
+
+   curl-kite = pkgs.curl.override {
+     c-aresSupport = true; sslSupport = true; idnSupport = true;
+     scpSupport = false; gssSupport = true;
+     brotliSupport = true; openssl = pkgs.openssl_1_1_0;
+   };
 in pkgs.stdenv.mkDerivation {
   name = "stork-cpp";
 
@@ -69,9 +101,13 @@ in pkgs.stdenv.mkDerivation {
 
     valgrind stun graphviz
 
-    lksctp-tools libnl usrsctp thrift
+    lksctp-tools-1-0-18 libnl thrift
+    curl-kite curl-kite.dev
 
-    (python3.withPackages (ps: [ ps.flask ps.grpcio ps.googleapis_common_protos (grpc-io-tools ps) ]))
+    (python3.withPackages (ps: [
+       ps.flask ps.grpcio ps.googleapis_common_protos (grpc-io-tools ps)
+       ps.sqlalchemy
+     ]))
   ];
 
 #  CMAKE_

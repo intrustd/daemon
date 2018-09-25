@@ -27,7 +27,7 @@ int mkdir_recursive(const char *path) {
 
   if ( !strncpy_safe(lpath, path, sizeof(lpath)) ) {
     errno = ENOSPC;
-    return 0;
+    return -1;
   }
 
   dir_path[0] = '\0';
@@ -36,11 +36,11 @@ int mkdir_recursive(const char *path) {
     dir_path[1] = '\0';
   }
 
-  for ( cur_path = lpath; cur_comp = strtok_r(cur_path, "/", &saveptr); cur_path = NULL ) {
+  for ( cur_path = lpath; (cur_comp = strtok_r(cur_path, "/", &saveptr)); cur_path = NULL ) {
     size_t dir_sz = strlen(dir_path);
     if ( dir_sz >= sizeof(dir_path) ) {
       errno = ENOSPC;
-      return 0;
+      return -1;
     }
 
     strncat(dir_path, cur_comp, sizeof(dir_path) - dir_sz - 1);
@@ -48,7 +48,7 @@ int mkdir_recursive(const char *path) {
     dir_sz = strlen(dir_path);
     if ( dir_sz >= sizeof(dir_path) ) {
       errno = ENOSPC;
-      return 0;
+      return -1;
     }
 
     dir_path[dir_sz++] = '/';

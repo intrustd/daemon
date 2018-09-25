@@ -12,7 +12,12 @@ struct fcspktwriter {
   struct shared *fcspw_sh;
   int fcspw_sts;
   int (*fcspw_write)(struct fcspktwriter *, char *, int*);
+
   struct qdevtsub fcspw_done;
+
+  struct qdevtsub fcspw_queue;
+  void (*fcspw_do_queue)(struct fcspktwriter *);
+  void *fcspw_queue_info;
 };
 
 #define fcspktwriter_init(w, sh, writer, op, evtfn) do {        \
@@ -21,6 +26,8 @@ struct fcspktwriter {
     (w)->fcspw_sts = -1;                                        \
     (w)->fcspw_write = (writer);                                \
     qdevtsub_init(&(w)->fcspw_done, op, evtfn);                 \
+    qdevtsub_init(&(w)->fcspw_queue, EVT_CTL_CUSTOM, fcspw_queue_fn);   \
+    (w)->fcspw_do_queue = NULL;                                 \
   } while (0)
 
 #define FCSPKTWRITER_FROM_EVENT(evt) STRUCT_FROM_BASE(struct fcspktwriter, fcspw_done, (evt)->qde_sub)
@@ -34,6 +41,8 @@ struct flockclientstate {
 
 int fcs_init(struct flockclientstate *st, flockclientfn fn, shfreefn freefn);
 void fsc_release(struct flockclientstate *st);
+
+void fcspw_queue_fn(struct eventloop *el, int op, void *ev);
 
 #define FLOCKCLIENT_REF(cli) SHARED_REF(&(cli)->fcs_shared)
 #define FLOCKCLIENT_UNREF(cli) SHARED_UNREF(&(cli)->fcs_shared)

@@ -6,6 +6,9 @@
 
 #include "buffer.h"
 #include "util.h"
+#include "container.h"
+#include "bridge.h"
+#include "application.h"
 
 #define PERSONA_ID_X_LENGTH 64
 #define PERSONA_ID_LENGTH   32
@@ -14,19 +17,29 @@
 
 #define PAUTH_TYPE_SHA256   1
 
+#define PERSONA_HOSTNAME_PREFIX "persona-"
+
 struct pauth {
   int pa_type;
   struct pauth *pa_next;
   char pa_data[PAUTH_DATA_SIZE];
 };
 
+struct appstate;
+struct appinstance;
+
+struct personaport {
+  uint16_t pp_port;
+  UT_hash_handle pp_hh;
+};
+
 struct persona {
   struct shared p_shared;
 
+  struct appstate *p_appstate;
   pthread_mutex_t p_mutex;
 
   char p_persona_id[PERSONA_ID_LENGTH];
-
   UT_hash_handle p_hh;
 
   // Personal information
@@ -36,17 +49,23 @@ struct persona {
 
   // Authentication mechanisms that are required to log in
   struct pauth *p_auths;
+
+  uint16_t p_last_port;
+  struct personaport *p_ports;
+
+  struct container p_container;
+
+  struct appinstance *p_instances;
 };
 
 #define PERSONA_REF(p) SHARED_REF(&(p)->p_shared)
 #define PERSONA_UNREF(p) SHARED_UNREF(&(p)->p_shared)
 
-int persona_init(struct persona *p,
+int persona_init(struct persona *p, struct appstate *as,
                  const char *display_name,
                  int display_name_sz,
                  EVP_PKEY *private_key);
-int persona_init_fp(struct persona *p, FILE *fp);
-void persona_release(struct persona *p);
+int persona_init_fp(struct persona *p, struct appstate *as, FILE *fp);
 
 int persona_add_password(struct persona *p,
                          const char *password,
@@ -59,6 +78,25 @@ struct persona *persona_read_fp(FILE *fp);
 int persona_write_as_vcard(struct persona *p, struct buffer *b);
 
 int persona_credential_validates(struct persona *p, const char *cred, size_t cred_sz);
+
+int persona_allocate_port(struct persona *p, uint16_t *port);
+void persona_release_port(struct persona *p, uint16_t port);
+
+// Runs a new webrtc proxy and returns the PID of the proxy.
+//
+// WARNING: this pid is *not* valid in any namespace accessible to the
+// calling process. Use persona_kill to stop the process
+pid_t persona_run_webrtc_proxy(struct persona *p, uint16_t port);
+
+pid_t persona_run_ping_test(struct persona *p);
+
+// Send the given signal to the process
+void persona_kill(struct persona *p, pid_t which, int sig);
+
+// Wait for the given process to end
+int persona_wait(struct persona *p, pid_t which, int *sts);
+
+struct appinstance *persona_launch_app_instance(struct persona *p, struct app *a);
 
 // A personaset is a set of personas that have been serialized to a
 // buffer. The buffer is managed via a shared pointer, so that its

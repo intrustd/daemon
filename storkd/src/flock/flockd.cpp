@@ -13,8 +13,7 @@ int main(int argc, const char **argv) {
 
   if ( conf.is_valid() ) {
     boost::asio::io_service svc;
-    MemoryBackend be(svc);
-    Manager mgr(svc, conf, be);
+    Manager mgr(svc, conf);
     return mgr.run();
   } else {
     conf.print_usage();

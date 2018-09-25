@@ -36,4 +36,10 @@ int flockstate_set_conf(struct flockstate *st, struct flockconf *conf);
 
 void flockstate_start_services(struct flockstate *st);
 
+void init_flockd_global();
+
+struct flockservice;
+int SSL_CTX_set_flockservice(SSL_CTX *ctx, struct flockservice *fs);
+struct flockservice *SSL_CTX_get_flockservice(SSL_CTX *ctx);
+
 #endif

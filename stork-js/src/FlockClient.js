@@ -7,6 +7,25 @@ import { Response, LoginToDeviceResponse,
          DialSessionCommand,  DialResponse,
          DIAL_TYPE_SDP, DIAL_TYPE_ICE, DIAL_TYPE_DONE } from "./FlockProtocol.js";
 import { FlockConnection } from "./FlockConnection.js";
+import { BufferParser } from "./Buffer.js";
+import { SocketType,
+         RequestAppControlMessage, RequestAppControlResponse,
+         ConnectAppControlRequest, ConnectAppControlResponse } from "./SocketProxy.js";
+
+
+export class FlockConnectionNotOpenError extends Error {
+    constructor () {
+        super();
+        this.message = "Connection not open";
+    }
+}
+
+export class AppNotOpenedError extends Error {
+    constructor (app_name) {
+        super();
+        this.message = "The application " + app_name + " is not open";
+    }
+}
 
 class FlockOpenEvent {
     constructor() {
@@ -35,6 +54,274 @@ class FlockNeedsPersonasEvent {
     }
 }
 
+class KiteChannelOpens {
+    constructor (flk) {
+        this.type = '-kite-channel-opens';
+        this.flock = flk;
+    }
+}
+
+export class ApplicationDeniedError {
+    constructor ( app_name, reason ) {
+        this.app_name = app_name;
+        this.reason = reason;
+    }
+}
+
+export class FlockSocketOpensEvent {
+    constructor ( sk ) {
+        this.type = 'open';
+        this.socket = sk;
+    }
+}
+
+export class FlockSocketErrorEvent {
+    constructor ( sk, err, explanation ) {
+        this.type = 'error';
+        this.socket = sk;
+        this.error = err;
+
+        if ( explanation !== undefined )
+            this.explanation = explanation;
+    }
+}
+
+export class FlockSocketClosesEvent {
+    constructor ( sk ) {
+        this.type = 'close';
+        this.socket = sk;
+    }
+}
+
+export class FlockSocketDataEvent {
+    constructor ( sk, data ) {
+        this.type = 'data';
+        this.socket = sk;
+        this.data = data;
+    }
+}
+
+const SOCKET_MAX_MTU = 32768;
+export class FlockSocket extends EventTarget {
+    constructor ( flock_conn, endpoint ) {
+        super();
+        this.conn = flock_conn;
+        this.state = 'connecting';
+        this.endpoint = endpoint;
+
+        switch ( endpoint.type ) {
+        case 'tcp':
+            this.data_chan = this.conn.newDataChannel({});
+            this.stream = true;
+            this.start_connection = () => { this.start_tcp(endpoint.port); };
+            break;
+        case 'udp':
+            var end_udp = () => { this.removeEventListener('open', end_udp); this.end_udp(); }
+            this.data_chan = this.conn.newDataChannel({ ordered: false,
+                                                        maxRetransmits: 0 });
+            this.retransmits_left = 7;
+            this.retransmit_interval = 100;
+            this.stream = false;
+            this.start_connection = () => { this.start_udp(endpoint.port); };
+            this.addEventListener('open', end_udp);
+            break;
+        default:
+            throw new InvalidProtocolName(endpoint.type);
+        }
+
+        this.data_chan.onopen = () => {
+            this.start_connection();
+        }
+
+        this.data_chan.onclose = () => {
+            this.dispatchEvent(new FlockSocketClosesEvent(this));
+        }
+
+        this.data_chan.onmessage = (e) => {
+            //console.log("Got message in socket", e.data);
+            switch ( this.state ) {
+            case 'connecting':
+                // Check to see if the connection is valid; if it is, set state to connected
+                var parser = new BufferParser(e.data);
+                var rsp = new ConnectAppControlResponse(parser);
+                if ( rsp.error ) {
+                    console.error("Got error while connecting", rsp.errno);
+                    this.state = 'error';
+                    this.dispatchEvent(new FlockSocketErrorEvent(this, 'system-error:' + rsp.errno));
+                } else {
+                    console.log("Connected socket");
+                    this.state = 'connected';
+                    this.dispatchEvent(new FlockSocketOpensEvent(this));
+                }
+                break;
+            case 'connected':
+                this.dispatchEvent(new FlockSocketDataEvent(this, e.data));
+                break;
+            case 'disconnected':
+                console.error("FlockSocket got message while disconnected");
+                break;
+            case 'error':
+                console.warning("Ignaring data on errored FlockSocket");
+                break;
+            default:
+                console.error("FlockSocket has invalid state ", this.state);
+            }
+        }
+    }
+
+    _normalizeData(data) {
+        if ( data instanceof String || typeof data == 'string' ) {
+            var enc = new TextEncoder();
+            data = enc.encode(data).buffer;
+        }
+        return data;
+    }
+
+    send(data, onChunkSent) {
+        const DATA_HDR_SZ = 5;
+
+        if ( this.state == 'connected' ) {
+            var buffer;
+            data = this._normalizeData(data)
+            if ( !(data instanceof ArrayBuffer) ) {
+                throw new TypeError("data should be an ArrayBuffer or a string");
+            }
+
+            var buffer = new ArrayBuffer(Math.min(data.byteLength + DATA_HDR_SZ, SOCKET_MAX_MTU))
+            var old_array = new Uint8Array(data)
+            var new_array = new Uint8Array(buffer)
+
+            var dv = new DataView(buffer);
+            dv.setUint8(0, 0x0F);
+            dv.setUint32(1, 0x0);
+
+            var ofs = 0;
+            while ( ofs < data.byteLength ) {
+                var chunkLength = buffer.byteLength - DATA_HDR_SZ
+                new_array.set(old_array.subarray(ofs, ofs + chunkLength), DATA_HDR_SZ);
+                ofs += chunkLength
+
+                if ( onChunkSent )
+                    onChunkSent(ofs)
+
+                this.data_chan.send(buffer);
+            }
+
+            if ( onChunkSent )
+                onChunkSent(ofs)
+        } else
+            this.dispatchEvent(new FlockSocketErrorEvent(this, 0, "The socket was not connected"));
+    }
+
+    close() {
+//        this.data_chan.close()
+//        delete this.data_chan
+    }
+
+    // Returns a promise of when the stream is sent
+    sendStream( stream, onProgress ) {
+        const MAX_CHUNK_SIZE = 65536;
+        return new Promise((resolve, reject) => {
+            var reader = stream.getReader()
+            var curChunk = null
+            var sent = 0
+
+            var sendNextChunk = (sentInThisLoop) => {
+                console.log("Sending next chunk", this.data_chan.bufferedAmount, sentInThisLoop)
+                this.data_chan.onbufferedamountlow = null;
+                if ( this.data_chan.bufferedAmount > MAX_CHUNK_SIZE ) {
+                    console.log("Waiting for buffer", this.data_chan.bufferedAmount)
+                    waitForMore()
+                } else if ( sentInThisLoop > MAX_CHUNK_SIZE ) {
+                    // If we've sent too much in this loop, use setTimeout to allow a chance to redraw
+                    setTimeout(() => { sendNextChunk(0) }, 0)
+                } else {
+                    reader.read().then(({value, done}) => {
+                        if ( done ) {
+                            this.data_chan.bufferedAmountLowThreshold = 0;
+                            this.data_chan.onbufferedamountlow = null;
+                        } else {
+                            var curChunk = this._normalizeData(value)
+                            var startOfs = sent
+
+                            this.send(curChunk)
+
+                            if ( onProgress ) {
+                                console.log("Progress", sent + curChunk.byteLength)
+                                onProgress(sent + curChunk.byteLength)
+                            }
+                            sent += curChunk.byteLength
+
+                            sendNextChunk(sentInThisLoop + curChunk.byteLength)
+                        }
+                    })
+                }
+            }
+            var waitForMore = () => {
+                this.data_chan.bufferedAmountLowThreshold = 4096;
+                this.data_chan.onbufferedamountlow = () => { sendNextChunk(0) };
+            }
+
+            sendNextChunk(0)
+        })
+//
+//            var nextChunk = () => {
+//               reader.read().then(({value, done}) => {
+//                    if ( done ) {
+//                        this.data_chan.onbufferedamountlow = null;
+//                        resolve()
+//                    } else {
+//                        var curChunk = value
+//                        var startOfs = sent
+//                        var sendMore = () => {
+//                        }
+//                        console.log("Requesting space")
+//                        this.data_chan.bufferedAmountLowThreshold = 4096;
+//                        this.data_chan.onbufferedamountlow = () => {
+//                            console.log('Sent chunk', curChunk)
+//                            this.send(curChunk, (next) => {
+//                                console.log("Got chunk", next)
+//                                sent = startOfs + next
+//                                if ( onProgress )
+//                                    onProgress(sent)
+//                            })
+//                        }
+//                        nextChunk()
+//                    }
+//                })
+//            }
+//            nextChunk()
+//        })
+    }
+
+    send_connection_request(sk_type, port) {
+        var req = new ConnectAppControlRequest(sk_type, port, this.endpoint.app);
+        this.data_chan.send(req.write().toArrayBuffer());
+    }
+
+    start_tcp(port) {
+        this.send_connection_request(SocketType.SOCK_STREAM, port);
+    }
+
+    start_udp(port) {
+        this.send_connection_request(SocketType.SOCK_DGRAM, port);
+
+        this.retransmits_left -= 1;
+        if ( this.retransmit_left > 0 ) {
+            this.udp_retransmit_timer = setTimeout(this.retransmit_interval, () => { start_udp(port); });
+            this.retransmit_interval *= 2;
+        } else {
+            this.state = 'disconnected';
+            this.dispatchEvent(new FlockSocketErrorEvent(this, 'timeout'));
+        }
+    }
+
+    end_udp() {
+        clearTimeout(this.udp_retransmit_timer);
+        delete this.udp_retransmit_timer;
+    }
+}
+
 const FlockClientState = {
     Error: 'error',
     Connecting: 'connecting', // currently in the process of choosing an appliance
@@ -42,8 +329,7 @@ const FlockClientState = {
     CollectingPersonas: 'collecting-personas',
     ReadyToLogin: 'ready-to-login', // personas collected, ready to log in
     StartIce: 'start-ice', // ICE is starting
-    OfferReceived: 'offer-received', // Offer is received
-    AnswerSent: 'answer-sent',
+    OfferReceived: 'offer-received', // Offer is received, but there may be more candidates
     Complete: 'ice-complete'
 }
 
@@ -71,7 +357,13 @@ export class FlockClient extends EventTarget {
         }
 
         this.personas = [];
+        this.applications = {};
+        this.rtc_stream_number = 0;
+        this.answer_sent = false;
         this.websocket = new WebSocket(url.href);
+
+        this.remoteComplete = false;
+        this.localComplete = false;
 
         var thisFlockClient = this;
         this.websocket.addEventListener('open', function (evt) {
@@ -122,17 +414,46 @@ export class FlockClient extends EventTarget {
                     break;
                 case FlockClientState.StartIce:
                     switch ( line.code ) {
+                    case 151:
                     case 150:
-                        this.rtc_connection = new RTCPeerConnection({ iceServers: iceServers });
-                        this.rtc_channel = this.rtc_connection.createDataChannel('control', {protocol: 'control'})
-                        this.rtc_channel.onopen = function () { console.log("channel opens") }
-                        this.rtc_channel.onclose = function () { console.log('channel closes') }
 
-                        this.rtc_connection.addEventListener('negotiationneeded',
-                                                             (e) => { this.onNegotiationNeeded(e) })
+                        if ( line.code == 150 )
+                            this.state = FlockClientState.OfferReceived;
+                        else {
+                            this.signalRemoteComplete()
+                        }
+
+                        this.rtc_connection = new RTCPeerConnection({ iceServers: iceServers });
+                        this.rtc_control_channel = this.rtc_connection.createDataChannel('control', {protocol: 'control'})
+                        this.rtc_control_channel.onopen = () => { this.dispatchEvent(new KiteChannelOpens(this)); }
+                        this.rtc_control_channel.onclose = function () { console.log('channel closes') }
+
+                        this.answer_sent = false;
+                        this.candidates = [];
+                        this.rtc_connection.addEventListener('icecandidate', (c) => {
+                            this.addIceCandidate(c)
+                        })
+
+                        console.log("Set remote description", this.offer);
+                        this.rtc_connection.setRemoteDescription({ type: 'offer',
+                                                                   sdp: this.offer})
+                            .then(() => { this.onSetDescription() },
+                                  (err) => { console.error("Could not set remote description", err) })
                         break;
+
                     default:
                         this.handleError(line);
+                    }
+                    break;
+                case FlockClientState.OfferReceived:
+                    switch ( line.code ) {
+                    case 151:
+                        console.log("All remote candidates received")
+                        this.rtc_connection.addIceCandidate({candidate: "", sdpMid: "data"})
+                            .then(() => { console.log("ice candidates finished successfully") },
+                                  (err) => { console.error("failed finishing ice candidates", err) });
+                        this.signalRemoteComplete()
+                        break;
                     }
                     break;
                 default:
@@ -140,10 +461,11 @@ export class FlockClient extends EventTarget {
                 }
             } else {
                 if ( this.state == FlockClientState.CollectingPersonas ) {
-                    this.parseVCardData(event.data);
+                    console.log("Got personas", evt)
+                    this.parseVCardData(evt.data);
                 } else if ( this.state == FlockClientState.StartIce ) {
-                    console.log("Got offer", event.data);
-                    this.offer = event.data;
+                    console.log("Got offer", evt.data);
+                    this.offer = evt.data;
                 } else {
                     this.sendError(new FlockErrorEvent(evt.data));
                 }
@@ -151,25 +473,57 @@ export class FlockClient extends EventTarget {
         });
     };
 
-    onNegotiationNeeded (e) {
-        console.log("NEGOTIATION NEEDED")
-        this.rtc_connection.createOffer().then((e) => console.log("Expected offer", e.sdp))
-        this.rtc_connection.setRemoteDescription({ type: 'offer',
-                                                   sdp: this.offer})
-            .then(() => { this.onSetDescription() },
-                  (err) => { console.error("Could not set remote description", err) })
+    signalRemoteComplete () {
+        if ( this.state != FlockClientState.Complete ) {
+            this.state = FlockClientState.Complete;
+
+            this.remoteComplete = true;
+            if ( this.localComplete ) this.socketCompletes()
+        }
+    }
+
+    socketCompletes () {
+        this.websocket.close()
+        delete this.websocket
     }
 
     // Called when the remote description is set and we need to send the answer
     onSetDescription() {
         console.log("Set remote description");
 
-        this.rtc_connection.addEventListener('icecandidate', (c) => { console.log("Got ice candidate", c) })
         this.rtc_connection.createAnswer()
             .then((answer) => {
                 this.rtc_connection.setLocalDescription(answer)
                 console.log("Got answer", answer.sdp)
+                this.websocket.send(answer.sdp);
+
+                this.onAnswerSent()
             })
+    }
+
+    addIceCandidate(c) {
+        console.log("got ice candidate", c);
+        if ( this.answer_sent ) {
+            this.sendIceCandidate(c);
+        } else
+            this.candidates.push(c);
+    }
+
+    sendIceCandidate(c) {
+        if ( c.candidate )
+            this.websocket.send("a=" + c.candidate.candidate + "\r\n")
+        else {
+            this.websocket.send("\r\n\r\n");
+
+            this.localComplete = true;
+            if ( this.remoteComplete )
+                this.socketCompletes();
+        }
+    }
+
+    onAnswerSent() {
+        this.answer_sent = true
+        this.candidates.map((c) => { this.candidates.push(c) })
     }
 
     parseVCardData(vcard) {
@@ -237,94 +591,116 @@ export class FlockClient extends EventTarget {
         this.websocket.send(personaId)
         this.websocket.send(creds)
 
-        return Promise.reject("could not login")
+        return new Promise((resolve, reject) => {
+            var removeEventListeners = () => {
+                this.removeEventListener('-kite-channel-opens', onOpen)
+                this.removeEventListener('error', onError)
+            }
+            var onOpen = () => {
+                removeEventListeners()
+                resolve()
+            }
+            var onError = () => {
+                removeEventListeners()
+                reject()
+            }
+            this.addEventListener('-kite-channel-opens', onOpen)
+            this.addEventListener('error', onError)
+        })
     }
 
     sendError (err) {
+        console.error("sendError called: ", err);
         this.state = FlockClientState.Error;
         this.websocket.close();
         this.dispatchEvent(err);
     }
 
-    sendRequest (req) {
-        var buffer = req.write();
-        this.websocket.send(buffer.toArrayBuffer(), {binary: true});
-    };
+    requestApps(apps) {
+        return new Promise((resolve, reject) => {
+            if ( this.state != FlockClientState.Complete )
+                throw new TypeError("Can't request apps until flock client is connected")
+            else {
+                var cur_app, cur_timer = null;
+                var complete = () => {
+                    if ( cur_timer !== null ) {
+                        clearTimeout(cur_timer);
+                        cur_timer = null;
+                    }
+                    this.rtc_control_channel.removeEventListener('message', listener);
+                    resolve();
+                };
 
-    sendSessionDescription(sdp) {
-        var cmd = new DialSessionCommand(DIAL_TYPE_SDP, sdp);
-        this.sendRequest(cmd);
-    }
+                var canceled = () => {
+                    reject(new ApplicationDeniedError(cur_app, 'timeout'));
+                };
 
-    sendIceCandidate(iceData) {
-        var cmd = new DialSessionCommand(DIAL_TYPE_ICE, iceData);
-        this.sendRequest(cmd);
-    }
+                var go = () => {
+                    if ( apps.length == 0 ) {
+                        complete();
+                    } else {
+                        do {
+                            cur_app = apps[0];
 
-    startConnection(device_name, persona_id, apps) {
-        return new FlockConnection(this, device_name, persona_id, apps);
-    }
+                            if ( apps.length > 0 )
+                                apps.splice(0, 1);
+                        } while ( this.applications.hasOwnProperty(cur_app) &&
+                                  apps.length > 0 );
 
-    static testFlock() {
-        var flock = new FlockClient("ws://localhost:6854/");
-        var httpParser = require('http-parser-js').HTTPParser;
-        var myBuffer = require('buffer').Buffer;
-        console.log("Test flock");
-
-        flock.addEventListener("open", function() {
-            console.log("Flock connection established");
-            flock.loginToDevice("combustion toxicity maple semicolon", function (rsp) {
-                if ( rsp.success ) {
-                    console.log("Successful login, candidates are ", rsp);
-
-                    var conn = flock.startConnection("combustion toxicity maple semicolon", "c12e34eb2dd3924ad58f7192008aa2bdd7931ce2fe1c75c6c3ea5bc57686132a", [ "stork+app://flywithkite.com/photos" ]);
-
-                    conn.addEventListener('open', function() {
-                        console.log("Open", conn.applications);
-                        var socket = conn.socketTCP("stork+app://flywithkite.com/photos", 50051);
-                        var respParser = new httpParser(httpParser.RESPONSE);
-                        var decoder = new TextDecoder();
-
-                        respParser[respParser.kOnHeaders] = respParser.onHeaders = function (headers, url) {
-                            console.log("Got http response", headers, url);
+                        if ( apps.length == 0 && this.applications.hasOwnProperty(cur_app) ) {
+                            // We have all applications
+                            complete();
+                        } else {
+                            var msg = new RequestAppControlMessage(cur_app);
+                            cur_timer = setTimeout(canceled, 30000);
+                            this.rtc_control_channel.send(msg.write().toArrayBuffer());
                         }
-                        respParser[respParser.kOnHeadersComplete] = respParser.onHeadersComplete = function (info) {
-                            console.log("On headers complete", info);
-                        }
-                        respParser[respParser.kOnBody] = respParser.onBody = function (b) {
-                            console.log("on body", b);
-                        }
-
-                        socket.addEventListener('open', function() {
-                            console.log("photos socket opened. Sending HTTP/1.1 message");
-                            socket.send("GET / HTTP/1.1\r\nHost: flywithkite.com\r\nAccept: text/json\r\nConnection: close\r\n\r\n");
-                        });
-                        socket.addEventListener('data', function(e) {
-                            var dataStr = decoder.decode(e.data);
-                            console.log("Got data", dataStr);
-
-                            var dataBuffer = Buffer.from(e.data);
-                            respParser.execute(dataBuffer);
-                        })
-                        socket.addEventListener('close', function(e) {
-                            console.log("Socket closes");
-                            respParser.finish();
-                            console.log("response is ", respParser);
-                        })
-                        socket.addEventListener('error', function(e) {
-                            console.error("Socket error", e, e.explanation);
-                        })
-                    });
-                    conn.addEventListener('error', function (e) {
-                        console.error("Error opening connection", e);
-                    });
-
-                    conn.login("creds");
-                } else {
-                    console.error("Could not login to device");
+                    }
                 }
-            });
+
+                var listener = ( e ) => {
+                    console.log("Got message event", e);
+
+                    if ( cur_timer !== null ) {
+                        clearTimeout(cur_timer);
+                        cur_timer = null;
+                    }
+
+                    var parser = new BufferParser(e.data);
+                    var rsp = new RequestAppControlResponse(parser);
+                    if ( rsp.error ) {
+                        // TODO what error?
+                        reject(new ApplicationDeniedError(cur_app, 'unknown'));
+                    } else {
+                        this.applications[cur_app] = rsp.app_descriptor;
+                    }
+                    go();
+                };
+                this.rtc_control_channel.addEventListener('message', listener);
+
+                go();
+            }
         });
+    }
+
+    newDataChannel(init) {
+        var stream_name = 'stream' + this.rtc_stream_number;
+        this.rtc_stream_number += 1;
+
+        return this.rtc_connection.createDataChannel(stream_name, init);
+    }
+
+    socketTCP (app_name, port) {
+        console.log("Doing socketTCP");
+        if ( this.applications.hasOwnProperty(app_name) ) {
+            if ( this.rtc_connection !== null ) {
+                return new FlockSocket(this, { type: 'tcp',
+                                               app: this.applications[app_name],
+                                               port: port });
+            } else
+                throw new FlockConnectionNotOpenError();
+        } else
+            throw new AppNotOpenedError(app_name);
     }
 };
 

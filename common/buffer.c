@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdarg.h>
 
+#include "util.h"
 #include "buffer.h"
 
 #define INITBUFSZ 32
@@ -25,6 +26,21 @@ void buffer_finalize(struct buffer *b, const char **data, size_t *data_sz) {
     *data = NULL;
     *data_sz = 0;
   }
+}
+
+void buffer_finalize_str(struct buffer *b, const char **d) {
+  size_t sz;
+  assert( buffer_write(b, "\0", 1) > 0 );
+  buffer_finalize(b, d, &sz);
+}
+
+void buffer_release(struct buffer *b) {
+  if ( b->b_data )
+    free(b->b_data);
+
+  b->b_data = NULL;
+  b->b_bsize = 0;
+  b->b_size = 0;
 }
 
 int buffer_write(struct buffer *b, const char *data, size_t sz) {
@@ -72,7 +88,7 @@ int buffer_printf(struct buffer *b, const char *fmt, ...) {
   if ( !buf ) {
     sz = -1;
   } else {
-    assert( vsnprintf(buf, sz + 1, fmt, vl2) == sz );
+    SAFE_ASSERT( vsnprintf(buf, sz + 1, fmt, vl2) == sz );
     b->b_size -= 1;
   }
 
@@ -80,4 +96,21 @@ int buffer_printf(struct buffer *b, const char *fmt, ...) {
   va_end(vl2);
 
   return sz;
+}
+
+int buffer_read_from_file(struct buffer *b, const char *path) {
+  char chunk[1024];
+  FILE *fp = fopen(path, "rb");
+  size_t sz;
+  if ( !fp ) return -1;
+
+  buffer_init(b);
+
+  while ( (sz = fread(chunk, 1, sizeof(chunk), fp)) ) {
+    buffer_write(b, chunk, sz);
+  }
+
+  fclose(fp);
+
+  return 0;
 }

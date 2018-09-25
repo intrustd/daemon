@@ -50,7 +50,7 @@ const char *kite_operation_str(uint16_t otype) {
 
 void kite_print_attr_data(FILE *out, struct kitelocalattr *attr) {
   uint16_t attr_type = ntohs(attr->kla_name), attr_len = ntohs(attr->kla_length);
-  uint16_t *attr_d16;
+  //  uint16_t *attr_d16;
 
   attr_len -= sizeof(*attr);
 
@@ -149,7 +149,7 @@ int display_stork_response(char *buf, int size, const char *success_msg) {
 int mk_api_socket() {
   struct sockaddr_un addr;
   int err, sk;
-  char *stork_path = getenv("STORK_APPLIANCE_DIR");
+  char *stork_path = getenv("KITE_APPLIANCE_DIR");
 
   addr.sun_family = AF_UNIX;
 
