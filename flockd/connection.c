@@ -177,6 +177,9 @@ int connection_init(struct connection *conn, struct flockservice *svc, connectio
                     connection_write_request,
                     OP_CONNECTION_APP_REQ_SENT, connection_evtfn);
 
+  timersub_init_default(&conn->conn_ai_retry_connect,
+                         OP_CONNECTION_RETRY_AI_CONNECT,
+                         connection_evtfn);
   timersub_init_default(&conn->conn_timeout, OP_CONNECTION_TIMEOUT_EVT, connection_evtfn);
   qdevtsub_init(&conn->conn_personas_ready_evt, OP_CONNECTION_PERSONAS_READY, connection_evtfn);
 
@@ -228,9 +231,7 @@ int connection_connect_appliance(struct connection *conn,
   conn->conn_appliance = app;
   conn->conn_ai_state = CONN_AI_STATE_STARTING;
   conn->conn_ai_retries = 0;
-  timersub_init_from_now(&conn->conn_ai_retry_connect, CONNECTION_APPLIANCE_TIMEOUT,
-                         OP_CONNECTION_RETRY_AI_CONNECT,
-                         connection_evtfn);
+  timersub_set_from_now(&conn->conn_ai_retry_connect, CONNECTION_APPLIANCE_TIMEOUT);
 
   if ( pthread_mutex_lock(&app->ai_mutex) == 0 ) {
     HASH_ADD(conn_ai_hh, app->ai_connections, conn_id, sizeof(conn->conn_id), conn);
