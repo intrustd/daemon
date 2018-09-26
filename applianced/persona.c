@@ -401,6 +401,7 @@ static int personacontainerfn(struct container *c, int op, void *argp, ssize_t a
   char persona_id_str[PERSONA_ID_X_LENGTH];
 
   switch ( op ) {
+
   case CONTAINER_CTL_CHECK_PERMISSION:
     perm = argp;
     if ( perm->bpr_perm.bp_type == BR_PERM_APPLICATION ) {
@@ -409,6 +410,11 @@ static int personacontainerfn(struct container *c, int op, void *argp, ssize_t a
       return 0;
     }
     return -1;
+
+  case CONTAINER_CTL_GET_TMP_PATH:
+    err = snprintf((char *) argp, argl, "%s/proc", p->p_appstate->as_conf_dir);
+    if ( err >= argl ) return -1;
+    else return 0;
 
   case CONTAINER_CTL_GET_INIT_PATH:
     cp = argp;
@@ -667,8 +673,14 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
   struct appinstance *ai = STRUCT_FROM_BASE(struct appinstance, inst_container, c);
   const char **cp;
   char *persona_id;
+  int err;
 
   switch ( op ) {
+  case CONTAINER_CTL_GET_TMP_PATH:
+    err = snprintf((char *) argp, argl, "%s/proc", ai->inst_persona->p_appstate->as_conf_dir);
+    if ( err >= argl ) return -1;
+    else return 0;
+
   case CONTAINER_CTL_GET_INIT_PATH:
     cp = argp;
     *cp = ai->inst_persona->p_appstate->as_app_instance_init_path;
@@ -777,6 +789,7 @@ static int appinstance_setup(struct appinstance *ai) {
               hex_digest_str((unsigned char *)ai->inst_persona->p_persona_id,
                              persona_id_str, PERSONA_ID_LENGTH),
               app_domain, app_name_or_path);
+  fprintf(stderr, "Made path %s\n", path);
   err = mkdir_recursive(path);
   if ( err < 0 ) {
     perror("appinstance_setup: mkdir_recursive");

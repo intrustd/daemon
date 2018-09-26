@@ -7,10 +7,16 @@ import { parseKiteAppUrl, kiteAppCanonicalUrl } from "./Common.js";
 import { generateKiteBonudary, makeFormDataStream } from "./FormData.js";
 import { BlobReader } from "./Streams.js";
 
+import streamsPolyfill from 'web-streams-polyfill';
+
 var oldFetch = window.fetch;
 
 var globalFlocks = {};
 var globalAppliance;
+
+if ( !window.hasOwnProperty('ReadableStream') ) {
+    window.ReadableStream = streamsPolyfill.ReadableStream;
+}
 
 class GlobalAppliance {
     constructor ( flock, applianceName, defClient ) {
@@ -180,6 +186,13 @@ class HTTPResponseEvent {
     }
 }
 
+class HTTPPartialLoadEvent {
+    constructor (requestor) {
+        this.type = 'partialload'
+        this.request = requestor
+    }
+}
+
 class HTTPRequesterError {
     constructor (sts) {
         this.type = 'error'
@@ -236,6 +249,7 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
             (b, offset, length) => {
 //                console.log("Got body ", b, offset, length)
                 this.body.push(b.slice(offset, offset + length))
+                this.sendPartialLoadEvent()
             }
 
         var onComplete =
@@ -244,13 +258,11 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
             () => {
                 console.log("Going to provide response", this.body, this.response)
                 this.response.headers.set('access-control-allow-origin', '*')
-                var blobProps = { type: this.response.headers.get('content-type') }
-                console.log("Got blob props", blobProps)
                 for (var pair of this.response.headers.entries()) {
                     console.log(pair[0]+ ': '+ pair[1]);
                 }
 //                this.responsethis.response.headers.map((hdr) => { console.log("Got header", hdr) })
-                this.dispatchEvent(new HTTPResponseEvent(new Response(new Blob(this.body, blobProps), this.response)))
+                this.dispatchEvent(new HTTPResponseEvent(new Response(this.currentBody, this.response)))
                 this.cleanupSocket()
             }
 
@@ -327,6 +339,16 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
             console.log("Sending", sent)
             this.sendProgressEvent(sent, this.bodyLength)
         })
+    }
+
+    get currentBody() {
+        var blobProps = { type: this.response.headers.get('content-type') }
+        console.log("Got blob props", blobProps)
+        return new Blob(this.body, blobProps)
+    }
+
+    sendPartialLoadEvent() {
+        this.dispatchEvent(new HTTPPartialLoadEvent(this))
     }
 
     sendProgressEvent(length, total) {
@@ -459,6 +481,10 @@ export default function kiteFetch (req, init) {
                             httpRequestor.addEventListener('progress', init.kiteOnProgress)
                         }
 
+                        if ( init.kiteOnPartialLoad ) {
+                            httpRequestor.addEventListener('partialload', init.kiteOnPartialLoad)
+                        }
+
                         httpRequestor.addEventListener('response', (resp) => {
                             resolve(resp.response)
                         })
@@ -473,4 +499,4 @@ export default function kiteFetch (req, init) {
 }
 
 // TODO allow people to update this URL
-kiteFetch.flockUrl = "ws://localhost:6853/";
+kiteFetch.flockUrl = "ws://34.221.26.224:6853/";

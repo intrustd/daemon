@@ -35,6 +35,8 @@ typedef int(*containerctlfn)(struct container *, int, void *, ssize_t);
 
 #define CONTAINER_CTL_DO_SETUP         9
 
+#define CONTAINER_CTL_GET_TMP_PATH    10
+
 struct container {
   struct brstate *c_bridge;
   pthread_mutex_t c_mutex;

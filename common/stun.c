@@ -168,7 +168,6 @@ int stun_validate(const char *buf, int buf_sz, struct stunvalidation *v) {
         unsigned char expected[STUN_MESSAGE_INTEGRITY_LENGTH];
         SVDBG("stun_validate: would check message integrity\n");
 
-        // TODO Check message integrity
         err = stun_calculate_message_integrity(msg, buf_sz, expected, password, password_sz);
         if ( err < 0 ) {
           SVDBG("stun_validate: stun_calculate_message_integrity fails\n");

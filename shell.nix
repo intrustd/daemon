@@ -74,14 +74,13 @@ in pkgs.stdenv.mkDerivation {
 
     ncat
 
-    valgrind stun graphviz
+    valgrind stun graphviz awscli
 
     lksctp-tools-1-0-18 libnl thrift
     curl-kite curl-kite.dev
 
     (python3.withPackages (ps: [
-       ps.flask
-       ps.sqlalchemy
+       ps.flask ps.sqlalchemy
      ]))
   ];
 

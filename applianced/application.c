@@ -250,12 +250,12 @@ int validate_canonical_url(const char *url, char *app_name, size_t app_name_sz,
 
     if ( app_domain ) {
       strncpy_fixed(app_domain, app_domain_sz,
-                    uri.hostText.first, uri.hostText.afterLast - uri.hostText.first);
+                    uri.hostText.first, uri.hostText.afterLast - uri.hostText.first - 1);
     }
 
     if ( app_name ) {
       strncpy_fixed(app_name, app_name_sz,
-                    uri.pathHead->text.first, uri.pathHead->text.afterLast - uri.pathHead->text.first);
+                    uri.pathHead->text.first, uri.pathHead->text.afterLast - uri.pathHead->text.first - 1);
     }
 
     uriFreeUriMembersA(&uri);

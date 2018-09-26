@@ -53,7 +53,7 @@ static int appstate_certificate_digest(X509 *cert, unsigned char *digest) {
   assert(pubkey_raw);
   FLOCK_SIGNATURE_METHOD(pubkey_raw, err, digest);
 
-  free(pubkey_raw); // TODO is this the right thing to do ?
+  free(pubkey_raw);
 
   return 0;
 }

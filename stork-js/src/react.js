@@ -71,12 +71,30 @@ export class KiteImage extends React.Component {
             this.updateSource(this.props.src)
     }
 
+    dispatchFirstLoad() {
+        if ( !this.state.firstLoad ) {
+            this.setState({firstLoad: true})
+            if ( this.props.onFirstLoad )
+                this.props.onFirstLoad()
+        }
+    }
+
     updateSource(newSrc) {
         this.freeBlob()
 
         this.setState({srcUrl: null, isBlob: false})
         var parsed = parseKiteAppUrl(newSrc)
-        fetch(newSrc, { method: 'GET' })
+        fetch(newSrc, { method: 'GET',
+                        kiteOnPartialLoad: (e) => {
+                            var req = e.request
+                            var newBlob =  URL.createObjectURL(req.currentBody)
+                            this.freeBlob()
+
+                            console.log("New blob for ", this.props.src, " ", newBlob)
+                            this.setState({ srcUrl: newBlob,
+                                            isBlob: true })
+                            this.dispatchFirstLoad()
+                        }})
             .then((d) => d.blob().then((b) => {
                 return {contentType: d.headers.get('content-type'),
                         blob: b}
@@ -87,11 +105,7 @@ export class KiteImage extends React.Component {
                 this.setState({srcUrl: curBlob,
                                isBlob: true})
 
-                if ( !this.state.firstLoad ) {
-                    this.setState({firstLoad: true})
-                    if ( this.props.onFirstLoad )
-                        this.props.onFirstLoad()
-                }
+                this.dispatchFirstLoad()
             })
     }
 

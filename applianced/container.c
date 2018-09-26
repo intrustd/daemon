@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <sched.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -134,6 +135,52 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
     fprintf(stderr, "containerevtfn: unknown op %d\n", op);
     return;
   }
+}
+
+static int container_enable_sctp_intl(struct container *c) {
+  char proc_path[PATH_MAX], sctp_intl_path[PATH_MAX];
+  int err, ret = -1;
+  FILE *en;
+
+  if ( c->c_control(c, CONTAINER_CTL_GET_TMP_PATH, proc_path, PATH_MAX) < 0 ) {
+    return -1;
+  }
+
+  if ( mkdir_recursive(proc_path) < 0 ) {
+    perror("container_enable_sctp_intl: mkdir_recursive");
+    return -1;
+  }
+
+  if ( mount("proc", proc_path, "proc", 0, "") < 0 ) {
+    perror("container_enable_sctp_intl: mount");
+    return -1;
+  }
+
+  err = snprintf(sctp_intl_path, sizeof(sctp_intl_path),
+                 "%s/sys/net/sctp/intl_enable", proc_path);
+  if ( err >= sizeof(sctp_intl_path) ) {
+    fprintf(stderr, "container_enable_sctp_intl: path is too long\n");
+    ret = -1;
+    goto error;
+  }
+
+  en = fopen(sctp_intl_path, "wt");
+  if ( !en ) {
+    perror("fopen /proc/sys/net/sctp/intl_enable");
+    ret = -1;
+    goto error;
+  } else {
+    fprintf(en, "1");
+    fclose(en);
+    ret = 0;
+  }
+
+ error:
+  if ( umount(proc_path) < 0 ) {
+    perror("container_enable_sctp_intl: umount");
+  }
+
+  return ret;
 }
 
 static int container_start(struct container *c) {
@@ -411,6 +458,15 @@ static int container_start_child(void *c_) {
   err = system("ifconfig -a");
   fprintf(stderr, "Listing routes\n");
   err = system("route");
+
+  fprintf(stderr, "Enable SCTP interleaving\n");
+
+  // Set SCTP interleaving
+  err = container_enable_sctp_intl(c);
+  if ( err < 0 ) {
+    fprintf(stderr, "container_enable_sctp_intl returned error\n");
+    return EXIT_FAILURE;
+  }
 
   // Now run container setup
   if ( c->c_control(c, CONTAINER_CTL_DO_SETUP, 0, 0) == -1 ) {

@@ -536,7 +536,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
               //              print_hex_dump_fp(stderr, (const unsigned char *) my_buf, pkt_sz);
 
               // Only write the packet if the webrtc-proxy is up
-              fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
+              //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
               bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
                                             &cs->cs_pconn->pc_persona->p_container,
                                             &peer_addr.ksa, peer_addr_sz,
@@ -591,7 +591,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
         if ( err == STUN_SUCCESS ) {
           struct stunmsg *msg = (struct stunmsg *)cs->cs_pconn->pc_incoming_pkt;
 
-          fprintf(stderr, "Received binding request\n");
+          //fprintf(stderr, "Received binding request\n");
           if ( STUN_REQUEST_TYPE(msg) == STUN_BINDING ) {
             candsrc_send_binding_response(cs, msg, &peer_addr.ksa, peer_addr_sz);
           } else
@@ -651,7 +651,10 @@ static void candsrc_send_outgoing(struct candsrc *cs) {
 
     BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
     BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, 0);
-    //    fprintf(stderr, "candsrc_send_outgoing: send packet of size %u\n", sz);
+//    fprintf(stderr, "candsrc_send_outgoing: send packet of size %u (cs idx %d)\nfrom address",
+//            pconn_cs_idx(cs->cs_pconn, cs), sz);
+//    dump_address(stderr, &cs->cs_local_addr.ksa, sizeof(cs->cs_local_addr));
+//    fprintf(stderr, "\n");
     err = SSL_write(cs->cs_pconn->pc_dtls, outgoing, sz);
     if ( err <= 0 ) {
       if ( err == 0 ) {
@@ -1033,6 +1036,8 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
     pc = cs->cs_pconn;
 
     if ( FD_WRITE_AVAILABLE(fde) && PCONN_LOCK(pc) == 0 ) {
+      struct icecandpair *icp;
+      struct icecand *local_cand;
       // A write is available because we connect()ed. We can now add the host candidate
       SAFE_MUTEX_LOCK(&pc->pc_mutex);
       if ( !cs->cs_host_candidate_added ) {
@@ -1041,18 +1046,33 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
         cs->cs_host_candidate_added = 1;
       }
 
+      //fprintf(stderr, "Got candsrc write %d %d\n", pconn_cs_idx(pc, cs), pc->pc_state);
+      if ( pc->pc_active_candidate_pair >= 0 &&
+           pc->pc_active_candidate_pair < pc->pc_candidate_pairs_count ) {
+        icp = pc->pc_candidate_pairs_sorted[pc->pc_active_candidate_pair];
+      } else
+        icp = NULL;
+
+      if ( icp && icp->icp_local_ix >= 0 &&
+           icp->icp_local_ix < pc->pc_local_ice_candidates_count ) {
+        local_cand = &pc->pc_local_ice_candidates[icp->icp_local_ix];
+      } else
+        local_cand = NULL;
+
       // If we're listening or accepting for DTLS or established, this may just be a DTLS
       // request
       if ( pc->pc_state == PCONN_STATE_DTLS_ACCEPTING ||
            pc->pc_state == PCONN_STATE_DTLS_CONNECTING ) {
+        //fprintf(stderr, "do handshake\n");
         pconn_dtls_handshake(pc);
-      } else if ( pc->pc_state == PCONN_STATE_ESTABLISHED &&
-                  pc->pc_active_candidate_pair >= 0 &&
-                  pconn_cs_idx(pc, cs) == pc->pc_active_candidate_pair &&
+      } else if ( local_cand &&
+                  pc->pc_state == PCONN_STATE_ESTABLISHED &&
+                  pconn_cs_idx(pc, cs) == local_cand->ic_candsrc_ix &&
                   pc->pc_outgoing_size > 0 ) {
         //        fprintf(stderr, "candsrc_send_outgoing being called\n");
         candsrc_send_outgoing(cs);
       } else if ( cs->cs_scheduled_connectivity_check ) {
+        //fprintf(stderr, "do conn check\n");
         // Otherwise, this is a connectivity check
         pconn_reset_connectivity_check_timer(pc);
         candsrc_send_connectivity_check(cs);
@@ -1744,9 +1764,17 @@ static void pconn_activate_best_pair(struct pconn *pc) {
 
   if ( i < pc->pc_candidate_pairs_count ) {
     if ( pc->pc_active_candidate_pair < 0 ) {
+      struct icecandpair *new_pair;
+
       pc->pc_active_candidate_pair = i;
       fprintf(stderr, "pconn_connectivity_check_succeeds: activating pair %d\n", i);
       pconn_candpair_activated(pc);
+
+      fprintf(stderr, "active pair is\n  Local: ");
+      new_pair = pc->pc_candidate_pairs_sorted[i];
+      FORMAT_ICE_CANDIDATE(&pc->pc_local_ice_candidates[ new_pair->icp_local_ix ], dbgprintf);
+      fprintf(stderr, "(cs ix: %d)\n  Remote: ",pc->pc_local_ice_candidates[ new_pair->icp_local_ix ].ic_candsrc_ix);
+      FORMAT_ICE_CANDIDATE(&pc->pc_remote_ice_candidates[ new_pair->icp_remote_ix ], dbgprintf);
     } else
       pc->pc_active_candidate_pair = i;
   }
@@ -1866,7 +1894,7 @@ static int pconn_form_candidate_pairs(struct pconn *pc, struct icecand *cand, in
 
       fprintf(stderr, "Added pair %d with priority %lu:\n  Local:", cur_pair, pairs[cur_pair]->icp_priority);
       FORMAT_ICE_CANDIDATE(&pc->pc_local_ice_candidates[ pairs[cur_pair]->icp_local_ix ], dbgprintf);
-      fprintf(stderr, "\n  Remote:");
+      fprintf(stderr, "(cs ix: %d)\n  Remote:", pc->pc_local_ice_candidates[ pairs[cur_pair]->icp_local_ix ].ic_candsrc_ix);
       FORMAT_ICE_CANDIDATE(&pc->pc_remote_ice_candidates[ pairs[cur_pair]->icp_remote_ix ], dbgprintf);
       fprintf(stderr, "\n");
       cur_pair++;
@@ -2434,6 +2462,8 @@ static int pconn_ensure_dtls(struct pconn *pc) {
     goto error;
   }
 
+  fprintf(stderr, "Connecting to dtls on index %d ", pconn_cs_idx(local_src->cs_pconn, local_src));
+  dump_address(stderr, &remote->ic_addr.ksa, sizeof(remote->ic_addr));
   if ( !BIO_ctrl(dg_out, BIO_CTRL_DGRAM_SET_PEER, 0, &remote->ic_addr.ksa) ) {
     BIO_free(dg_out);
     fprintf(stderr, "pconn_ensure_dtls: could not set BIO_dgram peer\n");
@@ -2620,14 +2650,13 @@ static void pconn_on_established(struct pconn *pc) {
       }
 
       fprintf(stderr, "Started webrtc proxy\n");
-      // TODO we should wait for the webrtc proxy to have an actual indication it has connected
       if ( bridge_register_sctp(&pc->pc_appstate->as_bridge, &pc->pc_sctp_capture) < 0 ) {
         fprintf(stderr, "pconn_on_established: could not register with bridge\n");
         // TODO kill the webrtc-proxy process
         return;
       } else
         // We must keep this alive while the bridge is delivering events...
-        // TODO undo this
+        // TODO undo this reference
         PCONN_WREF(pc);
     } else
       fprintf(stderr, "pconn_on_established: already running\n");
@@ -2646,7 +2675,7 @@ static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t s
     return;
   }
 
-  //  fprintf(stderr, "pconn_on_sctp_packet: receive sctp packet\n");
+  //fprintf(stderr, "pconn_on_sctp_packet: receive sctp packet\n");
 
   if ( pthread_mutex_lock(&pc->pc_mutex) == 0 ) {
     size_t aligned_sz = ((sz + 3) / 4) * 4;
@@ -2681,6 +2710,8 @@ static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t s
       goto done;
     }
     candsrc = &pc->pc_candidate_sources[local_cand->ic_candsrc_ix];
+    //    fprintf(stderr, "Writing on cand pair %d\n", pc->pc_active_candidate_pair);
+    //fprintf(stderr, "Requesting write for cs ix %d\n", local_cand->ic_candsrc_ix);
 
     aligned_sz += 4;
 
@@ -2701,11 +2732,11 @@ static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t s
       } else
         cur_write_head += 4;
 
-      //      fprintf(stderr, "pconn_on_sctp_packet: write at %lu\n", cur_write_head);
+      //fprintf(stderr, "pconn_on_sctp_packet: write at %lu\n", cur_write_head);
       memcpy(pc->pc_outgoing_pkt + cur_write_head, buf + bytes_written, aligned_sz - 4 - bytes_written);
       pc->pc_outgoing_size += aligned_sz;
 
-      //      fprintf(stderr, "pconn_on_sctp_packet: asking for write\n");
+      //fprintf(stderr, "pconn_on_sctp_packet: asking for write\n");
       CANDSRC_SUBSCRIBE_WRITE(candsrc);
     } else
       fprintf(stderr, "pconn_on_sctp_packet: dropping packet\n"); // TODO drop first packet

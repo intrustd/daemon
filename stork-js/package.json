@@ -23,7 +23,8 @@
     "popper.js": "^1.14.4",
     "react": "^16.5.2",
     "utf8": "^3.0.0",
-    "vcard-parser": "^1.0.0"
+    "vcard-parser": "^1.0.0",
+    "web-streams-polyfill": "^1.3.2"
   },
   "devDependencies": {
     "autoprefixer": "^9.1.2",

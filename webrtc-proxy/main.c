@@ -23,6 +23,10 @@
 #include "webrtc.h"
 #include "util.h"
 
+#ifndef SCTP_INTERLEAVING_SUPPORTED
+#define SCTP_INTERLEAVING_SUPPORTED 125
+#endif
+
 #define WEBRTC_PROXY_DEBUG 1
 
 #define COMM 3
@@ -1268,6 +1272,8 @@ void *epoll_thread(void *srv_raw) {
   pthread_mutex_unlock(&g_channel_mutex);
 
   while (1) {
+    int ofs;
+
     //    log_printf("Epoll with timeout: %d\n", timeout);
     ev_cnt = epoll_pwait(g_epollfd, evs, MAX_EPOLL_EVENTS, timeout, &old);
     if ( ev_cnt == -1 ) {
@@ -1285,9 +1291,11 @@ void *epoll_thread(void *srv_raw) {
 
     timeout = -1;
 
+    ofs = rand();
+
     // Go over each event in the epoll and continue
     for ( i = 0; i < ev_cnt; ++i ) {
-      struct epoll_event *ev = evs + i;
+      struct epoll_event *ev = evs + ((i + ofs) % ev_cnt) ;
       struct wrtcchan *chan = (struct wrtcchan *) ev->data.ptr;
       int new_events = DFL_EPOLL_EVENTS;
 
@@ -1938,7 +1946,7 @@ int main(int argc, char **argv) {
   int flags, n;
 
   uint8_t kite_sts = 1;
-  int comm_up = 0;
+  int comm_up = 0, frag_il = 2;
   //  int autoclose_interval = 60; // Close the association in 60 seconds
   //  struct linger sctp_linger;
 
@@ -1946,6 +1954,8 @@ int main(int argc, char **argv) {
   struct sctp_assoc_value reseto;
 
   char buffer[PROXY_BUF_SIZE];
+
+  srand(time(NULL));
 
   //  sigset_t block;
   if ( fcntl(COMM, F_GETFD) >= 0 ) {
@@ -2050,6 +2060,18 @@ int main(int argc, char **argv) {
     SCTP_ENABLE_CHANGE_ASSOC_REQ;
   if ( setsockopt(sock, IPPROTO_SCTP, SCTP_ENABLE_STREAM_RESET, &reseto, sizeof(reseto)) < 0) {
     perror("setsockopt SCTP_ENABLE_STREAM_RESET");
+    return 1;
+  }
+
+  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_FRAGMENT_INTERLEAVE, &frag_il, sizeof(frag_il)) < 0 ) {
+    perror("setsockopt SCTP_FRAGMENT_INTERLEAVE");
+    return 1;
+  }
+
+  reseto.assoc_id = 0;
+  reseto.assoc_value = 1;
+  if ( setsockopt(sock, IPPROTO_SCTP, SCTP_INTERLEAVING_SUPPORTED, &reseto, sizeof(reseto)) < 0 ) {
+    perror("setsockopt SCTP_INTERLEAVING_SUPPORTED");
     return 1;
   }
 

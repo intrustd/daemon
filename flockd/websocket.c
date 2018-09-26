@@ -674,7 +674,6 @@ static void wsconnectionfn(struct eventloop *el, int op, void *arg) {
           connection_wait_for_auth(&wsc->wsc_conn);
         pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
       }
-      fprintf(stderr, "TODO Websocket has more space... should write out personas\n");
       WSC_UNREF(wsc);
     }
     break;
