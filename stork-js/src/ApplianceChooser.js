@@ -80,6 +80,11 @@ class Chooser extends EventTarget {
         this.shown = false
     }
 
+    signalError(e) {
+        this.error = e
+        m.redraw()
+    }
+
     canceled() {
         this.hide()
         this.dispatchEvent(new ChooserCancelsEvent())
@@ -129,6 +134,11 @@ class Chooser extends EventTarget {
     }
 
     view(options) {
+        var error = null
+        if ( this.error ) {
+            error = m(".modal-error", this.error)
+        }
+
         return m(".stork-chooser.modal.fade",
                  { tabindex: "-1", role: "dialog",
                    "aria-labelledby": "stork-chooser-title",
@@ -143,7 +153,10 @@ class Chooser extends EventTarget {
                                  { type: "button", "data-dismiss": "modal", "aria-label": "Close" },
                                  m("span", {"aria-hidden": "true"}, "×"))
                            ]),
-                           m(".modal-body", options.body)
+                           m(".modal-body", [
+                               error,
+                               options.body
+                           ])
                        ])]),
                  ])
     }

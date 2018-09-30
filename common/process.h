@@ -67,5 +67,6 @@ void pssub_init(struct pssub *ps, int op, evtctlfn fn);
 void pssub_release(struct pssub *ps);
 void pssub_resubscribe(struct eventloop *el, struct pssub *ps);
 int pssub_run_from_opts(struct eventloop *el, struct pssub *ps, struct pssubopts *opts);
+int pssub_attach(struct eventloop *el, struct pssub *ps, pid_t p);
 
 #endif

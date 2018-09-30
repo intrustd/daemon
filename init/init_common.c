@@ -45,6 +45,8 @@ void sighup_handler(int sig) {
 void setup_signals() {
   // Set up SIGCHLD handler
   struct sigaction sa;
+  sigset_t signals;
+
   sa.sa_handler = &sigchld_handler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
@@ -74,6 +76,16 @@ void setup_signals() {
   sa.sa_flags = SA_RESTART;
   if ( sigaction(SIGHUP, &sa, 0) == -1 ) {
     perror("sigaction(SIGHUP, ...)");
+    exit(1);
+  }
+
+  sigemptyset(&signals);
+  sigaddset(&signals, SIGTERM);
+  sigaddset(&signals, SIGPIPE);
+  sigaddset(&signals, SIGHUP);
+  sigaddset(&signals, SIGCHLD);
+  if ( sigprocmask(SIG_UNBLOCK, &signals, NULL) < 0 ) {
+    perror("sigprocmask SIG_UNBLOCK");
     exit(1);
   }
 

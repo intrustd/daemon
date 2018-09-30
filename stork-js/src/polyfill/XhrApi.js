@@ -190,7 +190,7 @@ export default class KiteXMLHttpRequest extends EventTarget {
             }
         };
 
-        console.log("Attempting to consume body")
+        console.log("Attempting to consume body", rsp.body)
         this._status = rsp.status
         this._statusText = rsp.statusText
         this._rspHeaders = rsp.headers

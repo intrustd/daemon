@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <ctype.h>
 
 #include "state.h"
 #include "websocket.h"
@@ -985,10 +986,39 @@ static void wsconnection_respond_line_ex(struct wsconnection *conn, struct event
     return -1;                                  \
   } } while (0)
 
+static void trim(const char **s, const char **e) {
+  while ( *s < *e ) {
+    if ( isspace(*s) ) (*s)++;
+    if ( isspace(*e) ) (*e)--;
+  }
+
+  if ( *e < *s ) {
+    *e = *s;
+  }
+}
+
+static int has_upgrade(const char *vls, const char *vle) {
+  const char *next;
+
+  while ( vls < vle && (next = memchr(vls, ',', vle - vls)) ) {
+    next -= 1;
+    trim(&vls, &next);
+    if ( strncasecmp(vls, "upgrade", next - vls) == 0 )
+      return 1;
+  }
+
+  if ( vls < vle ) {
+    if ( strncasecmp(vls, "upgrade", vle - vls) == 0 )
+      return 1;
+  }
+
+  return 0;
+}
+
 static int parse_http_header(struct wshs *hs, const char *nms, const char *nme,
                              const char *vls, const char *vle) {
   if ( strncasecmp(nms, "connection", nme - nms) == 0 ) {
-    if ( strncasecmp(vls, "upgrade", vle - vls) == 0 ) {
+    if ( has_upgrade(vls, vle) ) {
       hs->ws_flags |= WS_HAS_CONNECTION_UPGRADE;
       return 0;
     } else {

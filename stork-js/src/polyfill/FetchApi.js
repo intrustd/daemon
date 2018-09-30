@@ -6,15 +6,16 @@ import { ApplianceChooser, PersonaChooser } from "../ApplianceChooser.js";
 import { parseKiteAppUrl, kiteAppCanonicalUrl } from "./Common.js";
 import { generateKiteBonudary, makeFormDataStream } from "./FormData.js";
 import { BlobReader } from "./Streams.js";
-
-import streamsPolyfill from 'web-streams-polyfill';
+import { CacheControl } from "./Cache.js";
+import ProgressManager from "./Progress.js";
 
 var oldFetch = window.fetch;
 
 var globalFlocks = {};
 var globalAppliance;
 
-if ( !window.hasOwnProperty('ReadableStream') ) {
+if ( !window.ReadableStream ) {
+    var streamsPolyfill = require('web-streams-polyfill')
     window.ReadableStream = streamsPolyfill.ReadableStream;
 }
 
@@ -24,6 +25,10 @@ class GlobalAppliance {
         this.applianceName = applianceName;
         this.defaultPersona = defClient;
         this.personas = {};
+    }
+
+    markDefault() {
+        return this.flock.setDefaultAppliance(this.applianceName)
     }
 
     getPersonaClient(persona) {
@@ -58,12 +63,22 @@ class GlobalFlock {
         this.appliances = {};
     }
 
+    setDefaultAppliance(applianceName) {
+        return this.getAppliance(applianceName)
+            .then((app) => {
+                console.log("Setting default appliance", app)
+                this.defaultAppliance = app;
+                return app
+            })
+    }
+
     getAppliance(applianceName) {
         // Attempt connect to this appliance
         if ( this.appliances.hasOwnProperty(applianceName) ) {
             return Promise.resolve(this.appliances[applianceName]);
         } else {
             return new Promise((resolve, reject) => {
+                console.log("Get appliance", applianceName)
                 var client = new FlockClient({ url: this.flockUrl,
                                                appliance: applianceName });
                 var removeEventListeners = () => {
@@ -71,6 +86,7 @@ class GlobalFlock {
                     client.removeEventListener('error', onError);
                 }
                 var onOpen = () => {
+                    console.log("Appliance", applianceName, " opens")
                     removeEventListeners();
                     this.appliances[applianceName] =
                         new GlobalAppliance(this, applianceName, client);
@@ -86,24 +102,29 @@ class GlobalFlock {
         }
     }
 
-    getDefaultAppliance() {
+    getDefaultAppliance(options) {
+        if (options === undefined) options = {}
+
         if ( this.defaultAppliance )
             return Promise.resolve(this.defaultAppliance);
         else {
-            return new Promise((resolve, reject) => {
-                var chooser = new ApplianceChooser(this.flockUrl);
-                chooser.addEventListener('appliance-chosen', (e) => {
-                    this.getAppliance(e.device).then(
-                        (devClient) => {
-                            chooser.hide();
-                            resolve(devClient)
-                            this.defaultAppliance = devClient
-                        },
-                        (e) => { console.error(e); chooser.signalError() }
-                    );
+            if ( options.silent ) return Promise.reject()
+            else {
+                return new Promise((resolve, reject) => {
+                    var chooser = new ApplianceChooser(this.flockUrl);
+                    chooser.addEventListener('appliance-chosen', (e) => {
+                        this.getAppliance(e.device).then(
+                            (devClient) => {
+                                chooser.hide();
+                                resolve(devClient)
+                                this.defaultAppliance = devClient
+                            },
+                            (e) => { console.error(e); chooser.signalError() }
+                        );
+                    });
+                    chooser.addEventListener('cancel', () => reject('canceled'));
                 });
-                chooser.addEventListener('cancel', () => reject('canceled'));
-            });
+            }
         }
     }
 };
@@ -180,16 +201,19 @@ class GlobalFlock {
 // }
 
 class HTTPResponseEvent {
-    constructor (response) {
+    constructor (response, responseBlob) {
         this.type = 'response'
         this.response = response
+        this.responseBlob = responseBlob
     }
 }
 
 class HTTPPartialLoadEvent {
-    constructor (requestor) {
+    constructor (requestor, loaded) {
         this.type = 'partialload'
         this.request = requestor
+        this.loaded = loaded
+        this.total = requestor.responseContentLength
     }
 }
 
@@ -225,7 +249,11 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
             for ( var i = 0; i < hdrs.length; i += 2 ) {
                 this.response.headers.set(hdrs[i], hdrs[i + 1])
             }
-            console.log("Headers are ", this.response.headers)
+
+            var contentLength = this.response.headers.get('content-length')
+            if ( contentLength !== null ) {
+                this.responseContentLength = parseInt(contentLength)
+            }
         }
 
         this.responseParser[this.responseParser.kOnHeaders] =
@@ -244,12 +272,25 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
                     this.cleanupSocket()
                 }
             }
+        var totalBody = 0;
+        var frameRequested = null;
         this.responseParser[this.responseParser.kOnBody] =
             this.responseParser.onBody =
             (b, offset, length) => {
+                var sliced = b.slice(offset, offset + length)
+                totalBody += length
+//                if ( !noted ) {
+//                    noted = true;
+//                    console.log("Started", totalBody, "for", this.url.path)
+//                } else
+//                    console.log("Body", totalBody, "for", this.url.path)
+//                console.log("Got body", sliced, totalBody)
+//                window.currentKiteReq = this
 //                console.log("Got body ", b, offset, length)
-                this.body.push(b.slice(offset, offset + length))
-                this.sendPartialLoadEvent()
+                this.body.push(sliced)
+                if ( frameRequested === null ) {
+                    frameRequested = window.requestAnimationFrame(() => { this.sendPartialLoadEvent(totalBody); frameRequested = null })
+                }
             }
 
         var onComplete =
@@ -261,8 +302,14 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
                 for (var pair of this.response.headers.entries()) {
                     console.log(pair[0]+ ': '+ pair[1]);
                 }
-//                this.responsethis.response.headers.map((hdr) => { console.log("Got header", hdr) })
-                this.dispatchEvent(new HTTPResponseEvent(new Response(this.currentBody, this.response)))
+                //                this.responsethis.response.headers.map((hdr) => { console.log("Got header", hdr) })
+
+                var responseBlob = this.currentBody
+                if ( frameRequested !== null )
+                    window.cancelAnimationFrame(frameRequested)
+                this.sendPartialLoadEvent(totalBody)
+                this.dispatchEvent(new HTTPResponseEvent(new Response(responseBlob, this.response),
+                                                         responseBlob))
                 this.cleanupSocket()
             }
 
@@ -323,7 +370,7 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
         })
         this.socket.addEventListener('data', (e) => {
             var dataBuffer = Buffer.from(e.data)
-            console.log("Got response", dataBuffer)
+            //console.log("Got response", dataBuffer)
             this.responseParser.execute(dataBuffer)
         })
         this.socket.addEventListener('close', () => {
@@ -347,8 +394,8 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
         return new Blob(this.body, blobProps)
     }
 
-    sendPartialLoadEvent() {
-        this.dispatchEvent(new HTTPPartialLoadEvent(this))
+    sendPartialLoadEvent(loaded) {
+        this.dispatchEvent(new HTTPPartialLoadEvent(this, loaded))
     }
 
     sendProgressEvent(length, total) {
@@ -428,26 +475,83 @@ export default function kiteFetch (req, init) {
         if ( kiteUrl.hasOwnProperty('error') )
             throw new TypeError(kiteUrl.error)
         else {
-            var flockUrl = kiteFetch.flockUrl;
+            var flockUrls = kiteFetch.flockUrls;
             var canonAppUrl = kiteAppCanonicalUrl(kiteUrl);
             var appliancePromise, clientPromise;
 
             console.log("Got kite request", kiteUrl);
 
-            if ( init.hasOwnProperty('flockUrl') ) {
-                flockUrl = init.flockUrl;
+            if ( init.hasOwnProperty('flockUrls') ) {
+                flockUrls = init.flockUrls;
+                delete init.flockUrls;
+            }
+
+            else if ( init.hasOwnProperty('flockUrl') ) {
+                flockUrls = [ init.flockUrl ];
                 delete init.flockUrl;
             }
 
-            if ( !globalFlocks.hasOwnProperty(flockUrl) ) {
-                globalFlocks[flockUrl] = new GlobalFlock(flockUrl);
+            if ( flockUrls.length == 0 )
+                throw new TypeError("Expected at least one flock URL");
+
+            console.log("Attempting connection with ", flockUrls)
+            for ( var flockUrl of flockUrls.values() ) {
+                if ( !globalFlocks.hasOwnProperty(flockUrl) ) {
+                    globalFlocks[flockUrl] = new GlobalFlock(flockUrl);
+                }
             }
+            console.log("Got flock ", globalFlocks)
+
+            var applianceByName =
+                (applianceName) => {
+                    var applianceFromFlock = (flock) => {
+                        if ( applianceName === undefined )
+                            return flock.getDefaultAppliance({silent: true})
+                        else
+                            return flock.getAppliance(applianceName)
+                    }
+
+                    var getAppliances = flockUrls.map((flockUrl, i) => {
+                        return () => {
+                            return applianceFromFlock(globalFlocks[flockUrl])
+                                .then((dev) => { console.log("Got appliance success", dev, flockUrl); return dev; })
+                                .catch((e) => {
+                                    if ( (i + 1) >= getAppliances.length )
+                                        return Promise.reject(e)
+                                    else
+                                        return getAppliances[i + 1]()
+                                })
+                        }
+                    })
+
+                    return getAppliances[0]()
+                }
 
             if ( init.hasOwnProperty('applianceName') ) {
-                appliancePromise = globalFlocks[flockUrl].getAppliance(init.applianceName);
-                delete init.applianceName;
+                appliancePromise = applianceByName(init.applianceName)
+                delete init.applianceName
             } else {
-                appliancePromise = globalFlocks[flockUrl].getDefaultAppliance();
+                var appliancePromise =
+                    // Check if any global flock has a default appliance
+                    applianceByName()
+                    .catch(() => {
+                        return new Promise((resolve, reject) => {
+                            var chooser = new ApplianceChooser(flockUrls)
+                            chooser.addEventListener('appliance-chosen', (e) => {
+                                applianceByName(e.device).then(
+                                    (devClient) => {
+                                        chooser.hide()
+                                    devClient.markDefault()
+                                            .then(() => { resolve(devClient) })
+                                    },
+                                    (e) => {
+                                        console.error(e)
+                                        chooser.signalError(e)
+                                })
+                            })
+                        chooser.addEventListener('cancel', () => reject('canceled'))
+                        })
+                    })
             }
 
             if ( init.hasOwnProperty('persona') ) {
@@ -469,34 +573,90 @@ export default function kiteFetch (req, init) {
 
             console.log("Request is ", req, init)
 
-            return clientPromise
-                .then((dev) => { return dev.requestApps([ canonAppUrl ])
-                                   .then(() => { return dev; }) })
-                .then((dev) => {
-                    return new Promise((resolve, reject) => {
+            var runRequest = (dev) => {
+                var tracker = ProgressManager.startFetch()
+
+                return dev.requestApps([ canonAppUrl ])
+                    .then(() => dev)
+                    .then((dev) => new Promise((resolve, reject) => {
                         var socket = dev.socketTCP(canonAppUrl, kiteUrl.port);
                         var httpRequestor = new HTTPRequester(socket, kiteUrl, req)
+                        var requestTracker = tracker.subtracker(50, 100)
 
                         if ( init.kiteOnProgress ) {
                             httpRequestor.addEventListener('progress', init.kiteOnProgress)
                         }
+                        httpRequestor.addEventListener('progress', (p) => {
+                            if ( p.lengthComputable ) {
+                                requestTracker.setProgress(p.loaded, p.total)
+                            }
+                        })
 
                         if ( init.kiteOnPartialLoad ) {
                             httpRequestor.addEventListener('partialload', init.kiteOnPartialLoad)
                         }
+                        httpRequestor.addEventListener('partialload', (pl) => {
+                            if ( pl.total ) {
+                                tracker.setProgress(pl.loaded, pl.total)
+                            }
+                        })
 
                         httpRequestor.addEventListener('response', (resp) => {
-                            resolve(resp.response)
+                            var cache = new Promise((resolve, reject) => {
+                                if ( dev._kiteCache === undefined ) {
+                                    appliancePromise.then((app) => {
+                                        var flock = app.flock
+                                        dev._kiteCache = new CacheControl(flock.flockUrl,
+                                                                          app.applianceName,
+                                                                          dev.personaId,
+                                                                          canonAppUrl)
+                                        resolve(dev._kiteCache)
+                                    })
+                                } else
+                                    resolve(dev._kiteCache)
+                            })
+
+                            cache.then((cache) => {
+                                console.log("Got response", resp.response);
+                                var responseInit = { status: resp.response.status,
+                                                     statusText: resp.response.statusText,
+                                                     headers: resp.response.headers };
+
+                                cache.cacheResponse(req, responseInit, resp.responseBlob)
+                                    .then(() => {
+                                        tracker.done()
+                                        resolve(resp.response)
+                                    })
+                                    .catch(() => { tracker.done() })
+                            }).catch((e) => { console.error("Error while caching", e) })
                         })
                         httpRequestor.addEventListener('error', (e) => {
                             reject(new TypeError(e.explanation))
                         })
-                    })
-                });
+                    }))
+            }
+
+            return clientPromise
+                .then((dev) => {
+                    if ( dev._kiteCache ) {
+                        return dev._kiteCache.matchRequest(req)
+                            .then((rsp) => {
+                                if ( rsp === undefined )
+                                    return runRequest(dev)
+                                else
+                                    return rsp
+                            })
+                    } else {
+                        return runRequest(dev)
+                    }
+                })
         }
     } else
         return oldFetch.apply(this, arguments);
 }
 
 // TODO allow people to update this URL
-kiteFetch.flockUrl = "ws://34.221.26.224:6853/";
+kiteFetch.flockUrls = [
+    "ws://localhost:6853/",
+    "ws://34.221.26.224:6853/"
+]

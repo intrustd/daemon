@@ -80,6 +80,8 @@ pid_t do_run(struct stkinitmsg *pkt, int sz) {
         perror("dup2(kite_pipe[1], COMM)");
         exit(EXIT_FAILURE);
       }
+
+      close(kite_pipe[1]);
     }
 
     execve(argv[0], argv+1, envv);
@@ -123,7 +125,7 @@ int main(int argc, char **argv) {
   char *buf;
   struct stkinitmsg *pkt;
   uint8_t sts = 1;
-  int n;
+  int n, ret;
   pid_t our_pid = getpid(), child_pid;
 
   if ( argc < 2 ) {
@@ -159,6 +161,7 @@ int main(int argc, char **argv) {
 
   // Continuously read from COMM socket
   while ( 1 ) {
+
     n = recv(COMM, buf, STK_MAX_PKT_SZ, 0);
     if ( n == 0 ) break;
 
@@ -180,6 +183,24 @@ int main(int argc, char **argv) {
       child_pid = do_run(pkt, n);
       do {
         n = send(COMM, &child_pid, sizeof(child_pid), 0);
+      } while ( n == -1 && errno == EINTR );
+
+      if ( n == -1 ) {
+        perror("send");
+        return 1;
+      }
+
+      break;
+    case STK_REQ_KILL:
+      fprintf(stderr, "Killing process %d with signal %d\n", pkt->un.kill.which, pkt->un.kill.sig);
+      ret = kill(pkt->un.kill.which, pkt->un.kill.sig);
+      if ( ret < 0 ) {
+        ret = -errno;
+        perror("persona_init: kill");
+      }
+
+      do {
+        n = send(COMM, &ret, sizeof(ret), 0);
       } while ( n == -1 && errno == EINTR );
 
       if ( n == -1 ) {

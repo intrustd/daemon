@@ -17,7 +17,7 @@
 #define PCONN_MAX_AUTH_ATTEMPTS 3
 #define PCONN_MAX_MESSAGE_SIZE (8 * 1024)
 #define PCONN_MAX_PACKET_SIZE (2 * 1024)
-#define PCONN_OUTGOING_QUEUE_SIZE (8 * 1024)
+#define PCONN_OUTGOING_QUEUE_SIZE (64 * 1024)
 #define PCONN_MAX_SCTP_STREAMS 1024
 #define PCONN_OUR_UFRAG_SIZE 4
 #define PCONN_OUR_PASSWORD_SIZE 24
@@ -27,6 +27,11 @@
 
 // Send connectivity checks every 100 milliseconds
 #define PCONN_CONNECTIVITY_CHECK_INTERVAL 100
+// After we've connected, send a check every 500 milliseconds
+#define PCONN_CONNECTIVITY_CHECK_CONNECTED_INTERVAL 500
+
+// If we don't receive an answer to our connectivity check after two minutes, fault
+#define PCONN_CONNECTIVITY_CHECK_TIMEOUT (2 * 60 * 1000)
 
 struct flock;
 struct appstate;
@@ -152,7 +157,7 @@ struct pconn {
   // entry in f_pconns hash table
   UT_hash_handle pc_hh;
 
-  struct timersub pc_timeout, pc_conn_check_timer;
+  struct timersub pc_timeout, pc_conn_check_timer, pc_conn_check_timeout_timer;
 
   struct personaset *pc_personaset;
 
@@ -200,6 +205,9 @@ struct pconn {
 #define PCONN_STATE_DTLS_CONNECTING 0x9
 // An ice candidate has been selected, and DTLS has completed
 #define PCONN_STATE_ESTABLISHED    0xA
+
+// pconn has been disconnect
+#define PCONN_STATE_DISCONNECTED   0xB
 
 #define PCONN_ICE_GATHERING_STATE_ERROR     (-1)
 #define PCONN_ICE_GATHERING_STATE_NEW       1

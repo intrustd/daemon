@@ -166,6 +166,7 @@ static int fscs_appliancefn(struct applianceinfo *info, int op, void *arg) {
     pw->fcspw_queue_info = info;
     if ( !eventloop_queue(&(FLOCKSTATE_FROM_SERVICE(st->fscs_svc)->fs_eventloop),
                           &pw->fcspw_queue) ) {
+      fprintf(stderr, "fscs_appliancefn: could not queue packet\n");
       if ( pw->fcspw_sh )
         SHARED_UNREF(pw->fcspw_sh);
     }
@@ -1060,6 +1061,8 @@ static void flock_service_flush_buffers(struct flockservice *st, struct eventloo
   for ( cli = st->fs_first_outgoing; cli && cli != old_cli;
         old_cli = cli, cli = (cli->fscs_next_outgoing == cli ? NULL : cli->fscs_next_outgoing), old_cli->fscs_next_outgoing = NULL ) {
 
+    fprintf(stderr, "Flushing buffers for client\n");
+
     SAFE_MUTEX_LOCK(&cli->fscs_outgoing_mutex);
     // Attempt to write out the buffer with the DTLS context
 
@@ -1125,6 +1128,7 @@ static void flock_service_flush_buffers(struct flockservice *st, struct eventloo
     DLIST_CLEAR(&cli->fscs_outgoing_packets);
 
   finish_cli_send:
+    fprintf(stderr, "Finish cli send\n");
     pthread_mutex_unlock(&cli->fscs_outgoing_mutex);
 
     FSCS_UNREF(cli);
@@ -1487,29 +1491,36 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
 
       // This appliance is old. Check to see if we need to do any reconciliation
       err = old_app->ai_appliance_fn(old_app, AI_OP_RECONCILE, &reconciliation);
+      if ( err < 0 ) {
+        STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
+        memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
+        rsp_attr = STUN_FIRSTATTR(rsp_msg);
+        STUN_INIT_ATTR(rsp_attr, STUN_ATTR_ERROR_CODE, sizeof(uint16_t));
+        switch ( err ) {
+        default:
+        case -2: err_code = STUN_SERVER_ERROR; break;
+        case -1: err_code = STUN_CONFLICT; break;
+        }
+        err_code = htons(err_code);
+        memcpy(STUN_ATTR_DATA(rsp_attr), &err_code, sizeof(err_code));
+        STUN_FINISH_WITH_FINGERPRINT(rsp_attr, rsp_msg, *rsp_sz, err);
+        *rsp_sz = STUN_MSG_LENGTH(rsp_msg);
 
-      STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
-      memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
-      rsp_attr = STUN_FIRSTATTR(rsp_msg);
-      STUN_INIT_ATTR(rsp_attr, STUN_ATTR_ERROR_CODE, sizeof(uint16_t));
-      switch ( err ) {
-      default:
-      case -2: err_code = STUN_SERVER_ERROR; break;
-      case -1: err_code = STUN_CONFLICT; break;
-      case 0: err_code = STUN_TOO_EARLY; break;
+        AI_UNREF(old_app);
+
+        return err;
+      } else {
+        AI_UNREF(old_app); // Remove the reference that we have as part of holding this appliance
+        AI_UNREF(old_app);
+
+        SAFE_RWLOCK_WRLOCK(&svc->fs_appliances_mutex);
+        app->ai_shared.sh_refcnt = 1;
+        HASH_ADD(ai_hash_ent, svc->fs_appliances, ai_name, strlen(app->ai_name), app);
+        pthread_rwlock_unlock(&svc->fs_appliances_mutex);
       }
-      err_code = htons(err_code);
-      memcpy(STUN_ATTR_DATA(rsp_attr), &err_code, sizeof(err_code));
-      STUN_FINISH_WITH_FINGERPRINT(rsp_attr, rsp_msg, *rsp_sz, err);
-      *rsp_sz = STUN_MSG_LENGTH(rsp_msg);
-
+    } else {
       AI_UNREF(old_app);
-
-
-      return err;
     }
-
-    AI_UNREF(old_app);
   }
 
   STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);

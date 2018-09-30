@@ -257,31 +257,8 @@ static struct timersub **eventloop_find_timer_by_idx(struct eventloop *el, uint3
     if ( (t)->ts_right ) (t)->ts_right->ts_parent = (t);        \
   }
 
-static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *sub) {
+static void eventloop_timer_sift_up(struct eventloop *el, struct timersub *sub) {
   struct timersub *parent;
-
-  if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
-    fprintf(stderr, "Adding timer to heap with %d timers\n", el->el_tmr_count);
-
-  if ( el->el_tmr_count > 0 ) {
-    parent = *(eventloop_find_timer_by_idx(el, (el->el_tmr_count - 1) >> 1));
-    SAFE_ASSERT(parent);
-    if ( (el->el_tmr_count + 1) & 0x1 ) {
-      eventloop_dbg_verify_timers(el);
-      SAFE_ASSERT(parent->ts_left && !parent->ts_right);
-      parent->ts_right = sub;
-    } else {
-      eventloop_dbg_verify_timers(el);
-      SAFE_ASSERT(!parent->ts_left && !parent->ts_right);
-      parent->ts_left = sub;
-    }
-    sub->ts_parent = parent;
-  } else {
-    el->el_next_tmr = sub;
-    sub->ts_parent = NULL;
-  }
-  el->el_tmr_count++;
-
   // Now sift up
   while ( sub->ts_parent ) {
     parent = sub->ts_parent;
@@ -329,9 +306,36 @@ static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *s
   }
 }
 
+static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *sub) {
+  struct timersub *parent;
+  if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
+    fprintf(stderr, "Adding timer to heap with %d timers\n", el->el_tmr_count);
+
+  if ( el->el_tmr_count > 0 ) {
+    parent = *(eventloop_find_timer_by_idx(el, (el->el_tmr_count - 1) >> 1));
+    SAFE_ASSERT(parent);
+    if ( (el->el_tmr_count + 1) & 0x1 ) {
+      eventloop_dbg_verify_timers(el);
+      SAFE_ASSERT(parent->ts_left && !parent->ts_right);
+      parent->ts_right = sub;
+    } else {
+      eventloop_dbg_verify_timers(el);
+      SAFE_ASSERT(!parent->ts_left && !parent->ts_right);
+      parent->ts_left = sub;
+    }
+    sub->ts_parent = parent;
+  } else {
+    el->el_next_tmr = sub;
+    sub->ts_parent = NULL;
+  }
+  el->el_tmr_count++;
+
+  eventloop_timer_sift_up(el, sub);
+}
+
 static void eventloop_remove_timer_from_heap(struct eventloop *el, struct timersub *done) {
   struct timersub **bottommost = eventloop_find_timer_by_idx(el, el->el_tmr_count - 1);
-  struct timersub *root, *cur, **sift_parent = &root;
+  struct timersub *root, *cur;
 
   // Swap bottom most with us
   cur = root = *bottommost;
@@ -358,70 +362,81 @@ static void eventloop_remove_timer_from_heap(struct eventloop *el, struct timers
 
   FIX_CHILD_PARENTS(root);
 
-  // Now sift down
-  while ( 1 ) {
-    int dir = 0;
-
-    if ( cur->ts_left && cur->ts_right && timespec_lt(&cur->ts_right->ts_when, &cur->ts_when) ) {
-      dir = 1;
-    }
-
-    if ( cur->ts_left ) {
-      if ( dir == 0 && timespec_lt(&cur->ts_left->ts_when, &cur->ts_when) )
-        dir = -1;
-      else if ( dir > 0 && timespec_lt(&cur->ts_left->ts_when, &cur->ts_right->ts_when) )
-        dir = -1;
-    }
-
-    if ( dir == 0 ) break;
-    else if ( dir > 0 ) {
-      struct timersub *child = cur->ts_right, *cur_left = cur->ts_left;
-      // Swap right and cur
-      child->ts_parent = cur->ts_parent;
-
-      cur->ts_right = child->ts_right;
-      cur->ts_left = child->ts_left;
-
-      child->ts_right = cur;
-      child->ts_left = cur_left;
-
-      FIX_CHILD_PARENTS(cur);
-      FIX_CHILD_PARENTS(child);
-
-      *sift_parent = child;
-      sift_parent = &child->ts_right;
-    } else {
-      struct timersub *child = cur->ts_left, *cur_right = cur->ts_right;
-      // Swap left and cur
-      child->ts_parent = cur->ts_parent;
-
-      cur->ts_left = child->ts_left;
-      cur->ts_right = child->ts_right;
-
-      child->ts_left = cur;
-      child->ts_right = cur_right;
-
-      FIX_CHILD_PARENTS(cur);
-      FIX_CHILD_PARENTS(child);
-
-      *sift_parent = child;
-      sift_parent = &child->ts_left;
-    }
-  }
-
   el->el_tmr_count--;
 
-  root = root == done ? NULL : root;
-  if ( done->ts_parent ) {
-    if ( done->ts_parent->ts_left == done ) {
-      done->ts_parent->ts_left = root;
-    } else if ( done->ts_parent->ts_right == done ){
-      done->ts_parent->ts_right = root;
-    } // else assert(0);
+  if ( cur->ts_parent && timespec_lt(&cur->ts_when, &cur->ts_parent->ts_when) ) {
+    if ( done->ts_parent->ts_left == done )
+      done->ts_parent->ts_left = cur;
+    else if ( done->ts_parent->ts_right == done )
+      done->ts_parent->ts_right = cur;
+    else
+      abort();
+    eventloop_timer_sift_up(el, cur);
+  } else {
+    struct timersub **sift_parent = &root;
+    // Now sift down
+    while ( 1 ) {
+      int dir = 0;
 
-    FIX_CHILD_PARENTS(done->ts_parent);
-  } else
-    el->el_next_tmr = root;
+      if ( cur->ts_left && cur->ts_right && timespec_lt(&cur->ts_right->ts_when, &cur->ts_when) ) {
+        dir = 1;
+      }
+
+      if ( cur->ts_left ) {
+        if ( dir == 0 && timespec_lt(&cur->ts_left->ts_when, &cur->ts_when) )
+          dir = -1;
+        else if ( dir > 0 && timespec_lt(&cur->ts_left->ts_when, &cur->ts_right->ts_when) )
+          dir = -1;
+      }
+
+      if ( dir == 0 ) break;
+      else if ( dir > 0 ) {
+        struct timersub *child = cur->ts_right, *cur_left = cur->ts_left;
+        // Swap right and cur
+        child->ts_parent = cur->ts_parent;
+
+        cur->ts_right = child->ts_right;
+        cur->ts_left = child->ts_left;
+
+        child->ts_right = cur;
+        child->ts_left = cur_left;
+
+        FIX_CHILD_PARENTS(cur);
+        FIX_CHILD_PARENTS(child);
+
+        *sift_parent = child;
+        sift_parent = &child->ts_right;
+      } else {
+        struct timersub *child = cur->ts_left, *cur_right = cur->ts_right;
+        // Swap left and cur
+        child->ts_parent = cur->ts_parent;
+
+        cur->ts_left = child->ts_left;
+        cur->ts_right = child->ts_right;
+
+        child->ts_left = cur;
+        child->ts_right = cur_right;
+
+        FIX_CHILD_PARENTS(cur);
+        FIX_CHILD_PARENTS(child);
+
+        *sift_parent = child;
+        sift_parent = &child->ts_left;
+      }
+    }
+
+    root = root == done ? NULL : root;
+    if ( done->ts_parent ) {
+      if ( done->ts_parent->ts_left == done ) {
+        done->ts_parent->ts_left = root;
+      } else if ( done->ts_parent->ts_right == done ){
+        done->ts_parent->ts_right = root;
+      } // else assert(0);
+
+      FIX_CHILD_PARENTS(done->ts_parent);
+    } else
+      el->el_next_tmr = root;
+  }
 }
 
 int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub) {
@@ -429,10 +444,16 @@ int eventloop_cancel_timer(struct eventloop *el, struct timersub *sub) {
 
   SAFE_MUTEX_LOCK(&el->el_tmr_mutex);
 
+  if ( el->el_flags & (EL_FLAG_DEBUG | EL_FLAG_DEBUG_VERBOSE) ) {
+    fprintf(stderr, "eventloop_cancel_timer: %p %p\n", el, sub);
+  }
+
   // Check if the sub is part of the eventloop
   if ( el->el_next_tmr == sub || sub->ts_parent ) {
     // The subscription is part of the heap
     eventloop_remove_timer_from_heap(el, sub);
+    if ( el->el_flags & EL_FLAG_DEBUG )
+      eventloop_dbg_verify_timers(el);
     ret = 1;
   } else if ( el->el_first_finished == &sub->ts_queued || (!sub->ts_left && sub->ts_right) ) {
     // The child is part of the queue and needs to be removed from it
@@ -579,6 +600,11 @@ static int eventloop_deliver_timers(struct eventloop *el) {
       SAFE_ASSERT(el->el_tmr_count > 0);
       if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
         eventloop_dbg_verify_timers(el);
+
+      if ( el->el_flags & (EL_FLAG_DEBUG | EL_FLAG_DEBUG_VERBOSE) ) {
+        fprintf(stderr, "eventloop_deliver_timers: %p %p\n", el, el->el_next_tmr);
+      }
+
       eventloop_mark_timer_completed(el);
     } else
       break;
@@ -757,7 +783,7 @@ void eventloop_run(struct eventloop *el) {
         if ( fd_event.fde_triggered )
           sub->fds_fn(el, sub->fds_op, (void *) &fd_event);
         else {
-          fprintf(stderr, "Skipping event because it was unsubscribed while being delivered\n");
+          //fprintf(stderr, "Skipping event because it was unsubscribed while being delivered\n");
         }
       }
     }
@@ -1016,6 +1042,9 @@ void timersub_set_from_now(struct timersub *sub, int millis) {
 
 void eventloop_subscribe_timer(struct eventloop *el, struct timersub *sub) {
   pthread_mutex_lock(&el->el_tmr_mutex);
+  if ( el->el_flags & (EL_FLAG_DEBUG | EL_FLAG_DEBUG_VERBOSE) ) {
+    fprintf(stderr, "eventloop_subscribe_timer: %p %p\n", el, sub);
+  }
   sub->ts_left = sub->ts_right = NULL;
   eventloop_add_timer_to_heap(el, sub);
   if ( el->el_next_tmr == sub ) // Reset itimer
@@ -1031,7 +1060,7 @@ void eventloop_dbg_verify_timers_(struct timersub *t, uint32_t max, uint32_t ix)
       SAFE_ASSERT((ix << 1) <= max);
       SAFE_ASSERT(((ix << 1) | 1) <= max);
       if ( !timespec_lt(&t->ts_when, &t->ts_left->ts_when) ) {
-        fprintf(stderr, "timespec(&t->ts_when, &t->ts_left->ts_when) failed at %d\n", ix);
+        fprintf(stderr, "timespec_lt(&t->ts_when, &t->ts_left->ts_when) failed at %d\n", ix);
         abort();
       }
       SAFE_ASSERT(timespec_lt(&t->ts_when, &t->ts_right->ts_when));

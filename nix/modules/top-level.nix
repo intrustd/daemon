@@ -11,11 +11,6 @@
       description = "A short alphanumeric name for this application";
     };
 
-    stork.app = mkOption {
-      type = types.package;
-      description = "Nix derivation for main stork application";
-    };
-
     stork.startHook = mkOption {
       type = types.string;
       description = "Script to run when stork wants to start this application";
@@ -90,8 +85,6 @@
       glibc
       bash
       iproute
-
-      config.stork.app
     ];
 
     stork.pathsToLink = [

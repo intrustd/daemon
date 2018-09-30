@@ -2,16 +2,26 @@
 
 #+TODO: TODO IN-PROGRESS | DONE
 
-* TODO Use UDP for flock <-> appliance communication
-* TODO Save recent appliances in javascript library
-* TODO Show profile data for personas
-* TODO log-in process sometimes stalls
-* TODO Upload files in photo app                                     :photos:
-* TODO Album gallery view in photo app                               :photos:
+* DONE Use UDP for flock <-> appliance communication
+* DONE Save recent appliances in javascript library
+* DONE Show profile data for personas
+* DONE log-in process sometimes stalls
+* DONE Upload files in photo app                                     :photos:
+* DONE Album gallery view in photo app                               :photos:
 
-#+BEGIN: kanban :mirrored t
-| DONE | IN-PROGRESS | TODO                                          |
+* TODO auth tokens
+* TODO multiple flocks
+* TODO save login information
+
+* Kanban board
+
+#+BEGIN: kanban
+| TODO | IN-PROGRESS | DONE                                          |
 |------+-------------+-----------------------------------------------|
 |      |             | [[Use UDP for flock <-> appliance communication][Use UDP for flock <-> appliance communication]] |
 |      |             | [[Save recent appliances in javascript library][Save recent appliances in javascript library]]  |
+|      |             | [[Show profile data for personas][Show profile data for personas]]                |
+|      |             | [[log-in process sometimes stalls][log-in process sometimes stalls]]               |
+|      |             | [[Upload files in photo app][Upload files in photo app]]                     |
+|      |             | [[Album gallery view in photo app][Album gallery view in photo app]]               |
 #+END:

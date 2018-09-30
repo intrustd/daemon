@@ -17,6 +17,8 @@ void fcspw_queue_fn(struct eventloop *el, int op, void *ev) {
   struct qdevent *qde = ev;
   struct fcspktwriter *pw;
 
+  fprintf(stderr, "fcspw_queue_fn\n");
+
   assert(op == EVT_CTL_CUSTOM);
 
   pw = STRUCT_FROM_BASE(struct fcspktwriter, fcspw_queue, qde->qde_sub);

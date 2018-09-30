@@ -43,6 +43,8 @@ static int bridge_setup_main(void *br_ptr);
 static int bridge_enter_network_namespace(struct brstate *br);
 static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int netns);
 static int bridge_create_veth(struct brstate *br, const char *in_if_name, const char *out_if_name);
+static int bridge_delete_veth(struct brstate *br, const char *if_name);
+static int bridge_disconnect_iface(struct brstate *brb, const char *if_name);
 static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest *bpr);
 static int find_hw_addr(const char *if_name, unsigned char *mac_addr);
 static void bridgefn(struct eventloop *el, int op, void *arg);
@@ -244,7 +246,6 @@ static void bridge_process_arp(struct brstate *br, int size) {
 
   switch ( ntohs(hdr.ar_op) ) {
   case ARPOP_REQUEST:
-    fprintf(stderr, "bridge_process_arp: got ARP request\n");
     if ( ether_type == ETHERTYPE_IP ) {
       struct in_addr which_ip;
       struct ether_header rsp_eth;
@@ -252,7 +253,6 @@ static void bridge_process_arp(struct brstate *br, int size) {
       uint32_t src_hw_ip;
       mac_addr src_hw_addr;
       int was_found = 0;
-      char addr_str[INET_ADDRSTRLEN];
 
       memset(rsp_eth.ether_dhost, 0xFF, ETH_ALEN);
       rsp_eth.ether_type = htons(ETHERTYPE_ARP);
@@ -271,8 +271,6 @@ static void bridge_process_arp(struct brstate *br, int size) {
 
       memcpy(&which_ip.s_addr, br->br_tap_pkt + sizeof(struct ether_header) +
              sizeof(struct arphdr) + (2 * hdr.ar_hln) + hdr.ar_pln, sizeof(which_ip.s_addr));
-
-      fprintf(stderr, "Lookup %s\n", inet_ntop(AF_INET, &which_ip, addr_str, sizeof(addr_str)));
 
       if ( memcmp(&which_ip, &br->br_bridge_addr, sizeof(which_ip)) == 0 ) {
         was_found = 1;
@@ -1075,6 +1073,65 @@ int bridge_set_up_networking(struct brstate *br) {
   return 0;
 }
 
+int bridge_disconnect_port(struct brstate *br, int port) {
+  pid_t new_proc;
+  int err;
+  char in_if_name[IFNAMSIZ];
+
+  fprintf(stderr, "bridge_disconnect_port: port %d\n", port);
+
+  err = snprintf(in_if_name, sizeof(in_if_name), "in%d", port);
+  if ( err >= sizeof(in_if_name) ) {
+    fprintf(stderr, "bridge_disconnect_port: in_if_name overflow\n");
+    return -1;
+  }
+
+  new_proc = fork();
+  if ( new_proc < 0 ) {
+    perror("bridge_disconnect_port: fork");
+    return -1;
+  }
+
+  if ( new_proc == 0 ) {
+    err = bridge_enter_network_namespace(br);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: could not enter bridge network namespace\n");
+      exit(1);
+    }
+
+    err = bridge_disconnect_iface(br, in_if_name);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: could not remove %s\n", in_if_name);
+      exit(1);
+    }
+
+    err = bridge_delete_veth(br, in_if_name);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: could not delete interface %s\n", in_if_name);
+      exit(1);
+    }
+
+    exit(EXIT_SUCCESS);
+  } else {
+    int sts = 0;
+
+    err = waitpid(new_proc, &sts, 0);
+    if ( err < 0 ) {
+      perror("bridge_disconnect_port: waitpid");
+      return -1;
+    }
+
+    fprintf(stderr, "bridge_disconnect_port: got status %d\n", sts);
+
+    if ( sts != 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: namespace child exited with %d\n", sts);
+      return -1;
+    }
+
+    return 0;
+  }
+}
+
 int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
                              struct in_addr *this_ip, const char *if_name,
                              struct arpentry *arp) {
@@ -1335,6 +1392,50 @@ static int bridge_create_veth(struct brstate *br, const char *in_if_name, const 
 
  cmd_fails:
   fprintf(stderr, "bridge_create_veth: '%s' fails with %d\n", cmd_buf, err);
+  return -1;
+}
+
+static int bridge_disconnect_iface(struct brstate *br, const char *if_name) {
+  char cmd_buf[512];
+  int err;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s nomaster",
+                 br->br_iproute_path, if_name);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_fails;
+
+  return 0;
+
+ overflow:
+  fprintf(stderr, "bridge_disconnect_iface: '%s' overflowed command buffer\n", cmd_buf);
+  return -1;
+
+ cmd_fails:
+  fprintf(stderr, "bridge_disconnect_iface: '%s' fails with %d\n", cmd_buf, err);
+  return -1;
+}
+
+static int bridge_delete_veth(struct brstate *br, const char *if_name) {
+  char cmd_buf[512];
+  int err;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link delete dev %s type veth",
+                 br->br_iproute_path, if_name);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_fails;
+
+  return 0;
+
+ overflow:
+  fprintf(stderr, "bridge_delete_veth: '%s' overflowed command buffer\n", cmd_buf);
+  return -1;
+
+ cmd_fails:
+  fprintf(stderr, "bridge_delete_veth: '%s' fails with %d\n", cmd_buf, err);
   return -1;
 }
 

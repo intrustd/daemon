@@ -1,9 +1,12 @@
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 
 module.exports = {
-    entry: './src/Flock.js',
+    entry: {
+        lib: './src/Flock.js',
+        cookieJar: './src/CookieJar.js'
+    },
     output: {
-        filename: './bundle.js'
+        filename: './bundle.[name].js'
     },
     mode: 'development',
     module: {

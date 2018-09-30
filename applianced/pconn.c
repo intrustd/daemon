@@ -3,6 +3,7 @@
 #include <openssl/rand.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <assert.h>
 
 #include "pconn.h"
@@ -146,6 +147,7 @@ static int icecand_parse(struct icecand *ic, const char *vls, const char *vle);
 #define OP_PCONN_SOCKET (EVT_CTL_CUSTOM + 2)
 #define OP_PCONN_CANDSRC_RETRANSMIT (EVT_CTL_CUSTOM + 3)
 #define OP_PCONN_CONN_CHECK_TIMER_RINGS (EVT_CTL_CUSTOM + 4)
+#define OP_PCONN_CONN_CHECK_TIMEOUT (EVT_CTL_CUSTOM + 5)
 
 static void pconn_fn(struct eventloop *el, int op, void *arg);
 static void pconn_free(struct pconn *pc);
@@ -153,6 +155,9 @@ static void pconn_free(struct pconn *pc);
 // Call when the pc->pc_state may have changed
 static void pconn_ice_gathering_state_may_change(struct pconn *pc);
 static void pconn_reset_connectivity_check_timer(struct pconn *pc);
+static void pconn_reset_connectivity_check_timeout(struct pconn *pc);
+
+static void pconn_teardown_established(struct pconn *pc);
 
 static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix, int flags);
 
@@ -968,7 +973,7 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
   switch ( op ) {
   case OP_PCONN_EXPIRES:
     pc = STRUCT_FROM_BASE(struct pconn, pc_timeout, evt->qde_sub);
-    flock_pconn_expires(pc->pc_flock, pc);
+    pconn_finish(pc);
     break;
   case OP_PCONN_STARTS:
     pc = STRUCT_FROM_BASE(struct pconn, pc_start_evt, evt->qde_sub);
@@ -987,6 +992,16 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
       candsrc_retransmit(cs);
       PCONN_UNREF(pc);
     }
+    break;
+  case OP_PCONN_CONN_CHECK_TIMEOUT:
+    pc = STRUCT_FROM_BASE(struct pconn, pc_conn_check_timeout_timer, evt->qde_sub);
+    if ( PCONN_LOCK(pc) == 0 ) {
+      SAFE_MUTEX_LOCK(&pc->pc_mutex);
+      pconn_teardown_established(pc);
+      pthread_mutex_unlock(&pc->pc_mutex);
+      PCONN_UNREF(pc);
+    }
+
     break;
   case OP_PCONN_CONN_CHECK_TIMER_RINGS:
     pc = STRUCT_FROM_BASE(struct pconn, pc_conn_check_timer, evt->qde_sub);
@@ -1071,8 +1086,9 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
                   pc->pc_outgoing_size > 0 ) {
         //        fprintf(stderr, "candsrc_send_outgoing being called\n");
         candsrc_send_outgoing(cs);
-      } else if ( cs->cs_scheduled_connectivity_check ) {
-        //fprintf(stderr, "do conn check\n");
+      }
+
+      if ( cs->cs_scheduled_connectivity_check ) {
         // Otherwise, this is a connectivity check
         pconn_reset_connectivity_check_timer(pc);
         candsrc_send_connectivity_check(cs);
@@ -1109,7 +1125,10 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
 
 static void pconn_free_fn(const struct shared *s, int level) {
   struct pconn *pc = STRUCT_FROM_BASE(struct pconn, pc_shared, s);
+
+  fprintf(stderr, "free pconn at level %d\n", level);
   if ( level != SHFREE_NO_MORE_REFS ) return;
+  fprintf(stderr, "freeing pconn\n");
 
   pconn_free(pc);
 }
@@ -1202,6 +1221,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
 
   timersub_init_from_now(&ret->pc_timeout, PCONN_TIMEOUT, OP_PCONN_EXPIRES, pconn_fn);
   timersub_init_default(&ret->pc_conn_check_timer, OP_PCONN_CONN_CHECK_TIMER_RINGS, pconn_fn);
+  timersub_init_default(&ret->pc_conn_check_timeout_timer, OP_PCONN_CONN_CHECK_TIMEOUT, pconn_fn);
   qdevtsub_init(&ret->pc_start_evt, OP_PCONN_STARTS, pconn_fn);
 
   return ret;
@@ -1534,8 +1554,14 @@ void pconn_finish(struct pconn *pc) {
 
   fprintf(stderr, "pconn_finish!!!\n");
 
+  if ( eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timer) ) {
+    PCONN_WUNREF(pc);
+  }
+
   if ( eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_timeout) )
     PCONN_WUNREF(pc);
+
+  SHARED_DEBUG(&pc->pc_shared, "after cancel timers");
 
   for ( i = 0; i < pc->pc_candidate_sources_count; ++i ) {
     struct candsrc *src = &pc->pc_candidate_sources[i];
@@ -1550,7 +1576,9 @@ void pconn_finish(struct pconn *pc) {
 
   }
 
+  SHARED_DEBUG(&pc->pc_shared, "after events unregister");
   flock_pconn_expires(pc->pc_flock, pc);
+  SHARED_DEBUG(&pc->pc_shared, "after expiration");
 }
 
 static void pconn_auth_fails(struct pconn *pc) {
@@ -1788,19 +1816,25 @@ static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix
     return;
   }
 
-  pair = pc->pc_candidate_pairs_sorted[cand_pair_ix];
+  if ( pc->pc_active_candidate_pair > 0 &&
+       pc->pc_active_candidate_pair == cand_pair_ix ) {
+    // reset timeout timer
+    pconn_reset_connectivity_check_timeout(pc);
+  } else if ( pc->pc_active_candidate_pair < 0 ) {
+    pair = pc->pc_candidate_pairs_sorted[cand_pair_ix];
 
-  if ( !pair ) {
-    fprintf(stderr, "pconn_connectivity_check_succeeds: invalid pair %d\n", cand_pair_ix);
-    return;
-  }
+    if ( !pair ) {
+      fprintf(stderr, "pconn_connectivity_check_succeeds: invalid pair %d\n", cand_pair_ix);
+      return;
+    }
 
-  stun_random_tx_id(&pair->icp_tx_id); // Generate new TX id
+    stun_random_tx_id(&pair->icp_tx_id); // Generate new TX id
 
-  pair->icp_flags |= flag;
+    pair->icp_flags |= flag;
 
-  if ( ICECANDPAIR_SUCCESS(pair) ) {
-    pconn_activate_best_pair(pc);
+    if ( ICECANDPAIR_SUCCESS(pair) ) {
+      pconn_activate_best_pair(pc);
+    }
   }
 }
 
@@ -1808,8 +1842,23 @@ static void pconn_reset_connectivity_check_timer(struct pconn *pc) {
   if ( !eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timer) ) {
     PCONN_WREF(pc);
   }
-  timersub_set_from_now(&pc->pc_conn_check_timer, PCONN_CONNECTIVITY_CHECK_INTERVAL);
+  if ( pc->pc_state == PCONN_STATE_ESTABLISHED ) {
+    timersub_set_from_now(&pc->pc_conn_check_timer, PCONN_CONNECTIVITY_CHECK_CONNECTED_INTERVAL);
+  } else if ( pc->pc_state != PCONN_STATE_DISCONNECTED ) {
+    timersub_set_from_now(&pc->pc_conn_check_timer, PCONN_CONNECTIVITY_CHECK_INTERVAL);
+  }
   eventloop_subscribe_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timer);
+}
+
+static void pconn_reset_connectivity_check_timeout(struct pconn *pc) {
+  eventloop_dbg_verify_timers(&pc->pc_appstate->as_eventloop);
+  if ( !eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timeout_timer) ) {
+    PCONN_WREF(pc);
+  }
+
+  timersub_set_from_now(&pc->pc_conn_check_timeout_timer,
+                        PCONN_CONNECTIVITY_CHECK_TIMEOUT);
+  eventloop_subscribe_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timeout_timer);
 }
 
 static int cmp_candidates(const void *app, const void *bpp) {
@@ -2029,10 +2078,17 @@ static struct icecandpair *pconn_find_candidate_pair(struct pconn *pc, struct ca
     return NULL;
   }
 
+  //  fprintf(stderr, "asked to find binding request  for cs idx %d\n", cs_idx);
+
   for ( i = 0; i < pc->pc_candidate_pairs_count; ++i ) {
     struct icecand *local = &pc->pc_local_ice_candidates[ pc->pc_candidate_pairs_sorted[i]->icp_local_ix ];
     if ( local->ic_candsrc_ix == cs_idx ) {
       struct icecand *remote = &pc->pc_remote_ice_candidates[ pc->pc_candidate_pairs_sorted[i]->icp_remote_ix ];
+//      fprintf(stderr, "Check remote equal ");
+//      dump_address(stderr, peer_addr, peer_addr_sz);
+//      fprintf(stderr, " == ");
+//      dump_address(stderr, &remote->ic_addr, sizeof(remote->ic_addr));
+//      fprintf(stderr, "\n");
       // Check if the remote candidate matches this one
       if ( kite_sock_addr_equal(&remote->ic_addr, peer_addr, peer_addr_sz) ) {
         if ( icp_ix ) *icp_ix = i;
@@ -2624,6 +2680,8 @@ static void pconn_dtls_handshake(struct pconn *pc) {
 }
 
 static void pconn_on_established(struct pconn *pc) {
+  pconn_reset_connectivity_check_timeout(pc);
+
   switch ( pc->pc_type ) {
   case PCONN_TYPE_WEBRTC:
     fprintf(stderr, "pconn_on_established: launching webrtc proxy in persona on port %d\n", pc->pc_answer_sctp);
@@ -2744,4 +2802,31 @@ static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t s
     pthread_mutex_unlock(&pc->pc_mutex);
   } else
     fprintf(stderr, "pconn_on_sctp_packet: can't lock mutex\n");
+}
+
+static void pconn_teardown_established(struct pconn *pc) {
+  if ( pc->pc_state == PCONN_STATE_ESTABLISHED ) {
+    pc->pc_state = PCONN_STATE_DISCONNECTED;
+
+    SHARED_DEBUG(&pc->pc_shared, "on pconn teardown");
+
+    if ( bridge_unregister_sctp(&pc->pc_appstate->as_bridge, &pc->pc_sctp_capture) < 0 ) {
+      fprintf(stderr, "pconn_teardown_established: failed to unregister sctp capture\n");
+      return;
+    }
+
+    PCONN_WUNREF(pc); // For bridge capture
+    SHARED_DEBUG(&pc->pc_shared, "after bridge unregister");
+
+    if ( pc->pc_webrtc_proxy ) {
+      if ( container_kill(&pc->pc_persona->p_container, pc->pc_webrtc_proxy, SIGTERM) < 0 ) {
+        fprintf(stderr, "pconn_teardown_established: failed to stop webrtc-proxy");
+        return;
+      }
+
+      pc->pc_webrtc_proxy = -1;
+    }
+
+    pconn_finish(pc);
+  }
 }

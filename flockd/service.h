@@ -107,6 +107,7 @@ int flockservice_open_cached_personaset(struct flockservice *svc,
                                         int ps_hash_sz, struct cpersonaset **cps);
 
 #define FLOCKSERVICE_REMOVE_REASON_APPLIANCE_EXPIRED 1
+#define FLOCKSERVICE_REMOVE_REASON_APPLIANCE_SUPERCEDED 2
 void flockservice_remove_appliance(struct flockservice *f, struct applianceinfo *ai, int reason);
 
 #endif

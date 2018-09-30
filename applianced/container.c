@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <sched.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/syscall.h>
@@ -12,6 +13,9 @@
 #include "container.h"
 #include "util.h"
 #include "init_proto.h"
+#include "process.h"
+
+#define OP_CONTAINER_WAITER_COMPLETE EVT_CTL_CUSTOM
 
 #define OP_CONTAINER_TIMES_OUT EVT_CTL_CUSTOM
 #define OP_CONTAINER_CHECK_PERM (EVT_CTL_CUSTOM + 1)
@@ -21,12 +25,19 @@ struct containerinit {
   struct in_addr ci_ip;
 };
 
+struct containerwaiter {
+  struct pssub cw_process;
+  int          cw_init_comm;
+};
+
 static void containerevtfn(struct eventloop *el, int op, void *arg);
 static void containerpermfn(struct arpentry *ae, struct brpermrequest *perm);
 static int container_start(struct container *c);
-static int container_stop(struct container *c);
+static int container_stop(struct container *c, struct eventloop *el);
 
 static int container_start_child(void *c_);
+
+static void ctrwaiterevtfn(struct eventloop *el, int op, void *arg);
 
 static int g_child_sync_pipes[] = { -1, -1 }; // No need for synchronization because of fork()
 
@@ -77,10 +88,17 @@ int container_ensure_running(struct container *c, struct eventloop *el) {
   if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
     int ret = 0;
     if ( c->c_running_refs == 0 ) {
+      fprintf(stderr, "clear container timeout start\n");
       eventloop_cancel_timer(el, &c->c_timeout);
-      ret = container_start(c);
-      if ( ret >= 0 )
+      fprintf(stderr, "clear container timeout done\n");
+
+      if ( c->c_init_process < 0 ) {
+        ret = container_start(c);
+        if ( ret >= 0 )
+          c->c_running_refs++;
+      } else
         c->c_running_refs++;
+
       ret = 1;
     } else
       c->c_running_refs++;
@@ -103,6 +121,24 @@ int container_release_running(struct container *c, struct eventloop *el) {
     return -1;
 }
 
+static void ctrwaiterevtfn(struct eventloop *el, int op, void *arg) {
+  struct psevent *pe = arg;
+  struct containerwaiter *cw;
+
+  switch ( op ) {
+  case OP_CONTAINER_WAITER_COMPLETE:
+    cw = STRUCT_FROM_BASE(struct containerwaiter, cw_process, pe->pse_sub);
+
+    fprintf(stderr, "Container exited with status %d\n", pe->pse_sts);
+    close(cw->cw_init_comm);
+    free(cw);
+    break;
+
+  default:
+    fprintf(stderr, "ctrwaiterevtfn: unknown op %d\n", op);
+  }
+}
+
 static void containerevtfn(struct eventloop *el, int op, void *arg) {
   struct qdevent *te;
   struct container *c;
@@ -114,7 +150,7 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
     c = STRUCT_FROM_BASE(struct container, c_timeout, te->qde_timersub);
     if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
       if ( c->c_running_refs == 0 )
-        container_stop(c);
+        container_stop(c, el);
       pthread_mutex_unlock(&c->c_mutex);
     }
     return;
@@ -167,6 +203,25 @@ static int container_enable_sctp_intl(struct container *c) {
   en = fopen(sctp_intl_path, "wt");
   if ( !en ) {
     perror("fopen /proc/sys/net/sctp/intl_enable");
+    ret = -1;
+    goto error;
+  } else {
+    fprintf(en, "1");
+    fclose(en);
+    ret = 0;
+  }
+
+  err = snprintf(sctp_intl_path, sizeof(sctp_intl_path),
+                 "%s/sys/net/sctp/reconf_enable", proc_path);
+  if ( err >= sizeof(sctp_intl_path) ) {
+    fprintf(stderr, "container_enable_sctp_intl: reconf path is too long\n");
+    ret = -1;
+    goto error;
+  }
+
+  en = fopen(sctp_intl_path, "wt");
+  if ( !en ) {
+    perror("fopen /proc/sys/net/sctp/reconf_enable");
     ret = -1;
     goto error;
   } else {
@@ -332,18 +387,73 @@ static int container_start(struct container *c) {
   return -1;
 }
 
-static int container_stop(struct container *c) {
-  int err;
+static int container_stop(struct container *c, struct eventloop *el) {
+  // Send SIGTERM message to init process, and create a new timer to
+  // ensure the end of this process.
+  //
+  // Meanwhile, immediately disconnect the veth from the bridge
 
-  err = c->c_control(c, CONTAINER_CTL_ON_SHUTDOWN, NULL, 0);
-  if ( err < 0 ) {
-    fprintf(stderr, "container_stop: CONTAINER_CTL_ON_SHUTDOWN returned error\n");
-    return err;
+  int err, ret = 0, port = c->c_bridge_port;
+
+  struct containerwaiter *waiter;
+
+  fprintf(stderr, "container_stop: stopping\n");
+
+  SAFE_MUTEX_LOCK(&c->c_mutex);
+  // Refresh the IP address for the container
+  bridge_allocate(c->c_bridge, &c->c_ip, &c->c_bridge_port);
+
+  // Disconnects a port from the bridge
+  err = bridge_disconnect_port(c->c_bridge, port);
+  if ( err < 0 )
+    fprintf(stderr, "container_stop: could not disconnect bridge\n");
+
+  // Now send the init process a SIGTERM signal
+  waiter = malloc(sizeof(*waiter));
+  if ( !waiter ) {
+    fprintf(stderr, "container_stop: could not allocate waiter, send SIGKILL to init\n");
+
+    err = kill(c->c_init_process, SIGKILL);
+    if ( err < 0 ) {
+      ret = -1;
+      perror("container_stop: kill SIGKILL");
+    }
+
+    err = c->c_control(c, CONTAINER_CTL_ON_SHUTDOWN, NULL, 0);
+    if ( err < 0 ) {
+      fprintf(stderr, "container_stop: CONTAINER_CTL_ON_SHUTDOWN returned error\n");
+      return err;
+    }
+
+    close(c->c_init_comm);
+  } else {
+    waiter->cw_init_comm = c->c_init_comm;
+
+    pssub_init(&waiter->cw_process, OP_CONTAINER_WAITER_COMPLETE, ctrwaiterevtfn);
+    err = pssub_attach(el, &waiter->cw_process, c->c_init_process);
+    if ( err < 0 ) {
+      ret = -1;
+      fprintf(stderr, "container_stop: could not attach to init process\n");
+
+      kill(c->c_init_process, SIGKILL);
+      close(c->c_init_comm);
+      free(waiter);
+    } else {
+      err = kill(c->c_init_process, SIGTERM);
+      if ( err < 0 ) {
+        ret = -1;
+        perror("container_stop: kill SIGTERM");
+      }
+    }
   }
 
-  fprintf(stderr, "container_stop() called: TODO abor()ing\n");
-  abort(); // TODO
-  return -1;
+  c->c_init_process = -1;
+  c->c_init_comm = -1;
+  memset(c->c_mac, 0, sizeof(c->c_mac));
+
+  pthread_mutex_unlock(&c->c_mutex);
+
+  return ret;
 }
 
 // Called in the child
@@ -582,6 +692,36 @@ int container_execute(struct container *c, uint32_t exec_flags, const char *path
     fprintf(stderr, "container_execute: could not lock mutex\n");
     return -1;
   }
+}
+
+int container_kill(struct container *c, pid_t pid, int sig) {
+  struct stkinitmsg msg;
+
+  msg.sim_req = STK_REQ_KILL;
+  msg.sim_flags = 0;
+  msg.un.kill.which = pid;
+  msg.un.kill.sig = sig;
+
+  if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
+    int ret = -1, err;
+
+    if ( c->c_init_comm >= 0 ) {
+      err = send(c->c_init_comm, &msg, sizeof(msg), 0);
+      if ( err < 0 ) {
+        perror("container_kill: send");
+      } else {
+        err = recv(c->c_init_comm, &ret, sizeof(ret), 0);
+        if ( err < 0 ) {
+          perror("container_kill: recv");
+          ret = -errno;
+        }
+      }
+    }
+
+    pthread_mutex_unlock(&c->c_mutex);
+    return ret;
+  } else
+    return -1;
 }
 
 static void containerpermfn(struct arpentry *ae, struct brpermrequest *perm) {

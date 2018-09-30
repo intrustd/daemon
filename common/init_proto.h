@@ -14,13 +14,18 @@ struct stkinitmsg {
     struct {
       int argc, envc;
     } run;
+    struct {
+      pid_t which;
+      int sig;
+    } kill;
   } un;
   char after[];
 };
 
 #define STK_ARGS(msg) ((msg)->after)
 
-#define STK_REQ_RUN 0x0001
+#define STK_REQ_RUN  0x0001
+#define STK_REQ_KILL 0x0002
 
 // The process follows the kite initialization protocol. Set this flag
 // to wait for the process to really start

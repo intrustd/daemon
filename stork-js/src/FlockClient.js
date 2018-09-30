@@ -214,13 +214,13 @@ export class FlockSocket extends EventTarget {
     }
 
     close() {
-//        this.data_chan.close()
-//        delete this.data_chan
+        this.data_chan.close()
+        delete this.data_chan
     }
 
     // Returns a promise of when the stream is sent
     sendStream( stream, onProgress ) {
-        const MAX_CHUNK_SIZE = 65536;
+        const MAX_CHUNK_SIZE = 8192;
         return new Promise((resolve, reject) => {
             var reader = stream.getReader()
             var curChunk = null
@@ -366,6 +366,9 @@ export class FlockClient extends EventTarget {
         this.localComplete = false;
 
         var thisFlockClient = this;
+        this.websocket.addEventListener('error', function (evt) {
+            this.dispatchEvent(new FlockSocketErrorEvent(this, 'connection-refused'))
+        });
         this.websocket.addEventListener('open', function (evt) {
             thisFlockClient.dispatchEvent(new FlockOpenEvent());
         });
@@ -523,7 +526,7 @@ export class FlockClient extends EventTarget {
 
     onAnswerSent() {
         this.answer_sent = true
-        this.candidates.map((c) => { this.candidates.push(c) })
+        this.candidates.map((c) => { this.sendIceCandidate(c) })
     }
 
     parseVCardData(vcard) {
@@ -598,6 +601,7 @@ export class FlockClient extends EventTarget {
             }
             var onOpen = () => {
                 removeEventListeners()
+                this.personaId = personaId;
                 resolve()
             }
             var onError = () => {

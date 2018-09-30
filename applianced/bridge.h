@@ -146,5 +146,6 @@ int bridge_set_up_networking(struct brstate *br);
 int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
                              struct in_addr *this_ip, const char *if_name,
                              struct arpentry *arp);
+int bridge_disconnect_port(struct brstate *br, int port);
 
 #endif

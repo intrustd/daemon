@@ -73,5 +73,6 @@ int container_release_running(struct container *c, struct eventloop *el);
 
 int container_execute(struct container *c, uint32_t exec_flags, const char *path,
                       const char **argv, const char **envp);
+int container_kill(struct container *c, pid_t pid, int sig);
 
 #endif
