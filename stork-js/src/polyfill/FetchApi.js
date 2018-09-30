@@ -495,7 +495,8 @@ export default function kiteFetch (req, init) {
                 throw new TypeError("Expected at least one flock URL");
 
             console.log("Attempting connection with ", flockUrls)
-            for ( var flockUrl of flockUrls.values() ) {
+            for ( var i in flockUrls ) {
+                var flockUrl = flockUrls[i]
                 if ( !globalFlocks.hasOwnProperty(flockUrl) ) {
                     globalFlocks[flockUrl] = new GlobalFlock(flockUrl);
                 }

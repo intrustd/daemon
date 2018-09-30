@@ -988,8 +988,15 @@ static void wsconnection_respond_line_ex(struct wsconnection *conn, struct event
 
 static void trim(const char **s, const char **e) {
   while ( *s < *e ) {
-    if ( isspace(*s) ) (*s)++;
-    if ( isspace(*e) ) (*e)--;
+    fprintf(stderr, "trim %p %p %p %p\n", s, e, *s, *e);
+    if ( isspace(**s) ) {
+      (*s)++;
+    } else if ( isspace(**e) ) {
+      (*e)--;
+    } else {
+      fprintf(stderr, "break\n");
+      break;
+    }
   }
 
   if ( *e < *s ) {
@@ -1001,13 +1008,18 @@ static int has_upgrade(const char *vls, const char *vle) {
   const char *next;
 
   while ( vls < vle && (next = memchr(vls, ',', vle - vls)) ) {
-    next -= 1;
     trim(&vls, &next);
+
+    fprintf(stderr, "Upgrade check: %.*s\n", (int)(next - vls), vls);
     if ( strncasecmp(vls, "upgrade", next - vls) == 0 )
       return 1;
+
+    vls = next + 1;
   }
 
   if ( vls < vle ) {
+    trim(&vls, &vle);
+    fprintf(stderr, "Upgrade check: %.*s\n", (int)(vle - vls), vls);
     if ( strncasecmp(vls, "upgrade", vle - vls) == 0 )
       return 1;
   }

@@ -1384,7 +1384,7 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
   case 5:
     OFFER_LINE("a=msid-semantic: WMS");
   case 6:
-    OFFER_LINE("m=application 9 DTLS/SCTP webrtc-datachannel");
+    OFFER_LINE("m=application %d DTLS/SCTP webrtc-datachannel", pc->pc_sctp_port);
   case 7:
     OFFER_LINE("c=IN %s %s", addrty, addr_buf);
   case 8:

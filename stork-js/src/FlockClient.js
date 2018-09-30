@@ -366,8 +366,8 @@ export class FlockClient extends EventTarget {
         this.localComplete = false;
 
         var thisFlockClient = this;
-        this.websocket.addEventListener('error', function (evt) {
-            this.dispatchEvent(new FlockSocketErrorEvent(this, 'connection-refused'))
+        this.websocket.addEventListener('error', function() {
+            thisFlockClient.dispatchEvent(new FlockSocketErrorEvent(this, 'connection-refused'))
         });
         this.websocket.addEventListener('open', function (evt) {
             thisFlockClient.dispatchEvent(new FlockOpenEvent());
