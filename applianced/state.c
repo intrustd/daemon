@@ -787,6 +787,76 @@ static int appstate_open_personas(struct appstate *as, struct appconf *ac) {
   return 0;
 }
 
+static int appstate_open_trusted_keys(struct appstate *as, struct appconf *ac) {
+  char trusted_keys_dir[PATH_MAX];
+  DIR *keys_d;
+  struct dirent *ent;
+  struct stat ent_stat;
+  int err;
+
+  err = snprintf(trusted_keys_dir, sizeof(trusted_keys_dir),
+                "%s/trusted_keys", ac->ac_conf_dir);
+  if ( err >= sizeof(trusted_keys_dir) ) {
+    fprintf(stderr, "appstate_open_trusted_keys: buffer overflow while writing path\n");
+    return -1;
+  }
+
+  keys_d = opendir(trusted_keys_dir);
+  if ( !keys_d ) {
+    fprintf(stderr, "appstate_open_trusted_keys: no trusted keys found\n");
+    return 0;
+  }
+
+  for ( errno = 0, ent = readdir(keys_d); ent; errno = 0, ent = readdir(keys_d) ) {
+    FILE *pubkey;
+    EVP_PKEY *key;
+
+    err = snprintf(trusted_keys_dir, sizeof(trusted_keys_dir),
+                   "%s/trusted_keys/%s", ac->ac_conf_dir, ent->d_name);
+    if ( err < 0 ) {
+      fprintf(stderr, "appstate_open_trusted_keys: buffer overflow while writing path. Skipping %s\n", ent->d_name);
+      continue;
+    }
+
+    err = stat(trusted_keys_dir, &ent_stat);
+    if ( err < 0 ) {
+      fprintf(stderr, "appstate_open_trusted_keys: could not stat %s\n", trusted_keys_dir);
+      continue;
+    }
+
+    if ( !S_ISREG(ent_stat.st_mode) ) continue;
+
+    pubkey = fopen(trusted_keys_dir, "rt");
+    if ( !pubkey ) {
+      perror("appstate_open_trusted_keys: fopen");
+      fprintf(stderr, "While opening %s\n", trusted_keys_dir);
+      continue;
+    }
+
+    key = PEM_read_PUBKEY(pubkey, NULL, NULL, NULL);
+    if ( !key ) {
+      fprintf(stderr, "appstate_open_trusted_keys: could not read key file\n");
+      ERR_print_errors_fp(stderr);
+      fclose(pubkey);
+      continue;
+    }
+
+    fclose(pubkey);
+
+    as->as_trusted_key_count++;
+    as->as_trusted_keys = realloc(as->as_trusted_keys,
+                                  sizeof(*as->as_trusted_keys) * as->as_trusted_key_count);
+    if ( !as->as_trusted_keys ) {
+      fprintf(stderr, "appstate_open_trusted_keys: could not reallocate keys\n");
+      abort();
+    }
+
+    as->as_trusted_keys[as->as_trusted_key_count - 1] = key;
+  }
+
+  return 0;
+}
+
 static int appstate_open_flocks(struct appstate *as, struct appconf *ac) {
   char flocks_path[PATH_MAX];
   char flocks_line[1024];
@@ -950,6 +1020,8 @@ static int appstate_open_apps(struct appstate *as, struct appconf *ac) {
         return -1;
       }
 
+      appstate_update_application_state(as, a);
+
       HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_canonical_url, strlen(a->app_canonical_url), a);
     } else {
       fclose(apps);
@@ -972,6 +1044,8 @@ void appstate_clear(struct appstate *as) {
   as->as_cert = NULL;
   as->as_privkey = NULL;
   as->as_dtls_ctx = NULL;
+  as->as_trusted_key_count = 0;
+  as->as_trusted_keys = NULL;
   as->as_flocks = NULL;
   as->as_personas = NULL;
   as->as_cur_personaset = NULL;
@@ -1063,6 +1137,9 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
       goto error;
     }
   }
+
+  if ( appstate_open_trusted_keys(as, ac) < 0 )
+    goto error;
 
   if ( appstate_open_flocks(as, ac) < 0 )
     goto error;
@@ -1547,6 +1624,8 @@ int appstate_install_app_from_manifest(struct appstate *as, struct appmanifest *
         if ( ret == 0 ) {
           HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_canonical_url, strlen(a->app_canonical_url), a);
         }
+
+        appstate_update_application_state(as, a);
       }
     }
     pthread_rwlock_unlock(&as->as_applications_mutex);
@@ -1591,6 +1670,139 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
     return ret;
   } else
     return -1;
+}
+
+static int check_signature(const EVP_MD *md, EVP_PKEY *key, FILE *mf,
+                           const char *sig, size_t sig_len) {
+  char buf[64];
+  int ret;
+
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+  if ( !ctx ) {
+    fprintf(stderr, "check_signature: out of memory\n");
+    return 0;
+  }
+
+  if ( !EVP_VerifyInit(ctx, md) ) {
+    fprintf(stderr, "check_signature: EVP_VerifyInit fails\n");
+    ERR_print_errors_fp(stderr);
+    EVP_MD_CTX_free(ctx);
+    return 0;
+  }
+
+  while ( !feof(mf) ) {
+    int bytes_read;
+
+    bytes_read = fread(buf, 1, sizeof(buf), mf);
+    if ( bytes_read < sizeof(buf) ) {
+      if ( ferror(mf) ) {
+        EVP_MD_CTX_free(ctx);
+        fprintf(stderr, "check_signature: error while reading manifest\n");
+        return 0;
+      }
+    }
+
+    if ( !EVP_VerifyUpdate(ctx, buf, bytes_read) ) {
+      fprintf(stderr, "check_signature: EVP_VerifyUpdate fails\n");
+      ERR_print_errors_fp(stderr);
+      EVP_MD_CTX_free(ctx);
+      return 0;
+    }
+  }
+
+  ret = EVP_VerifyFinal(ctx, (const unsigned char *)sig, sig_len, key);
+  if ( ret < 0 ) {
+    fprintf(stderr, "check_signature: EVP_VerifyFinal fails\n");
+    ERR_print_errors_fp(stderr);
+    EVP_MD_CTX_free(ctx);
+    return 0;
+  }
+
+  EVP_MD_CTX_free(ctx);
+
+  return ret;
+}
+
+static int appstate_can_run_as_admin(struct appstate *as, struct app *a) {
+  // In order to run as administrator, there needs to be a signing key
+  // <mf-digest>.asc, containing the a signature by a trusted
+  // authority of the application manifest.
+  char mf_signature_path[PATH_MAX];
+  char mf_digest_str[SHA256_DIGEST_LENGTH * 2 + 1];
+  FILE *signature, *manifest;
+  int err, i;
+
+  void *sig_bytes;
+  size_t sig_len;
+
+  err = snprintf(mf_signature_path, sizeof(mf_signature_path),
+                 "%s/manifests/%s.sign", as->as_conf_dir,
+                 hex_digest_str(a->app_current_manifest->am_digest, mf_digest_str,
+                                SHA256_DIGEST_LENGTH));
+  if ( err >= sizeof(mf_signature_path) ) {
+    fprintf(stderr, "appstate_can_run_as_admin: path overflow\n");
+    return 0;
+  }
+
+  signature = fopen(mf_signature_path, "rt");
+  if ( !signature ) {
+    fprintf(stderr, "appstate_can_run_as_admin: no signature for manifest %s\n", mf_digest_str);
+    return 0;
+  }
+
+  if ( fread_base64(signature, &sig_bytes, &sig_len) < 0 ) {
+    fprintf(stderr, "appstate_can_run_as_admin: invalid base64 encoding of signature for %s\n",
+            mf_digest_str);
+    fclose(signature);
+    return 0;
+  }
+
+  fclose(signature);
+
+  err = snprintf(mf_signature_path, sizeof(mf_signature_path),
+                 "%s/manifests/%s", as->as_conf_dir, mf_digest_str);
+  if ( err >= sizeof(mf_signature_path) ) {
+    fprintf(stderr, "appstate_can_run_as_admin: path overflow\n");
+    return 0;
+  }
+
+  manifest = fopen(mf_signature_path, "rt");
+  if ( !manifest ) {
+    fprintf(stderr, "appstate_can_run_as_admin: could not find manifest for %s: %s\n", mf_digest_str, mf_signature_path);
+    free(sig_bytes);
+    return 0;
+  }
+
+  // Now verify the signature
+  for ( i = 0; i < as->as_trusted_key_count; ++i ) {
+    EVP_PKEY *trusted_key = as->as_trusted_keys[i];
+
+    if ( fseek(manifest, 0, SEEK_SET) != 0 ) {
+      fprintf(stderr, "appstate_can_run_as_admin: could not move to beginning of file\n");
+      fclose(manifest);
+      free(sig_bytes);
+      return 0;
+    }
+
+    if ( check_signature(EVP_sha256(), trusted_key, manifest, sig_bytes, sig_len) ) {
+      free(sig_bytes);
+      fclose(manifest);
+      return 1;
+    }
+  }
+
+  fprintf(stderr, "Manifest for %s not verified because the signature was invalid\n", mf_digest_str);
+  return 0;
+}
+
+void appstate_update_application_state(struct appstate *as, struct app *a) {
+  SAFE_MUTEX_LOCK(&a->app_mutex);
+  a->app_flags &= ~APP_FLAG_RUN_AS_ADMIN;
+  if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN ) {
+    if ( appstate_can_run_as_admin(as, a) )
+      a->app_flags |= APP_FLAG_RUN_AS_ADMIN;
+  }
+  pthread_mutex_unlock(&a->app_mutex);
 }
 
 int appstate_log_path(struct appstate *as, const char *mf_digest_str, const char *extra,

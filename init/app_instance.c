@@ -55,6 +55,7 @@ void run_start_script() {
     execl(START_SCRIPT_PATH, "start", g_persona_id, NULL);
     exit(2);
   } else {
+    fprintf(stderr, "started script with pid %d\n", child);
     g_status = STARTING;
     g_start_pid = child;
   }
@@ -181,8 +182,8 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  // Set cwd to /stork
-  if ( chdir("/stork/") < 0 ) {
+  // Set cwd to /kite
+  if ( chdir("/kite/") < 0 ) {
     perror("app_instance_init: chdir");
     return 3;
   }
@@ -220,6 +221,7 @@ int main(int argc, char **argv) {
   // The health check timeout is achieved through the use of alarm(2)
   // function.
 
+  fprintf(stderr, "Going to run start script\n");
   run_start_script();
 
   buf = malloc(STK_MAX_PKT_SZ);

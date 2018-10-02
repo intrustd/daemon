@@ -361,6 +361,7 @@ export class FlockClient extends EventTarget {
         this.rtc_stream_number = 0;
         this.answer_sent = false;
         this.websocket = new WebSocket(url.href);
+        this.websocket.binaryType = 'arraybuffer';
 
         this.remoteComplete = false;
         this.localComplete = false;
@@ -428,7 +429,17 @@ export class FlockClient extends EventTarget {
 
                         this.rtc_connection = new RTCPeerConnection({ iceServers: iceServers });
                         this.rtc_control_channel = this.rtc_connection.createDataChannel('control', {protocol: 'control'})
-                        this.rtc_control_channel.onopen = () => { this.dispatchEvent(new KiteChannelOpens(this)); }
+                        this.rtc_control_channel.binaryType = 'arraybuffer'
+                        this.rtc_control_channel.onopen = () => {
+                            this.dispatchEvent(new KiteChannelOpens(this));
+                            this.rtc_control_channel.close()
+                            delete this.rtc_control_channel
+
+                            window.peer_conn = this.rtc_connection
+
+                            console.log("On control channel open", this.rtc_connection.getConfiguration())
+                            window.rtc_conf = this.rtc_connection.getConfiguration()
+                        }
                         this.rtc_control_channel.onclose = function () { console.log('channel closes') }
 
                         this.answer_sent = false;
@@ -621,6 +632,7 @@ export class FlockClient extends EventTarget {
     }
 
     requestApps(apps) {
+        var channel = this.newDataChannel()
         return new Promise((resolve, reject) => {
             if ( this.state != FlockClientState.Complete )
                 throw new TypeError("Can't request apps until flock client is connected")
@@ -631,7 +643,8 @@ export class FlockClient extends EventTarget {
                         clearTimeout(cur_timer);
                         cur_timer = null;
                     }
-                    this.rtc_control_channel.removeEventListener('message', listener);
+                    channel.removeEventListener('message', listener);
+                    channel.close()
                     resolve();
                 };
 
@@ -657,7 +670,7 @@ export class FlockClient extends EventTarget {
                         } else {
                             var msg = new RequestAppControlMessage(cur_app);
                             cur_timer = setTimeout(canceled, 30000);
-                            this.rtc_control_channel.send(msg.write().toArrayBuffer());
+                            channel.send(msg.write().toArrayBuffer());
                         }
                     }
                 }
@@ -680,7 +693,7 @@ export class FlockClient extends EventTarget {
                     }
                     go();
                 };
-                this.rtc_control_channel.addEventListener('message', listener);
+                channel.addEventListener('message', listener);
 
                 go();
             }
@@ -691,7 +704,10 @@ export class FlockClient extends EventTarget {
         var stream_name = 'stream' + this.rtc_stream_number;
         this.rtc_stream_number += 1;
 
-        return this.rtc_connection.createDataChannel(stream_name, init);
+        var ret = this.rtc_connection.createDataChannel(stream_name, init);
+        ret.binaryType = 'arraybuffer'
+
+        return ret
     }
 
     socketTCP (app_name, port) {

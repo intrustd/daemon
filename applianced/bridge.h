@@ -11,19 +11,40 @@
 #include "event.h"
 
 #define BR_CAPABILITY_SIZE 256
+#define PERSONA_ID_LENGTH   32
+#define APP_URL_MAX 1024
 
 typedef unsigned char mac_addr[ETH_ALEN];
+
+#define ARP_DESC_PERSONA 1
+#define ARP_DESC_APP_INSTANCE 2
+struct arpdesc {
+  int ad_container_type;
+  union {
+    struct {
+      char ad_persona_id[PERSONA_ID_LENGTH];
+    } ad_persona;
+    struct {
+      char ad_persona_id[PERSONA_ID_LENGTH];
+      char ad_app_url[APP_URL_MAX];
+    } ad_app_instance;
+  };
+};
 
 struct container;
 
 struct arpentry;
 struct brpermrequest;
-typedef void(*aepermfn)(struct arpentry*, struct brpermrequest*);
+typedef int(*aectlfn)(struct arpentry*, int, void *, ssize_t);
+
+#define ARP_ENTRY_CHECK_PERMISSION 1
+#define ARP_ENTRY_DESCRIBE 2
+
 struct arpentry {
   mac_addr       ae_mac;
   struct in_addr ae_ip;
   UT_hash_handle ae_hh;
-  aepermfn       ae_permfn;
+  aectlfn        ae_ctlfn;
 };
 
 // we intercept sctp packets
@@ -147,5 +168,7 @@ int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
                              struct in_addr *this_ip, const char *if_name,
                              struct arpentry *arp);
 int bridge_disconnect_port(struct brstate *br, int port);
+
+int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *desc, size_t desc_sz);
 
 #endif

@@ -400,7 +400,16 @@ static int personacontainerfn(struct container *c, int op, void *argp, ssize_t a
   int hostname_len, err;
   char persona_id_str[PERSONA_ID_X_LENGTH];
 
+  struct arpdesc *desc;
+
   switch ( op ) {
+
+  case CONTAINER_CTL_DESCRIBE:
+    desc = argp;
+    desc->ad_container_type = ARP_DESC_PERSONA;
+    memcpy(desc->ad_persona.ad_persona_id, p->p_persona_id,
+           sizeof(desc->ad_persona.ad_persona_id));
+    return 0;
 
   case CONTAINER_CTL_CHECK_PERMISSION:
     perm = argp;
@@ -675,7 +684,18 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
   char *persona_id;
   int err;
 
+  struct arpdesc *desc;
+
   switch ( op ) {
+  case CONTAINER_CTL_DESCRIBE:
+    desc = argp;
+    desc->ad_container_type = ARP_DESC_APP_INSTANCE;
+    memcpy(desc->ad_app_instance.ad_persona_id, ai->inst_persona->p_persona_id,
+           sizeof(desc->ad_app_instance.ad_persona_id));
+    strncpy(desc->ad_app_instance.ad_app_url, ai->inst_app->app_canonical_url,
+            sizeof(desc->ad_app_instance.ad_app_url));
+    return 0;
+
   case CONTAINER_CTL_GET_TMP_PATH:
     err = snprintf((char *) argp, argl, "%s/proc", ai->inst_persona->p_appstate->as_conf_dir);
     if ( err >= argl ) return -1;
@@ -757,6 +777,12 @@ static int appinstance_setup(struct appinstance *ai) {
   char path[PATH_MAX], app_name_or_path[PATH_MAX], app_domain[PATH_MAX],
     persona_id_str[PERSONA_ID_X_LENGTH + 1];
   int err;
+  uint32_t app_flags = 0;
+
+  if ( pthread_mutex_lock(&ai->inst_app->app_mutex) == 0 ) {
+    app_flags = ai->inst_app->app_flags;
+    pthread_mutex_unlock(&ai->inst_app->app_mutex);
+  }
 
   FORMAT_PATH("%s/nix", image_path);
   DO_MOUNT("/nix", path, "bind", MS_BIND | MS_RDONLY | MS_REC, "");
@@ -766,6 +792,9 @@ static int appinstance_setup(struct appinstance *ai) {
 
   FORMAT_PATH("%s/dev", image_path);
   DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755,size=16384k");
+
+  FORMAT_PATH("%s/run", image_path);
+  DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=700,size=16384k");
 
   FORMAT_PATH("%s/dev/pts", image_path);
   DO_MKDIR(path);
@@ -797,8 +826,36 @@ static int appinstance_setup(struct appinstance *ai) {
   }
   strcpy(app_name_or_path, path);
 
-  FORMAT_PATH("%s/stork", image_path);
+  FORMAT_PATH("%s/kite", image_path);
   DO_MOUNT(app_name_or_path, path, "bind", MS_BIND | MS_RDONLY | MS_REC, "");
+
+  SAFE_ASSERT(validate_canonical_url(ai->inst_app->app_canonical_url,
+                                     app_name_or_path, sizeof(app_name_or_path),
+                                     app_domain, sizeof(app_domain)));
+  FORMAT_PATH("%s/personas/%s/log/%s/%s", ai->inst_persona->p_appstate->as_conf_dir,
+              persona_id_str, app_domain, app_name_or_path);
+  fprintf(stderr, "Making log path %s\n", path);
+  err = mkdir_recursive(path);
+  if ( err < 0 ) {
+    perror("appinstance_setup: mkdir_recursive");
+    fprintf(stderr, "appinstance_setup: while making %s\n", path);
+  }
+  strcpy(app_name_or_path, path);
+
+  FORMAT_PATH("%s/var/log", image_path);
+  DO_MOUNT(app_name_or_path, path, "bind", MS_BIND | MS_REC, "");
+
+  // If this app has the 'run_with_admin' permission, then run this application with administrator privileges
+  if ( app_flags & APP_FLAG_RUN_AS_ADMIN ) {
+    FORMAT_PATH("%s/kite/appliance", image_path);
+    err = mkdir_recursive(path);
+    if ( err < 0 ) {
+      perror("appinstance_setup: mkdir_recursive");
+      fprintf(stderr, "appinstance_setup: while making %s\n", path);
+    }
+
+    DO_MOUNT(ai->inst_persona->p_appstate->as_conf_dir, path, "bind", MS_BIND | MS_REC, "");
+  }
 
   if ( setenv("HOME", path, 1) < 0 ) {
     perror("setenv HOME");

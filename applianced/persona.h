@@ -83,9 +83,6 @@ int persona_allocate_port(struct persona *p, uint16_t *port);
 void persona_release_port(struct persona *p, uint16_t port);
 
 // Runs a new webrtc proxy and returns the PID of the proxy.
-//
-// WARNING: this pid is *not* valid in any namespace accessible to the
-// calling process. Use persona_kill to stop the process
 pid_t persona_run_webrtc_proxy(struct persona *p, uint16_t port);
 
 pid_t persona_run_ping_test(struct persona *p);

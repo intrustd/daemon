@@ -260,15 +260,18 @@ int timespec_lt(struct timespec *a, struct timespec *b) {
   }
 }
 
-int translate_stk_connection_error(int which) {
+uint32_t translate_stk_connection_error(int which) {
+  uint32_t ret;
   switch ( which ) {
-  case ENOENT:       return STKD_ERROR_INVALID_ADDR;
+  case ENOENT:       ret = STKD_ERROR_INVALID_ADDR;
   case ENETUNREACH:
-  case ECONNREFUSED: return STKD_ERROR_CONN_REFUSED;
-  case EALREADY:     return STKD_ERROR_SYSTEM_BUSY;
-  case ETIMEDOUT:    return STKD_ERROR_TEMP_UNAVAILABLE;
-  default:           return STKD_ERROR_SYSTEM_ERROR;
+  case ECONNREFUSED: ret = STKD_ERROR_CONN_REFUSED;
+  case EALREADY:     ret = STKD_ERROR_SYSTEM_BUSY;
+  case ETIMEDOUT:    ret = STKD_ERROR_TEMP_UNAVAILABLE;
+  default:           ret = STKD_ERROR_SYSTEM_ERROR;
   }
+
+  return htonl(ret);
 }
 
 int mk_socket(int sk_type) {
@@ -611,7 +614,7 @@ void perform_delayed_closes(int srv) {
         } else
           perror("sctp_setsockopt SCTP_RESET_STREAMS");
       } else {
-        log_printf(stderr, "Successfully requested stream reset\n");
+        log_printf( "Successfully requested stream reset\n");
       }
 
       free(srs);
@@ -636,7 +639,7 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
     return;
   }
 
-  log_printf(stderr, "process_strreset_ack: received stream reset for %d channels\n", stream_cnt);
+  log_printf( "process_strreset_ack: received stream reset for %d channels\n", stream_cnt);
 
   if ( rse->strreset_flags & SCTP_STREAM_RESET_DENIED ) {
     fprintf(stderr, "process_strreset_ack: WARNING: reset denied. This is almost certainly an error in the remote WebRTC implementation\n");
@@ -668,7 +671,7 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
 
     for ( i = 0; i < stream_cnt; ++i ) {
       if ( WEBRTC_CHANID(rse->strreset_stream_list[i]) == chan->wrc_chan_id ) {
-        log_printf(stderr, "process_strreset_ack: received ack for %d\n", chan->wrc_chan_id);
+        log_printf( "process_strreset_ack: received ack for %d\n", chan->wrc_chan_id);
         channel_was_reset = 1;
         break;
       }
@@ -1019,10 +1022,10 @@ int receive_ctl_rsp(int srv, struct wrtcchan *chan) {
           err = get_address_descriptor(msg->sm_data.sm_opened_app.sm_addr);
           if ( err < 0 ) {
             rsp.scm_type |= SCM_ERROR;
-            rsp.data.scm_error = STKD_ERROR_NO_SPACE;
+            rsp.data.scm_error = htonl(STKD_ERROR_NO_SPACE);
             rsp_sz = SCM_ERROR_RSP_SZ;
           } else {
-            rsp.data.scm_opened_app = err;
+            rsp.data.scm_opened_app = htonl(err);
           }
         }
 
@@ -1098,6 +1101,7 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
     if ( bytes_written < 0 ) {
       if ( errno == EAGAIN || errno == EWOULDBLOCK ) {
         chan->wrc_flags |= WRC_HAS_OUTGOING;
+        assert(chan->wrc_proxy_buf_sz >= 0);
         return chan->wrc_proxy_buf_sz;
       } else {
         perror("proxy_stream_socket: sctp_send");
@@ -1361,7 +1365,7 @@ int chan_disconnects(int srv, struct wrtcchan *chan, int *evts) {
 
     // Mark the channel as read_closed
     if ( chan_has_more_proxying(chan) ) {
-      log_printf(stderr, "Just marking closed\n");
+      log_printf( "Just marking closed\n");
       chan->wrc_flags |= WRC_READ_CLOSED;
       return 0;
     } else {
@@ -1773,7 +1777,7 @@ void handle_notification(int srv, union sctp_notification *nf, int sz) {
     break;
   case SCTP_STREAM_RESET_EVENT:
     // TODO this should reset the stream and close any connections
-    log_printf(stderr, "SCTP stream reset\n");
+    log_printf( "SCTP stream reset\n");
     if ( sz >= sizeof(nf->sn_strreset_event) )
       process_strreset_ack(&nf->sn_strreset_event, sz);
     else
@@ -1873,16 +1877,17 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
       if ( chan-> wrc_flags & WRC_HAS_PENDING_CONN ) {
         rsp_sz = SCM_ERROR_RSP_SZ;
         rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-        rsp.data.scm_error = STKD_ERROR_SYSTEM_BUSY;
+        rsp.data.scm_error = htonl(STKD_ERROR_SYSTEM_BUSY);
       } else if ( chan_supports_sk_type(chan, msg->data.scm_connect.scm_sk_type) ) {
         endpoint.sin_family = AF_INET;
         endpoint.sin_port = msg->data.scm_connect.scm_port;
 
         if ( !get_address_by_descriptor(ntohl(msg->data.scm_connect.scm_app),
                                         &endpoint.sin_addr.s_addr) ) {
+          log_printf("Could not find app %d\n", ntohl(msg->data.scm_connect.scm_app));
           rsp_sz = SCM_ERROR_RSP_SZ;
           rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-          rsp.data.scm_error = STKD_ERROR_APP_DOES_NOT_EXIST;
+          rsp.data.scm_error = htonl(STKD_ERROR_APP_DOES_NOT_EXIST);
         } else {
           err = mk_socket(msg->data.scm_connect.scm_sk_type);
           if ( err < 0 ) {
@@ -1928,7 +1933,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
       } else {
         rsp_sz = SCM_ERROR_RSP_SZ;
         rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-        rsp.data.scm_error = STKD_ERROR_INVALID_SOCKET_TYPE;
+        rsp.data.scm_error = htonl(STKD_ERROR_INVALID_SOCKET_TYPE);
       }
 
       // send the response, if any
@@ -2207,7 +2212,7 @@ static int receive_sctp(int srv) {
   while (1) {
     from_len = sizeof(addr);
     flags = MSG_DONTWAIT;
-    log_printf(stderr, "webrtc-proxy: going to read from socket\n");
+    log_printf( "webrtc-proxy: going to read from socket\n");
     n = sctp_recvmsg(srv, (void *) &buffer, sizeof(buffer),
                      (struct sockaddr *)&addr, &from_len,
                      (void *) &rcv_info, &flags);
@@ -2221,10 +2226,10 @@ static int receive_sctp(int srv) {
     } else if ( n > 0 ) {
       if ( flags & MSG_NOTIFICATION ) {
         union sctp_notification *nf = (union sctp_notification *) buffer;
-        log_printf(stderr, "Received SCTP notification\n");
+        log_printf( "Received SCTP notification\n");
         handle_notification(srv, nf, n);
       } else {
-        log_printf(stderr, "Message of length %llu received from %s:%u on stream %u with SSN %u and TSN %u, PPID %u, complete %d\n",
+        log_printf( "Message of length %llu received from %s:%u on stream %u with SSN %u and TSN %u, PPID %u, complete %d\n",
                    (unsigned long long) n,
                    inet_ntop(AF_INET, &addr.sin_addr, name, sizeof(name)), ntohs(addr.sin_port),
                    rcv_info.sinfo_stream, rcv_info.sinfo_ssn, rcv_info.sinfo_tsn,

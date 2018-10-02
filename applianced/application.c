@@ -89,11 +89,15 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
     PARSING_ST_CANONICAL,
     PARSING_ST_NAME,
     PARSING_ST_NIX_CLOSURE,
+    PARSING_ST_SINGLETON,
+    PARSING_ST_RUN_AS_ADMIN
   } state = PARSING_ST_INITIAL;
   int main_obj_end = -1;
 
   struct appmanifest *ret;
   char *name = NULL, *canonical = NULL, *nix_closure = NULL;
+
+  uint32_t flags = 0;
 
   for ( i = 0; i < tokencnt; ++i ) {
     jsmntok_t *token = tokens + i;
@@ -120,12 +124,41 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
           state = PARSING_ST_CANONICAL;
         } else if ( strncmp(data + token->start, "nix-closure", token->end - token->start) == 0 ) {
           state = PARSING_ST_NIX_CLOSURE;
+        } else if ( strncmp(data + token->start, "singleton", token->end - token->start) == 0 ) {
+          state = PARSING_ST_SINGLETON;
+        } else if ( strncmp(data + token->start, "runAsAdmin", token->end - token->start) == 0 ) {
+          state = PARSING_ST_RUN_AS_ADMIN;
         } else {
           int end = -1;
           for ( ; i < tokencnt && (end < 0 || tokens[i].start < end); ++i ) {
             if ( end < 0 ) end = tokens[i].end;
           }
         }
+      }
+      break;
+
+    case PARSING_ST_SINGLETON:
+    case PARSING_ST_RUN_AS_ADMIN:
+      if ( token->type != JSMN_PRIMITIVE ) {
+        EXPECT("true or false");
+      } else {
+        int value;
+        if ( data[token->start] == 't' ) {
+          value = 1;
+        } else if ( data[token->start] == 'f' ) {
+          value = 0;
+        } else
+          EXPECT("boolean");
+
+        if ( state == PARSING_ST_SINGLETON ) {
+          if ( value ) flags |= APPMANIFEST_FLAG_SINGLETON;
+          else flags &= ~APPMANIFEST_FLAG_SINGLETON;
+        } else if ( state == PARSING_ST_RUN_AS_ADMIN ) {
+          if ( value ) flags |= APPMANIFEST_FLAG_RUN_AS_ADMIN;
+          else flags &= ~APPMANIFEST_FLAG_RUN_AS_ADMIN;
+        }
+
+        state = PARSING_ST_MAIN_OBJECT_KEY;
       }
       break;
 
@@ -196,6 +229,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
   }
 
   SHARED_INIT(&ret->am_shared, freemanifest);
+  ret->am_flags = flags;
   ret->am_canonical = canonical;
   ret->am_name = name;
   ret->am_nix_closure = nix_closure;
@@ -250,12 +284,12 @@ int validate_canonical_url(const char *url, char *app_name, size_t app_name_sz,
 
     if ( app_domain ) {
       strncpy_fixed(app_domain, app_domain_sz,
-                    uri.hostText.first, uri.hostText.afterLast - uri.hostText.first - 1);
+                    uri.hostText.first, uri.hostText.afterLast - uri.hostText.first);
     }
 
     if ( app_name ) {
       strncpy_fixed(app_name, app_name_sz,
-                    uri.pathHead->text.first, uri.pathHead->text.afterLast - uri.pathHead->text.first - 1);
+                    uri.pathHead->text.first, uri.pathHead->text.afterLast - uri.pathHead->text.first);
     }
 
     uriFreeUriMembersA(&uri);

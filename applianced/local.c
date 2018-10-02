@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <errno.h>
+#include <arpa/inet.h>
+#include <netinet/ip.h>
 #include <uriparser/Uri.h>
 
 #include "local.h"
@@ -196,6 +198,75 @@ static int localsock_return_bad_entity(struct localapi *api, struct eventloop *e
   KLM_SIZE_ADD_ATTR(sz, attr);
 
   return localsock_respond(api, el, buf, sz);
+}
+
+static int localsock_return_bad_method(struct localapi *api, struct eventloop *el,
+                                       struct kitelocalmsg *in_response_to,
+                                       uint16_t entity, uint16_t op) {
+  char buf[KITE_MAX_LOCAL_MSG_SZ];
+  struct kitelocalmsg *msg;
+  struct kitelocalattr *attr;
+  int sz = KLM_SIZE_INIT;
+
+  msg = (struct kitelocalmsg *)buf;
+  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+
+  assert (attr);
+
+  msg->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
+  attr->kla_name = htons(KLA_RESPONSE_CODE);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_BAD_OP);
+  KLM_SIZE_ADD_ATTR(sz, attr);
+
+  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+  assert(attr);
+  attr->kla_name = htons(KLA_ENTITY);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(entity);
+  KLM_SIZE_ADD_ATTR(sz, attr);
+
+  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+  assert(attr);
+  attr->kla_name = htons(KLA_OPERATION);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(op);
+  KLM_SIZE_ADD_ATTR(sz, attr);
+
+
+  return localsock_respond(api, el, buf, sz);
+}
+
+static int localsock_return_simple(struct localapi *api, struct eventloop *el,
+                                   struct kitelocalmsg *in_response_to,
+                                   uint16_t code) {
+  char buf[KITE_MAX_LOCAL_MSG_SZ];
+  struct kitelocalmsg *msg;
+  struct kitelocalattr *attr;
+  int sz = KLM_SIZE_INIT;
+
+  msg = (struct kitelocalmsg *)buf;
+  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+
+  assert (attr);
+
+  msg->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
+  attr->kla_name = htons(KLA_RESPONSE_CODE);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(code);
+  KLM_SIZE_ADD_ATTR(sz, attr);
+
+  return localsock_respond(api, el, buf, sz);
+}
+
+static int localsock_return_not_found(struct localapi *api, struct eventloop *el,
+                                      struct kitelocalmsg *in_response_to) {
+  return localsock_return_simple(api, el, in_response_to, KLE_NOT_FOUND);
+}
+
+static int localsock_return_internal_error(struct localapi *api, struct eventloop *el,
+                                           struct kitelocalmsg *in_response_to) {
+  return localsock_return_simple(api, el, in_response_to, KLE_SYSTEM_ERROR);
 }
 
 static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
@@ -575,6 +646,127 @@ static void localsock_crud_app(struct localapi *api, struct eventloop *el,
   localsock_respond(api, el, ret_buf, rspsz);
 }
 
+static void localsock_get_container(struct localapi *api, struct eventloop *el,
+                                    struct kitelocalmsg *msg, int msgsz) {
+  struct kitelocalattr *attr;
+
+  struct in_addr addr;
+  addr.s_addr = 0;
+
+  fprintf(stderr, "Request to get container\n");
+
+  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( KLA_NAME(attr) ) {
+    case KLA_ADDR:
+      fprintf(stderr, "got kla addr %ld\n", KLA_PAYLOAD_SIZE(attr));
+      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
+        memcpy(&addr.s_addr, KLA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
+      }
+      break;
+
+    default:break;
+    }
+  }
+
+  if ( addr.s_addr == 0 ){
+    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+  } else {
+    int err;
+    char str[INET_ADDRSTRLEN + 1];
+    struct arpdesc desc;
+    fprintf(stderr, "Going to lookup infermation for %s\n", inet_ntop(AF_INET, &addr, str, sizeof(str)));
+
+    err = bridge_describe_arp(&api->la_app_state->as_bridge, &addr, &desc, sizeof(desc));
+    if ( err == 0 )
+      localsock_return_not_found(api, el, msg);
+    else if ( err < 0 )
+      localsock_return_internal_error(api, el, msg);
+    else {
+      char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+      uint16_t code;
+
+      struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
+      int rspsz = KLM_SIZE_INIT;
+      attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+
+      rsp->klm_req = htons(KLM_RESPONSE | ntohs(msg->klm_req));
+      rsp->klm_req_flags = 0;
+      attr->kla_name = htons(KLA_RESPONSE_CODE);
+      attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+      code = htons(KLE_SUCCESS);
+      memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+      KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+      switch ( desc.ad_container_type ) {
+      case ARP_DESC_PERSONA:
+        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        assert(attr);
+        attr->kla_name = htons(KLA_CONTAINER_TYPE);
+        attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+        code = htons(desc.ad_container_type);
+        memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+        KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        assert(attr);
+        attr->kla_name = htons(KLA_PERSONA_ID);
+        attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
+        memcpy(KLA_DATA_UNSAFE(attr, void *), desc.ad_persona.ad_persona_id,
+               PERSONA_ID_LENGTH);
+        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        break;
+
+      case ARP_DESC_APP_INSTANCE:
+        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        assert(attr);
+        attr->kla_name = htons(KLA_CONTAINER_TYPE);
+        attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+        code = htons(desc.ad_container_type);
+        memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+        KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        assert(attr);
+        attr->kla_name = htons(KLA_PERSONA_ID);
+        attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
+        memcpy(KLA_DATA_UNSAFE(attr, void *), desc.ad_app_instance.ad_persona_id,
+               PERSONA_ID_LENGTH);
+        KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        assert(attr);
+        attr->kla_name = htons(KLA_APP_URL);
+        attr->kla_length = htons(KLA_SIZE(strlen(desc.ad_app_instance.ad_app_url)));
+        memcpy(KLA_DATA_UNSAFE(attr, void *), desc.ad_app_instance.ad_app_url,
+               strlen(desc.ad_app_instance.ad_app_url));
+        KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+        break;
+
+      default:
+        code = htons(KLE_SYSTEM_ERROR);
+        memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+        break;
+      }
+
+      localsock_respond(api, el, ret_buf, rspsz);
+    }
+  }
+}
+
+static void localsock_crud_container(struct localapi *api, struct eventloop *el,
+                                     struct kitelocalmsg *msg, int msgsz) {
+  switch ( KLM_REQ_OP(msg) ) {
+  case KLM_REQ_GET:
+    localsock_get_container(api, el, msg, msgsz);
+    break;
+
+  default:
+    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    break;
+  }
+}
+
 static void localsock_handle_message(struct localapi *api, struct eventloop *el,
                                      const char *buf, int buf_sz) {
   struct kitelocalmsg *msg;
@@ -599,6 +791,9 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
     break;
   case KLM_REQ_ENTITY_FLOCK:
     localsock_crud_flock(api, el, msg, buf_sz);
+    break;
+  case KLM_REQ_ENTITY_CONTAINER:
+    localsock_crud_container(api, el, msg, buf_sz);
     break;
   default:
     localsock_return_bad_entity(api, el, msg, KLM_REQ_ENTITY(msg));

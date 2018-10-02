@@ -20,6 +20,18 @@ int strncpy_safe(char *dst, const char *src, size_t sz) {
   }
 }
 
+int strncpy_fixed(char *dst, size_t dsz, const char *src, size_t ssz) {
+  if ( dsz <= ssz ) {
+    memcpy(dst, src, dsz);
+    dst[dsz - 1] = '\0';
+    return dsz;
+  } else {
+    memcpy(dst, src, ssz);
+    dst[ssz] = '\0';
+    return ssz;
+  }
+}
+
 int mkdir_recursive(const char *path) {
   char lpath[PATH_MAX], dir_path[PATH_MAX];
   char *cur_path, *saveptr, *cur_comp;

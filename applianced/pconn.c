@@ -2,6 +2,7 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <errno.h>
+#include <string.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <assert.h>
@@ -530,7 +531,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
         } else {
           BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
           BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, pkt_sz);
-          //          fprintf(stderr, "Accepting DTLS packet\n");
+          //fprintf(stderr, "Accepting DTLS packet of size %d\n", pkt_sz);
           if ( cs->cs_pconn->pc_state == PCONN_STATE_ESTABLISHED ) {
             unsigned char my_buf[sizeof(cs->cs_pconn->pc_incoming_pkt)];
             pkt_sz = SSL_read(cs->cs_pconn->pc_dtls, my_buf, sizeof(my_buf));
@@ -1079,7 +1080,8 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
       if ( pc->pc_state == PCONN_STATE_DTLS_ACCEPTING ||
            pc->pc_state == PCONN_STATE_DTLS_CONNECTING ) {
         //fprintf(stderr, "do handshake\n");
-        pconn_dtls_handshake(pc);
+        if ( pc->pc_dtls_needs_write )
+          pconn_dtls_handshake(pc);
       } else if ( local_cand &&
                   pc->pc_state == PCONN_STATE_ESTABLISHED &&
                   pconn_cs_idx(pc, cs) == local_cand->ic_candsrc_ix &&
@@ -1151,6 +1153,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_last_req = STUN_KITE_STARTCONN;
   ret->pc_sctp_port = 0;
   ret->pc_dtls = NULL;
+  ret->pc_dtls_needs_write = ret->pc_dtls_needs_read = 0;
 
   // Generate user fragment and password
   if ( !random_printable_string(ret->pc_our_ufrag, sizeof(ret->pc_our_ufrag)) ||
@@ -1374,7 +1377,8 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
   switch ( pc->pc_offer_line ) {
   case 0: OFFER_LINE("v=0");
   case 1:
-    OFFER_LINE("o=- %lu 2 IN %s %s", pc->pc_conn_id, addrty, addr_buf)
+    OFFER_LINE("o=- %u 2 IN %s %s", (unsigned int)(((uintptr_t)pc->pc_conn_id) & 0xFFFFFFFF),
+               addrty, addr_buf)
   case 2:
     OFFER_LINE("s=-");
   case 3:
@@ -1384,7 +1388,7 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
   case 5:
     OFFER_LINE("a=msid-semantic: WMS");
   case 6:
-    OFFER_LINE("m=application %d DTLS/SCTP webrtc-datachannel", pc->pc_sctp_port);
+    OFFER_LINE("m=application 9 DTLS/SCTP webrtc-datachannel");
   case 7:
     OFFER_LINE("c=IN %s %s", addrty, addr_buf);
   case 8:
@@ -1418,7 +1422,7 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
 
     OFFER_WRITE("a=fingerprint:sha-256");
     for ( i = 0; i < sizeof(digest); ++i )
-      OFFER_WRITE("%c%02x", i == 0 ? ' ' : ':',
+      OFFER_WRITE("%c%02X", i == 0 ? ' ' : ':',
                   digest[i]);
 
     OFFER_LINE_END;
@@ -2137,7 +2141,7 @@ static uint32_t icecand_recommend_priority(struct icecand *ic, uint16_t local_pr
   fprintf(stderr, "icecand_parse: at %d\n", (int)(start - start_init));
 #define ICECAND_PEEK(str)                                               \
   ( (end - start) >= strlen(str) &&                                     \
-    ( memcmp(start, (str), strlen(str)) == 0 ?                          \
+    ( strncasecmp(start, (str), strlen(str)) == 0 ?                     \
       (start += strlen(str), 1) : 0) )
 #define ICECAND_EXACT(str) do {                                         \
     if ( !(ICECAND_PEEK(str)) ) {                                       \
@@ -2201,6 +2205,7 @@ static int icecand_parse(struct icecand *ic, const char *start, const char *end)
     ic->ic_transport = IPPROTO_TCP;
   } else {
     fprintf(stderr, "icecand_parse: expected udp or tcp as proto\n");
+    fprintf(stderr, "Got %.*s\n", (int)(end - start), start);
     ICECAND_PRINT_POS;
     return -1;
   }
@@ -2304,9 +2309,16 @@ static int pconn_sdp_media_ctl_fn(void *pc_, int op, void *arg) {
       pc->pc_answer_flags |= PCONN_ANSWER_IS_DTLS_SCTP;
     return 0;
   case SPS_MEDIA_SET_FORMAT:
-    if ( strcmp(arg, "webrtc-datachannel") != 0 )
-      fprintf(stderr, "Expected 'webrtc-datachannel' as format, got %s\n", (char *)arg);
-    else
+    if ( strcmp(arg, "webrtc-datachannel") != 0 ) {
+      int port;
+      if ( parse_decimal(&port, arg, strlen(arg)) < 0 ) {
+        fprintf(stderr, "Expected 'webrtc-datachannel' or port as format, got %s\n", (char *)arg);
+        return -1;
+      } else {
+        pc->pc_answer_sctp = port;
+        pc->pc_answer_flags |= PCONN_ANSWER_NEEDS_SCTPMAP;
+      }
+    } else
       pc->pc_answer_flags |= PCONN_ANSWER_IS_WEBRTC_CHAN;
     return 0;
   case SPS_MEDIA_SET_PORTS:
@@ -2384,16 +2396,23 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
   struct pconn *pc = (struct pconn *) pc_;
 
   if ( (pc->pc_answer_flags & PCONN_ANSWER_IN_MEDIA_STREAM) == 0 ) {
-    fprintf(stderr, "Skipping session attribute %.*s\n",
-            (int) (nme - nms), nms);
+    if ( ATTR_IS("fingerprint") && vls && vle && vls != vle ) {
+      if ( pconn_parse_remote_fingerprint(pc, vls, vle) < 0 ) {
+        fprintf(stderr, "could not parse fingerprint\n");
+        return -1;
+      }
+    } else {
+      fprintf(stderr, "Skipping session attribute %.*s\n",
+              (int) (nme - nms), nms);
+    }
   } else if ( (pc->pc_answer_flags & PCONN_ANSWER_DAT_CHAN_CREATD) &&
               (pc->pc_answer_flags & PCONN_ANSWER_IN_DATA_CHANNEL) == 0 ) {
     fprintf(stderr, "Skipping attribute %.*s because we've already processed the data channel\n",
             (int) (nme - nms), nms);
     return 0;
   } else if ( (pc->pc_answer_flags & PCONN_ANSWER_IS_APP_CHANNEL) == 0 ||
-              (pc->pc_answer_flags & PCONN_ANSWER_IS_WEBRTC_CHAN) == 0 ||
-              (pc->pc_answer_flags & PCONN_ANSWER_IS_DTLS_SCTP) == 0) {
+              (pc->pc_answer_flags & (PCONN_ANSWER_IS_WEBRTC_CHAN | PCONN_ANSWER_NEEDS_SCTPMAP)) == 0 ||
+              (pc->pc_answer_flags & PCONN_ANSWER_IS_DTLS_SCTP) == 0 ) {
     fprintf(stderr, "Skipping attribute %.*s because this is not an application, WebRTC channel, or DTLS/SCTP channel\n",
             (int) (nme - nms), nms);
     return 0;
@@ -2438,6 +2457,31 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
         fprintf(stderr, "pconn_sdp_attr_fn: unknown setup value: %.*s\n", (int) (vle - vls), vls);
         return -1;
       }
+    } else if ( ATTR_IS("sctpmap") && vls && vle ) {
+      char *porte = memchr(vls, ' ', vle - vls);
+
+      if ( porte || (porte + 1) >= vle ) {
+        int port;
+        char *fmts = porte + 1;
+        char *fmte = memchr(fmts, ' ', vle - fmts);
+        if ( fmte ) {
+          if ( parse_decimal(&port, vls, porte - vls) < 0 ) {
+            fprintf(stderr, "Invalid port in sctpmap\n");
+          } else {
+            if ( strncmp(fmts, "webrtc-datachannel", fmte - fmts) == 0 ) {
+              if ( pc->pc_answer_sctp == 0 )
+                pc->pc_answer_sctp = port;
+              else if ( pc->pc_answer_sctp == port &&
+                        pc->pc_answer_flags & PCONN_ANSWER_NEEDS_SCTPMAP ) {
+                pc->pc_answer_flags |= PCONN_ANSWER_IS_WEBRTC_CHAN;
+              }
+            } else
+              fprintf(stderr, "pconn_sdp_attr_fn: sctpmap does not specify datachannel\n");
+          }
+        } else
+          fprintf(stderr, "pconn_sdp_attr_fn: no format in sctpmap\n");
+      } else
+        fprintf(stderr, "pconn_sdp_attr_fn: no format in sctpmap\n");
     } else if ( ATTR_IS("sctp-port") && vls && vle ) {
       int port = 0;
 
@@ -2584,6 +2628,8 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       pc->pc_state = PCONN_STATE_DTLS_LISTENING;
   }
 
+  pc->pc_dtls_needs_write = pc->pc_dtls_needs_read = 0;
+
   switch ( pc->pc_state ) {
   case PCONN_STATE_DTLS_LISTENING:
     addr = BIO_ADDR_new();
@@ -2601,10 +2647,12 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       err = SSL_get_error(pc->pc_dtls, err);
       switch ( err ) {
       case SSL_ERROR_WANT_READ:
+        pc->pc_dtls_needs_read = 1;
         fprintf(stderr, "DTLSv1_listen wants read\n");
         BIO_ADDR_free(addr);
         return;
       case SSL_ERROR_WANT_WRITE:
+        pc->pc_dtls_needs_write = 1;
         fprintf(stderr, "DTLSv1_listen wants write\n");
         CANDSRC_SUBSCRIBE_WRITE(src);
         BIO_ADDR_free(addr);
@@ -2628,9 +2676,11 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       err = SSL_get_error(pc->pc_dtls, err);
       switch ( err ) {
       case SSL_ERROR_WANT_READ:
+        pc->pc_dtls_needs_read = 1;
         fprintf(stderr, "SSL_acccept wants read\n");
         return;
       case SSL_ERROR_WANT_WRITE:
+        pc->pc_dtls_needs_write = 1;
         fprintf(stderr, "SSL_accept wants write\n");
         CANDSRC_SUBSCRIBE_WRITE(src);
         return;

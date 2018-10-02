@@ -1,7 +1,7 @@
-{ stork-app-module, system ? builtins.currentSystem }:
+{ kite-app-module, system ? builtins.currentSystem }:
 
-let stork-config = { config, pkgs, lib, ... }: {
-      imports = [ ./stork.nix (builtins.toPath stork-app-module) ];
+let kite-config = { config, pkgs, lib, ... }: {
+      imports = [ ./kite.nix (builtins.toPath kite-app-module) ];
 
       config = with lib; {
         boot.isContainer = true;
@@ -9,14 +9,14 @@ let stork-config = { config, pkgs, lib, ... }: {
         services.openssh.startWhenNeeded = false;
         environment.noXlibs = mkDefault true;
 
-        environment.systemPackages = [ config.stork.app ];
+        environment.systemPackages = [ config.kite.app ];
       };
 
       options = with lib; {
-        stork.app = lib.mkOption {
+        kite.app = lib.mkOption {
           type = lib.types.package;
           description = ''
-          A nix derivation providing the package that is used to launch the stork application
+          A nix derivation providing the package that is used to launch the kite application
           '';
         };
       };
@@ -24,11 +24,11 @@ let stork-config = { config, pkgs, lib, ... }: {
 
     eval = import <nixpkgs/nixos/lib/eval-config.nix> {
       inherit system;
-      modules = [ ./modules/top-level.nix (builtins.toPath stork-app-module) ];
+      modules = [ ./modules/top-level.nix (builtins.toPath kite-app-module) ];
     };
 
-    root = eval.config.stork.toplevel;
+    root = eval.config.kite.toplevel;
 
     pkgs = import <nixpkgs> {};
-in eval.config.stork.manifest
+in eval.config.kite.manifest
 

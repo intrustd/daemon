@@ -31,7 +31,7 @@ struct containerwaiter {
 };
 
 static void containerevtfn(struct eventloop *el, int op, void *arg);
-static void containerpermfn(struct arpentry *ae, struct brpermrequest *perm);
+static int containerpermfn(struct arpentry *ae, int op, void *arg, ssize_t sz);
 static int container_start(struct container *c);
 static int container_stop(struct container *c, struct eventloop *el);
 
@@ -355,7 +355,7 @@ static int container_start(struct container *c) {
     perror("container_start: recv(&c->c_arp_entry)");
     goto error;
   }
-  c->c_arp_entry.ae_permfn = containerpermfn;
+  c->c_arp_entry.ae_ctlfn = containerpermfn;
 
   err = bridge_add_arp(c->c_bridge, &c->c_arp_entry);
   if ( err < 0 ) {
@@ -557,7 +557,7 @@ static int container_start_child(void *c_) {
     return 1;
   }
 
-  arp_entry.ae_permfn = NULL;
+  arp_entry.ae_ctlfn = NULL;
   err = send(c->c_init_comm, &arp_entry, sizeof(arp_entry), 0);
   if ( err < 0 ) {
     perror("container_start_child: send(&arp_entry)");
@@ -724,10 +724,23 @@ int container_kill(struct container *c, pid_t pid, int sig) {
     return -1;
 }
 
-static void containerpermfn(struct arpentry *ae, struct brpermrequest *perm) {
+static int containerpermfn(struct arpentry *ae, int op, void * arg, ssize_t argl) {
   struct container *c = STRUCT_FROM_BASE(struct container, c_arp_entry, ae);
-  perm->bpr_user_data = c;
+  struct brpermrequest *perm;
 
-  qdevtsub_init(&perm->bpr_start_event, OP_CONTAINER_CHECK_PERM, containerevtfn);
-  eventloop_queue(perm->bpr_el, &perm->bpr_start_event);
+  switch ( op ) {
+  case ARP_ENTRY_CHECK_PERMISSION:
+    perm = arg;
+    perm->bpr_user_data = c;
+    qdevtsub_init(&perm->bpr_start_event, OP_CONTAINER_CHECK_PERM, containerevtfn);
+    eventloop_queue(perm->bpr_el, &perm->bpr_start_event);
+    return 0;
+
+  case ARP_ENTRY_DESCRIBE:
+    return c->c_control(c, CONTAINER_CTL_DESCRIBE, arg, argl);
+
+  default:
+    fprintf(stderr, "containerpermfn: unknown op %d\n", op);
+    return -2;
+  }
 }

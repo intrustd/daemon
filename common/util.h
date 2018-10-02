@@ -200,9 +200,7 @@ void BIO_static_set(BIO *b, struct BIO_static *st);
 int mkdir_recursive(const char *path);
 // Returns 0 if the src cannot fit in dst
 int strncpy_safe(char *dst, const char *src, size_t sz);
-
-#define strncpy_fixed(dst, dst_sz, src, src_sz) \
-  strncpy((dst), (src), (src_sz) < ((dst_sz) - 1) ? (src_sz) + 1 : (dst_sz) - 1)
+int strncpy_fixed(char *dst, size_t dsz, const char *src, size_t ssz);
 
 int recv_fd(int fd, size_t num, int *fds);
 int send_fd(int fd, size_t num, int *fds);
@@ -352,6 +350,8 @@ typedef union {
 int kite_sock_addr_equal(kite_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz);
 
 void print_hex_dump_fp(FILE *fp, const unsigned char *data, int data_sz);
+
+int fread_base64(FILE *sig, void **buf, size_t *buf_len);
 
 // fixed strings
 //struct fixedstr {

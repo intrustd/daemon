@@ -70,7 +70,7 @@ in pkgs.stdenv.mkDerivation {
 
   buildInputs = with pkgs; [
     pkgconfig cmake gdb openssl_1_1_0.dev
-    uriparser nodejs
+    uriparser nodejs-8_x
     uthash zlib
 
     ncat

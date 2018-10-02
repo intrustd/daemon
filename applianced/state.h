@@ -39,6 +39,9 @@ struct appstate {
 
   struct brstate as_bridge;
 
+  int as_trusted_key_count;
+  EVP_PKEY **as_trusted_keys;
+
   // Flocks that we have joined
   pthread_rwlock_t as_flocks_mutex;
   struct flock *as_flocks;
@@ -109,5 +112,8 @@ struct app *appstate_get_app_by_url(struct appstate *as, const char *canonical);
 
 int appstate_install_app_from_manifest(struct appstate *as, struct appmanifest *am);
 int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct appmanifest *am);
+
+// Update the application state (mainly the run_as_admin flag from the manifest)
+void appstate_update_application_state(struct appstate *as, struct app *a);
 
 #endif

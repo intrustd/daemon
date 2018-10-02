@@ -124,9 +124,12 @@ static int sdp_parse_attribute(struct sdpparsest *st, const char **nmsp, const c
 
   nme = &st->sps_line[st->sps_column_pos];
 
-  if ( st->sps_line[st->sps_column_pos] == '\0' )
-    SDP_ERROR(SPS_MISSING_ATTRIBUTE_VALUE);
-  else if ( st->sps_line[st->sps_column_pos] != ':' )
+  if ( st->sps_line[st->sps_column_pos] == '\0' ) {
+    *nmsp = nms;
+    *nmep = nme;
+    *vlsp = *vlep = NULL;
+    return 0;
+  } else if ( st->sps_line[st->sps_column_pos] != ':' )
     SDP_ERROR(SPS_MISSING_COLON);
   else {
     st->sps_column_pos++;

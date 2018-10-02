@@ -103,6 +103,8 @@ struct pconn {
   uint16_t pc_last_req;
 
   SSL *pc_dtls;
+  int pc_dtls_needs_write : 1;
+  int pc_dtls_needs_read : 1;
 
   // An event that is triggered to start action on this PCONN (ICE
   // candidate collection and other delayed initialization)
@@ -232,6 +234,7 @@ struct pconn {
 #define PCONN_ANSWER_IS_APP_CHANNEL  0x0400
 #define PCONN_ANSWER_IS_WEBRTC_CHAN  0x0800
 #define PCONN_ANSWER_IS_DTLS_SCTP    0x1000
+#define PCONN_ANSWER_NEEDS_SCTPMAP   0x2000
 
 #define PCONN_DATACHANNEL_MID "data"
 

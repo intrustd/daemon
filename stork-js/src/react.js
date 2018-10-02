@@ -159,6 +159,40 @@ export class KiteForm extends React.Component {
     }
 }
 
+export class KitePersonaButton extends React.Component {
+    constructor () {
+        super()
+
+        this.state = {}
+    }
+
+    componentDidMount() {
+        console.log("Fetching user information");
+        fetch("kite+app://flywithkite.com/admin/me",
+              { method: 'GET' })
+            .then((r) => r.json())
+            .then((r) => this.setState({ ourInfo: r }))
+    }
+
+    render() {
+        if ( this.state.ourInfo ) {
+            var ourInfo = this.state.ourInfo
+            if ( !ourInfo.hasOwnProperty("persona_id") ) {
+                return E('li', 'Error');
+            } else {
+                return E('li', {className: 'kite-persona-button'},
+                         this.state.ourInfo.persona_id,
+                         E('div', {className: 'uk-navbar-dropdown'},
+                           E('ul', {className: 'uk-nav uk-navbar-dropdown-nav'},
+                             E('li', {}, 'Settings...'))));
+            }
+        } else {
+            return E('li', {className: 'kite-persona-button kite-persona-button--loading'},
+                     E('i', {className: 'fa fa-spin fa-fw fa-2x fa-circle-o-notch'}));
+        }
+    }
+}
+
 //    var url = null;
 //    var srcUrl = null;
 //    var curBlob = null;

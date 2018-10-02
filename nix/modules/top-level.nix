@@ -1,27 +1,51 @@
 { config, pkgs, lib, ... }: {
-  imports = [ ] ; # ./activation.nix ];
+  imports = [ ./supervisord.nix ] ; # ./activation.nix ];
 
   options = with lib; {
-    stork.app-domain = mkOption {
+    kite.app-domain = mkOption {
       type = types.string;
       description = "App domain uri";
     };
-    stork.app-name = mkOption {
+    kite.app-name = mkOption {
       type = types.string;
       description = "A short alphanumeric name for this application";
     };
 
-    stork.startHook = mkOption {
+    kite.startHook = mkOption {
       type = types.string;
-      description = "Script to run when stork wants to start this application";
+      description = "Script to run when kite wants to start this application";
     };
 
-    stork.healthCheckHook = mkOption {
+    kite.healthCheckHook = mkOption {
       type = types.string;
-      description = "Script to run when stork wants to run a health check on this application";
+      description = "Script to run when kite wants to run a health check on this application";
     };
 
-    stork.systemPackages = mkOption {
+    kite.runAsAdmin = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        If true, this process is run with administrator privileges.
+
+        Currently, this means access to the local API socket.
+
+        Packages which request this permission may not receive it. Check to make sure.
+
+        Packages which request this permission will likely need to be signed.
+      '';
+    };
+
+    kite.singleton = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        If true, this container is only instantiated once for the entire system.
+
+        It can determine the source of a packet by asking the bridge controller.
+      '';
+    };
+
+    kite.systemPackages = mkOption {
       type = types.listOf types.package;
       default = [];
       example = literalExample "[ pkgs.bind ]";
@@ -32,39 +56,39 @@
       '';
     };
 
-    stork.pathsToLink = mkOption {
+    kite.pathsToLink = mkOption {
       type = types.listOf types.str;
       default = [];
       example = [ "/" ];
       description = "The list of paths to link under the root directory";
     };
 
-    stork.extraOutputsToInstall = mkOption {
+    kite.extraOutputsToInstall = mkOption {
       type = types.listOf types.str;
       default = [];
       example = [ "info" "dev" ];
       description = "List of additional derivation outputs to be linked to root directory";
     };
 
-    stork.toplevel = mkOption {
+    kite.toplevel = mkOption {
       type = types.package;
       internal = true;
       description = "The top-level package";
     };
 
-    stork.manifest = mkOption {
+    kite.manifest = mkOption {
       type = types.package;
       internal = true;
       description = "Manifest build";
     };
 
-    stork.meta = mkOption {
+    kite.meta = mkOption {
       type = types.submodule {
         options = {
           name = mkOption {
             type = types.str;
-            default = config.stork.app-name;
-            description = "Human-readable nme of package";
+            default = config.kite.app-name;
+            description = "Human-readable names of package";
           };
 
           authors = mkOption {
@@ -79,7 +103,7 @@
   };
 
   config = {
-    stork.systemPackages = with pkgs; [
+    kite.systemPackages = with pkgs; [
       utillinux
       coreutils
       glibc
@@ -87,7 +111,7 @@
       iproute
     ];
 
-    stork.pathsToLink = [
+    kite.pathsToLink = [
       "/bin"
       "/etc/xdg"
       "/etc/gtk-2.0"
@@ -110,28 +134,30 @@
       "/share/kxmlgui5"
     ];
 
-    stork.manifest = pkgs.writeText "${config.stork.app-name}-manifest"
+    kite.manifest = pkgs.writeText "${config.kite.app-name}-manifest"
       (builtins.toJSON {
-        name = config.stork.meta.name;
-#        authors = config.stork.meta.authors;
-        canonical = "kite+app://${config.stork.app-domain}/${config.stork.app-name}";
-        nix-closure = config.stork.toplevel;
+        name = config.kite.meta.name;
+#        authors = config.kite.meta.authors;
+        canonical = "kite+app://${config.kite.app-domain}/${config.kite.app-name}";
+        nix-closure = config.kite.toplevel;
+        runAsAdmin = config.kite.runAsAdmin;
+        singleton = config.kite.singleton;
       });
 
-    stork.toplevel =
+    kite.toplevel =
       let startScript = pkgs.writeScript "start-script" ''
             #!/bin/sh
-            ${config.stork.startHook}
+            ${config.kite.startHook}
           '';
           healthCheckScript = pkgs.writeScript "health-check" ''
             #!/bin/sh
-            ${config.stork.healthCheckHook}
+            ${config.kite.healthCheckHook}
           '';
       in pkgs.buildEnv {
-           name = "stork-environment-${config.stork.app-name}";
+           name = "kite-environment-${config.kite.app-name}";
            ignoreCollisions = true;
-           paths = config.stork.systemPackages;
-           inherit (config.stork) pathsToLink extraOutputsToInstall;
+           paths = config.kite.systemPackages;
+           inherit (config.kite) pathsToLink extraOutputsToInstall;
 
            postBuild = ''
              mkdir -p $out/dev
@@ -139,8 +165,10 @@
              mkdir -p $out/proc
              mkdir -p $out/dev
              mkdir -p $out/sys
-             mkdir -p $out/stork
+             mkdir -p $out/kite
              mkdir -p $out/app
+             mkdir -p $out/run
+             mkdir -p $out/var/log
              ln -s ${healthCheckScript} $out/app/hc
              ln -s ${startScript} $out/app/start
            '';

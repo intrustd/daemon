@@ -32,6 +32,7 @@ struct kitelocalattr {
 #define KLM_REQ_ENTITY_PERSONA 0x0100
 #define KLM_REQ_ENTITY_APP     0x0200
 #define KLM_REQ_ENTITY_FLOCK   0x0300
+#define KLM_REQ_ENTITY_CONTAINER 0x0400
 
 #define KLM_RESPONSE           0x8000
 
@@ -55,6 +56,8 @@ struct kitelocalattr {
 #define KLA_PERSONA_DISPLAYNM  0x000D
 #define KLA_PERSONA_PASSWORD   0x000E
 #define KLA_FORCE              0x000F
+#define KLA_ADDR               0x0010
+#define KLA_CONTAINER_TYPE     0x0011
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001
@@ -63,6 +66,7 @@ struct kitelocalattr {
 #define KLE_MISSING_ATTRIBUTES 0x0004
 #define KLE_INVALID_URL        0x0005
 #define KLE_SYSTEM_ERROR       0x0006
+#define KLE_NOT_FOUND          0x0007
 
 #define KLM_SIZE_INIT sizeof(struct kitelocalmsg)
 #define KLA_PAYLOAD_SIZE(a) (ntohs((a)->kla_length) - sizeof(struct kitelocalattr))

@@ -23,7 +23,7 @@ class GlobalAppliance {
     constructor ( flock, applianceName, defClient ) {
         this.flock = flock;
         this.applianceName = applianceName;
-        this.defaultPersona = defClient;
+        this.defaultPersona = defClient
         this.personas = {};
     }
 
@@ -33,7 +33,7 @@ class GlobalAppliance {
 
     getPersonaClient(persona) {
         if ( this.personas.hasOwnProperty(persona) )
-            return Promise.resolve(this.personas[persona]);
+            return this.personas[persona]
         else {
             console.error("TODO getPersonaClient");
         }
@@ -43,15 +43,19 @@ class GlobalAppliance {
         if ( this.defaultPersona.isLoggedIn() ) {
             return Promise.resolve(this.defaultPersona);
         } else {
-            return new Promise((resolve, reject) => {
-                var chooser = new PersonaChooser (this.defaultPersona);
-                chooser.addEventListener('persona-chosen', ({personaId, creds}) => {
-                    this.defaultPersona.tryLogin(personaId, creds)
-                        .then(() => { chooser.hide(); resolve(this.defaultPersona); },
-                              () => { chooser.showError(); })
+            if ( this.defaultPersonaPromise === undefined ) {
+                this.defaultPersonaPromise = new Promise((resolve, reject) => {
+                    var chooser = new PersonaChooser (this.defaultPersona);
+                    chooser.addEventListener('persona-chosen', ({personaId, creds}) => {
+                        this.defaultPersona.tryLogin(personaId, creds)
+                            .then(() => { chooser.hide(); resolve(this.defaultPersona); },
+                                  () => { chooser.showError(); })
+                    });
+                    chooser.addEventListener('cancel', () => { reject('canceled'); });
                 });
-                chooser.addEventListener('cancel', () => { reject('canceled'); });
-            });
+            }
+
+            return this.defaultPersonaPromise
         }
     }
 }
@@ -67,17 +71,16 @@ class GlobalFlock {
         return this.getAppliance(applianceName)
             .then((app) => {
                 console.log("Setting default appliance", app)
-                this.defaultAppliance = app;
+                this.defaultAppliance = Promise.resolve(app);
                 return app
             })
     }
 
     getAppliance(applianceName) {
+        console.log("Attempt to get ", applianceName);
         // Attempt connect to this appliance
-        if ( this.appliances.hasOwnProperty(applianceName) ) {
-            return Promise.resolve(this.appliances[applianceName]);
-        } else {
-            return new Promise((resolve, reject) => {
+        if ( !this.appliances.hasOwnProperty(applianceName) ) {
+            this.appliances[applianceName] = new Promise((resolve, reject) => {
                 console.log("Get appliance", applianceName)
                 var client = new FlockClient({ url: this.flockUrl,
                                                appliance: applianceName });
@@ -88,36 +91,39 @@ class GlobalFlock {
                 var onOpen = () => {
                     console.log("Appliance", applianceName, " opens")
                     removeEventListeners();
-                    this.appliances[applianceName] =
-                        new GlobalAppliance(this, applianceName, client);
-                    resolve(this.appliances[applianceName]);
+                    var app = new GlobalAppliance(this, applianceName, client);
+                    console.log("Got appliance app", app)
+                    resolve(app);
                 };
                 var onError = (e) => {
                     removeEventListeners();
+                    delete this.appliances[applianceName]
                     reject(e);
                 }
                 client.addEventListener('open', onOpen);
                 client.addEventListener('error', onError);
             });
         }
+
+        return this.appliances[applianceName]
     }
 
     getDefaultAppliance(options) {
         if (options === undefined) options = {}
 
-        if ( this.defaultAppliance )
-            return Promise.resolve(this.defaultAppliance);
-        else {
+        console.log("Request default")
+        if ( this.defaultAppliance === undefined ||
+             this.defaultAppliance === null ) {
             if ( options.silent ) return Promise.reject()
             else {
-                return new Promise((resolve, reject) => {
+                this.defaultAppliance = new Promise((resolve, reject) => {
+                    console.log("Starting new appliance chooser for", this.flockUrl)
                     var chooser = new ApplianceChooser(this.flockUrl);
                     chooser.addEventListener('appliance-chosen', (e) => {
                         this.getAppliance(e.device).then(
                             (devClient) => {
                                 chooser.hide();
                                 resolve(devClient)
-                                this.defaultAppliance = devClient
                             },
                             (e) => { console.error(e); chooser.signalError() }
                         );
@@ -126,6 +132,8 @@ class GlobalFlock {
                 });
             }
         }
+
+        return this.defaultAppliance
     }
 };
 
@@ -532,32 +540,38 @@ export default function kiteFetch (req, init) {
                 appliancePromise = applianceByName(init.applianceName)
                 delete init.applianceName
             } else {
-                var appliancePromise =
-                    // Check if any global flock has a default appliance
-                    applianceByName()
-                    .catch(() => {
-                        return new Promise((resolve, reject) => {
-                            var chooser = new ApplianceChooser(flockUrls)
-                            chooser.addEventListener('appliance-chosen', (e) => {
-                                applianceByName(e.device).then(
-                                    (devClient) => {
-                                        chooser.hide()
-                                    devClient.markDefault()
-                                            .then(() => { resolve(devClient) })
-                                    },
-                                    (e) => {
-                                        console.error(e)
-                                        chooser.signalError(e)
+                if ( kiteFetch.appliancePromise === undefined ){
+                    kiteFetch.appliancePromise =
+                        // Check if any global flock has a default appliance
+                        applianceByName()
+                        .catch(() => {
+                            return new Promise((resolve, reject) => {
+                                var chooser = new ApplianceChooser(flockUrls)
+                                chooser.addEventListener('appliance-chosen', (e) => {
+                                    applianceByName(e.device).then(
+                                        (devClient) => {
+                                            chooser.hide()
+                                            devClient.markDefault()
+                                                .then(() => { resolve(devClient) })
+                                        },
+                                        (e) => {
+                                            console.error(e)
+                                            chooser.signalError(e)
+                                        })
                                 })
+                                chooser.addEventListener('cancel', () => reject('canceled'))
                             })
-                        chooser.addEventListener('cancel', () => reject('canceled'))
                         })
-                    })
+                }
+                appliancePromise = kiteFetch.appliancePromise
             }
 
             if ( init.hasOwnProperty('persona') ) {
                 var persona = init.persona;
-                clientPromise = appliancePromise.then((appliance) => appliance.getPersonaClient(persona));
+                clientPromise = appliancePromise.then((appliance) => {
+                    console.log("Got appliance", appliance)
+                    return appliance.getPersonaClient(persona);
+                })
                 delete init.persona;
             } else {
                 clientPromise = appliancePromise.then((appliance) => appliance.getDefaultPersonaClient());

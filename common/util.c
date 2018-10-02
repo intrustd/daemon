@@ -2,8 +2,11 @@
 #include <arpa/inet.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <openssl/bio.h>
+ #include <openssl/evp.h>
 
 #include "util.h"
+#include "buffer.h"
 
 int parse_hex_str(const char *digest, unsigned char *out, int out_sz) {
   int i = 0;
@@ -321,4 +324,39 @@ void print_hex_dump_fp(FILE *fp, const unsigned char *data, int data_sz) {
     case 0: PRINT_CHAR; fprintf(fp, "\n");
     }
   }
+}
+
+int fread_base64(FILE *sig, void **buf, size_t *buf_len) {
+  BIO *b64, *fp;
+  int in_len;
+
+  char inbuf[512];
+
+  struct buffer ret;
+  buffer_init(&ret);
+
+  b64 = BIO_new(BIO_f_base64());
+  if ( !b64 ) return -1;
+
+  fp = BIO_new_fp(sig, BIO_NOCLOSE);
+  if ( !fp ) {
+    BIO_free_all(b64);
+    return -1;
+  }
+
+  BIO_push(b64, fp);
+
+  while ( (in_len = BIO_read(b64, inbuf, sizeof(inbuf))) > 0 ) {
+    if ( buffer_write(&ret, inbuf, in_len) < 0 ) {
+      BIO_free_all(b64);
+      buffer_finalize(&ret, (const char **)buf, buf_len);
+      if ( *buf ) free(*buf);
+      *buf = NULL;
+      *buf_len = 0;
+      return -1;
+    }
+  }
+
+  buffer_finalize(&ret, (const char **) buf, buf_len);
+  return 0;
 }

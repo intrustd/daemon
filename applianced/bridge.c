@@ -359,7 +359,7 @@ static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
           struct arpentry *arp;
 
           HASH_FIND(ae_hh, br->br_arp_table, &hdr_ip->saddr, sizeof(hdr_ip->saddr), arp);
-          if ( arp && arp->ae_permfn ) {
+          if ( arp && arp->ae_ctlfn ) {
             struct brpermrequest *bpr = malloc(sizeof(*bpr) + app_name_len);
             if ( !bpr ) {
               fprintf(stderr, "bridge_process_udp: could not allocate bpr request\n");
@@ -377,7 +377,7 @@ static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
             bpr->bpr_perm.bp_type = BR_PERM_APPLICATION;
             memcpy(bpr->bpr_perm.bp_data, buf, app_name_len);
             qdevtsub_init(&bpr->bpr_finished_event, OP_BRIDGE_BPR_FINISHED, bridgefn);
-            arp->ae_permfn(arp, bpr);
+            arp->ae_ctlfn(arp, ARP_ENTRY_CHECK_PERMISSION, bpr, sizeof(*bpr) + app_name_len);
           }
           pthread_rwlock_unlock(&br->br_arp_mutex);
         }
@@ -829,6 +829,7 @@ static void setup_namespace_users(uid_t uid, gid_t gid) {
     exit(1);
   }
   fprintf(gid_map, "0 %d 1\n", gid);
+  //  fprintf(gid_map, "101 %d 1\n", gid);
   fclose(gid_map);
 
   uid_map = fopen("/proc/self/uid_map", "wt");
@@ -837,6 +838,7 @@ static void setup_namespace_users(uid_t uid, gid_t gid) {
     exit(1);
   }
   fprintf(uid_map, "0 %d 1\n", uid);
+  //  fprintf(uid_map, "1001 %d 1\n", uid);
   fclose(uid_map);
 
   err = setreuid(0, 0);
@@ -1574,4 +1576,22 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
   }
 
   bpr_release(bpr);
+}
+
+int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *desc, size_t desc_sz) {
+  if ( pthread_rwlock_rdlock(&br->br_arp_mutex) == 0 ) {
+    int ret = 0;
+    struct arpentry *arp;
+    HASH_FIND(ae_hh, br->br_arp_table, ip, sizeof(*ip), arp);
+    if ( !arp ) ret = 0;
+    else {
+      if ( arp->ae_ctlfn ) {
+        ret = arp->ae_ctlfn(arp, ARP_ENTRY_DESCRIBE, desc, desc_sz);
+        if ( ret >= 0 ) ret = 1;
+      }
+    }
+    pthread_rwlock_unlock(&br->br_arp_mutex);
+    return ret;
+  } else
+    return -1;
 }

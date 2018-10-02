@@ -8,7 +8,6 @@
 #include "container.h"
 
 #define APP_SCHEME   "kite+app"
-#define APP_URL_MAX 1024
 #define APP_MANIFEST_MAX_SIZE (64 * 1024)
 
 struct appinstance {
@@ -37,6 +36,8 @@ struct appmanifest {
 
   unsigned char am_digest[SHA256_DIGEST_LENGTH];
 
+  uint32_t am_flags;
+
   // The entire manifest file, stored in memory
   unsigned int am_major, am_minor, am_revision;
 
@@ -47,6 +48,9 @@ struct appmanifest {
   size_t am_bin_caches_count;
   const char **am_bin_caches;
 };
+
+#define APPMANIFEST_FLAG_RUN_AS_ADMIN 0x1
+#define APPMANIFEST_FLAG_SINGLETON    0x2
 
 #define APPMANIFEST_REF(au) SHARED_REF(&(au)->am_shared)
 #define APPMANIFEST_UNREF(au) SHARED_UNREF(&(au)->am_shared)
@@ -75,6 +79,7 @@ struct app {
 #define APP_FLAG_UPDATING          0x4
 #define APP_FLAG_BUILT             0x8
 #define APP_FLAG_DOWNLOADING_MFST  0x10
+#define APP_FLAG_RUN_AS_ADMIN      0x20
 
 #define APPLICATION_REF(app) SHARED_REF(&(app)->app_shared)
 #define APPLICATION_UNREF(app) SHARED_UNREF(&(app)->app_shared)
