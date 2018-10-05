@@ -327,7 +327,7 @@ void dump_address(FILE *f, void *addr, socklen_t addr_sz);
 #else
 #define SAFE_ASSERT(c) do {                                             \
     if ( !(c) ) {                                                       \
-      fprintf(stderr, "SAFE_ASSERT: " __FILE__ ": %d: " #c ": failed\n", __LINE__); \
+      fprintf(stderr, "SAFE_ASSERT: " __FILE__ ": %d: %s: failed\n", __LINE__, #c); \
       abort();                                                          \
     }                                                                   \
   } while (0)

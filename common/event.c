@@ -311,6 +311,9 @@ static void eventloop_add_timer_to_heap(struct eventloop *el, struct timersub *s
   if ( el->el_flags & EL_FLAG_DEBUG_TIMERS )
     fprintf(stderr, "Adding timer to heap with %d timers\n", el->el_tmr_count);
 
+  SAFE_ASSERT( el->el_next_tmr != sub &&
+               !sub->ts_parent );
+
   if ( el->el_tmr_count > 0 ) {
     parent = *(eventloop_find_timer_by_idx(el, (el->el_tmr_count - 1) >> 1));
     SAFE_ASSERT(parent);

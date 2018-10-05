@@ -23,10 +23,13 @@
 #define OP_APPSTATE_ACCEPT_LOCAL EVT_CTL_CUSTOM
 #define OP_APPSTATE_SAVE_FLOCK   (EVT_CTL_CUSTOM + 1)
 #define OP_APPSTATE_APPLICATION_UPDATED (EVT_CTL_CUSTOM + 2)
+#define OP_APPSTATE_AUTOSTART_APPS (EVT_CTL_CUSTOM + 3)
 
 #define FLOCKS_PATH_TEMPLATE "%s/flocks"
 #define APPS_PATH_TEMPLATE "%s/apps"
 #define TMP_APPS_PATH_TEMPLATE "%s/.apps.tmp"
+
+#define KITE_ADMIN_URL "kite+app://flywithkite.com/admin"
 
 int g_openssl_appstate_ix;
 int g_openssl_flock_data_ix;
@@ -72,8 +75,6 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
 
   ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
 
-  fprintf(stderr, "Certificate depth %d\n", depth);
-
   if ( depth > FLOCK_MAX_CERT_DEPTH )
     return 0;
 
@@ -92,7 +93,6 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
       }
 
       if ( memcmp(digest_out, f->f_expected_digest, sizeof(digest_out)) == 0 ) {
-        fprintf(stderr, "appstate_verify_callback: success\n");
         return 1;
       } else {
         char digest_str[sizeof(digest_out)*2];
@@ -1131,7 +1131,7 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   }
 
   if ( !(AC_VALGRIND(ac)) ) {
-    err = bridge_init(&as->as_bridge, as, ac->ac_iproute_bin);
+    err = bridge_init(&as->as_bridge, as, ac->ac_iproute_bin, ac->ac_ebroute_bin);
     if ( err < 0 ) {
       fprintf(stderr, "appstate_setup: bridge_init failed\n");
       goto error;
@@ -1218,7 +1218,29 @@ static void appstatefn(struct eventloop *el, int op, void *arg) {
   char flock_line[1024];
   unsigned char pk_digest[FLOCK_SIGNATURE_DIGEST_SZ];
 
+  struct app *app, *tmp_app;
+
   switch ( op ) {
+  case OP_APPSTATE_AUTOSTART_APPS:
+    // Automatically launch auto start, singleton apps
+    SAFE_RWLOCK_RDLOCK(&as->as_applications_mutex);
+    HASH_ITER(app_hh, as->as_apps, app, tmp_app) {
+      int autostart = 0;
+      // Start this application
+      if ( pthread_mutex_lock(&app->app_mutex) == 0 ) {
+        autostart = app->app_flags & APP_FLAG_AUTOSTART;
+        if ( autostart )
+          fprintf(stderr, "Starting %s\n", app->app_canonical_url);
+        pthread_mutex_unlock(&app->app_mutex);
+      }
+
+      if ( autostart ) {
+        launch_app_instance(as, NULL, app);
+      }
+    }
+    pthread_rwlock_unlock(&as->as_applications_mutex);
+    break;
+
   case OP_APPSTATE_ACCEPT_LOCAL:
     fprintf(stderr, "Attempting to accept connection\n");
     //    fde = (struct fdevent *)arg;
@@ -1287,6 +1309,9 @@ void appstate_start_services(struct appstate *as, struct appconf *ac) {
 
   fdsub_init(&as->as_local_sub, &as->as_eventloop, as->as_local_fd, OP_APPSTATE_ACCEPT_LOCAL, appstatefn);
   eventloop_subscribe_fd(&as->as_eventloop, as->as_local_fd, FD_SUB_ACCEPT, &as->as_local_sub);
+
+  qdevtsub_init(&as->as_autostart_evt, OP_APPSTATE_AUTOSTART_APPS, appstatefn);
+  eventloop_queue(&as->as_eventloop, &as->as_autostart_evt);
 }
 
 int appstate_create_flock(struct appstate *as, struct flock *f, int is_old) {
@@ -1797,10 +1822,21 @@ static int appstate_can_run_as_admin(struct appstate *as, struct app *a) {
 
 void appstate_update_application_state(struct appstate *as, struct app *a) {
   SAFE_MUTEX_LOCK(&a->app_mutex);
-  a->app_flags &= ~APP_FLAG_RUN_AS_ADMIN;
-  if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN ) {
-    if ( appstate_can_run_as_admin(as, a) )
-      a->app_flags |= APP_FLAG_RUN_AS_ADMIN;
+  a->app_flags &= ~(APP_FLAG_RUN_AS_ADMIN | APP_FLAG_SINGLETON);
+  if ( a->app_current_manifest->am_flags &
+         (APPMANIFEST_FLAG_RUN_AS_ADMIN | APPMANIFEST_FLAG_SINGLETON) ) {
+    fprintf(stderr, "Requesting run as singleton or admin %p\n", a);
+    if ( appstate_can_run_as_admin(as, a) ) {
+      if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN )
+        a->app_flags |= APP_FLAG_RUN_AS_ADMIN;
+      if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_SINGLETON )
+        a->app_flags |= APP_FLAG_SINGLETON;
+
+      if ( strcmp(a->app_canonical_url, KITE_ADMIN_URL) == 0 ) {
+        fprintf(stderr, "Setting as autostart %s\n", a->app_canonical_url);
+        a->app_flags |= APP_FLAG_AUTOSTART;
+      }
+    }
   }
   pthread_mutex_unlock(&a->app_mutex);
 }

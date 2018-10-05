@@ -22,6 +22,24 @@ let servicesType = with lib; {
           default = {};
           description = "Extra environment variables";
         };
+
+        priority = mkOption {
+          type = types.nullOr types.int;
+          default = null;
+          description = "Relative priority";
+        };
+
+        autorestart = mkOption {
+          type = types.str;
+          default = "true";
+          description = "Whether to restart the program";
+        };
+
+        oneshot = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Whether this is a oneshot";
+        };
       };
     };
 in {
@@ -60,13 +78,20 @@ in {
         mkEnvironmentVars = env: lib.concatStringsSep ", " (lib.mapAttrsToList mkEnvironmentVar env);
         mkEnvironmentVar = var: val: "${var}=\"${val}\"";
 
+        oneShotConf = ''
+          startsecs=0
+          exitcodes=0
+        '';
         mkServiceConfig = name: cfg:
           let environment = mkEnvironmentVars cfg.environment;
           in ''
             [program:${name}]
             command=${pkgs.writeScript "start-${name}" (mkScript cfg.startExec)}
             autostart=${if cfg.autostart then "true" else "false"}
+            autorestart=${cfg.autorestart}
+            ${if cfg.oneshot then oneShotConf else ""}
             ${if environment == "" then "" else "environment=${environment}"}
+            ${if isNull cfg.priority then "" else "priority=${builtins.toString cfg.priority}"}
           '';
 
         serviceConfigs = lib.mapAttrsToList mkServiceConfig config.kite.services;

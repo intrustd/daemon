@@ -168,9 +168,20 @@
              mkdir -p $out/kite
              mkdir -p $out/app
              mkdir -p $out/run
+             mkdir -p $out/etc
              mkdir -p $out/var/log
              ln -s ${healthCheckScript} $out/app/hc
              ln -s ${startScript} $out/app/start
+
+             cat >$out/etc/passwd <<EOF
+             root:x:0:0:System administrator:/kite:${pkgs.bash}/bin/bash
+             kite:x:1001:100:Kite user:/kite:${pkgs.bash}/bin/bash
+             EOF
+
+             cat >$out/etc/group <<EOF
+             root:x:0:
+             kite:x:100:
+             EOF
            '';
          };
   };

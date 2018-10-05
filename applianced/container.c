@@ -43,6 +43,7 @@ static int g_child_sync_pipes[] = { -1, -1 }; // No need for synchronization bec
 
 void container_clear(struct container *c) {
   c->c_bridge = NULL;
+  c->c_flags = 0;
   c->c_init_process = -1;
   c->c_init_comm = -1;
   c->c_bridge_port = -1;
@@ -52,7 +53,7 @@ void container_clear(struct container *c) {
   c->c_running_refs = 0;
 }
 
-int container_init(struct container *c, struct brstate *br, containerctlfn cfn) {
+int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags) {
   container_clear(c);
 
   if ( pthread_mutex_init(&c->c_mutex, NULL) < 0 )
@@ -60,6 +61,7 @@ int container_init(struct container *c, struct brstate *br, containerctlfn cfn) 
 
   c->c_bridge = br;
   c->c_control = cfn;
+  c->c_flags = flags;
 
   bridge_allocate(br, &c->c_ip, &c->c_bridge_port);
 
@@ -110,13 +112,22 @@ int container_ensure_running(struct container *c, struct eventloop *el) {
 
 int container_release_running(struct container *c, struct eventloop *el) {
   if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
+    int ret = 0;
+    SAFE_ASSERT( c->c_running_refs > 0 );
     c->c_running_refs--;
+
     if ( c->c_running_refs == 0 ) {
-      timersub_set_from_now(&c->c_timeout, CONTAINER_TIMEOUT);
+      if ( c->c_flags & CONTAINER_FLAG_KILL_IMMEDIATELY ) {
+        timersub_set_from_now(&c->c_timeout, 0);
+      } else {
+        timersub_set_from_now(&c->c_timeout, CONTAINER_TIMEOUT);
+      }
+
       eventloop_subscribe_timer(el, &c->c_timeout);
+      ret = 1;
     }
     pthread_mutex_unlock(&c->c_mutex);
-    return 0;
+    return ret;
   } else
     return -1;
 }
@@ -174,33 +185,10 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
 }
 
 static int container_enable_sctp_intl(struct container *c) {
-  char proc_path[PATH_MAX], sctp_intl_path[PATH_MAX];
-  int err, ret = -1;
+  int ret = -1;
   FILE *en;
 
-  if ( c->c_control(c, CONTAINER_CTL_GET_TMP_PATH, proc_path, PATH_MAX) < 0 ) {
-    return -1;
-  }
-
-  if ( mkdir_recursive(proc_path) < 0 ) {
-    perror("container_enable_sctp_intl: mkdir_recursive");
-    return -1;
-  }
-
-  if ( mount("proc", proc_path, "proc", 0, "") < 0 ) {
-    perror("container_enable_sctp_intl: mount");
-    return -1;
-  }
-
-  err = snprintf(sctp_intl_path, sizeof(sctp_intl_path),
-                 "%s/sys/net/sctp/intl_enable", proc_path);
-  if ( err >= sizeof(sctp_intl_path) ) {
-    fprintf(stderr, "container_enable_sctp_intl: path is too long\n");
-    ret = -1;
-    goto error;
-  }
-
-  en = fopen(sctp_intl_path, "wt");
+  en = fopen("/proc/sys/net/sctp/intl_enable", "wt");
   if ( !en ) {
     perror("fopen /proc/sys/net/sctp/intl_enable");
     ret = -1;
@@ -211,15 +199,7 @@ static int container_enable_sctp_intl(struct container *c) {
     ret = 0;
   }
 
-  err = snprintf(sctp_intl_path, sizeof(sctp_intl_path),
-                 "%s/sys/net/sctp/reconf_enable", proc_path);
-  if ( err >= sizeof(sctp_intl_path) ) {
-    fprintf(stderr, "container_enable_sctp_intl: reconf path is too long\n");
-    ret = -1;
-    goto error;
-  }
-
-  en = fopen(sctp_intl_path, "wt");
+  en = fopen("/proc/sys/net/sctp/reconf_enable", "wt");
   if ( !en ) {
     perror("fopen /proc/sys/net/sctp/reconf_enable");
     ret = -1;
@@ -231,9 +211,6 @@ static int container_enable_sctp_intl(struct container *c) {
   }
 
  error:
-  if ( umount(proc_path) < 0 ) {
-    perror("container_enable_sctp_intl: umount");
-  }
 
   return ret;
 }
@@ -257,6 +234,7 @@ static int container_start(struct container *c) {
   } else if ( child == 0 ) {
     char *child_stack = NULL;
     int yes = 1;
+    int clone_flags = CLONE_PARENT | SIGCHLD;
     size_t child_stack_sz = 256 * 1024;
 
     err = posix_memalign((void **)&child_stack, sysconf(_SC_PAGE_SIZE), child_stack_sz);
@@ -284,10 +262,19 @@ static int container_start(struct container *c) {
     // Because we've forked, writing this does not overwrite the value in the parent process
     c->c_init_comm = ipc_sockets[1];
 
+    if ( c->c_flags & CONTAINER_FLAG_NETWORK_ONLY ) {
+      clone_flags |= CLONE_NEWNET | CLONE_NEWUTS;
+    } else {
+      clone_flags |= CLONE_NEWCGROUP | CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS |
+        CLONE_NEWPID | CLONE_NEWUTS;
+    }
+
+    if ( c->c_flags & CONTAINER_FLAG_ENABLE_SCTP ) {
+      clone_flags |= CLONE_NEWNS;
+    }
+
     real_child = clone(container_start_child, child_stack + child_stack_sz,
-                       CLONE_NEWCGROUP | CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS |
-                       CLONE_NEWPID | CLONE_NEWUTS | CLONE_PARENT | SIGCHLD,
-                       (void *)c);
+                       clone_flags, (void *)c);
     if ( real_child < 0 ) {
       perror("container_start: clone");
       exit(1);
@@ -564,18 +551,22 @@ static int container_start_child(void *c_) {
     return 1;
   }
 
+  memcpy(&c->c_arp_entry, &arp_entry, sizeof(c->c_arp_entry));
+
   fprintf(stderr, "Done setting up container. Listing devices...\n");
   err = system("ifconfig -a");
   fprintf(stderr, "Listing routes\n");
   err = system("route");
 
-  fprintf(stderr, "Enable SCTP interleaving\n");
+  if ( c->c_flags & CONTAINER_FLAG_ENABLE_SCTP ) {
+    fprintf(stderr, "Enable SCTP interleaving\n");
 
-  // Set SCTP interleaving
-  err = container_enable_sctp_intl(c);
-  if ( err < 0 ) {
-    fprintf(stderr, "container_enable_sctp_intl returned error\n");
-    return EXIT_FAILURE;
+    // Set SCTP interleaving
+    err = container_enable_sctp_intl(c);
+    if ( err < 0 ) {
+      fprintf(stderr, "container_enable_sctp_intl returned error\n");
+      return EXIT_FAILURE;
+    }
   }
 
   // Now run container setup

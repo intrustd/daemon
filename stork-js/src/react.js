@@ -169,19 +169,28 @@ export class KitePersonaButton extends React.Component {
     componentDidMount() {
         console.log("Fetching user information");
         fetch("kite+app://flywithkite.com/admin/me",
-              { method: 'GET' })
+              { method: 'GET', cache: 'no-store' })
             .then((r) => r.json())
             .then((r) => this.setState({ ourInfo: r }))
+            .catch((e) => console.error("error fetching info", e))
     }
 
     render() {
         if ( this.state.ourInfo ) {
             var ourInfo = this.state.ourInfo
+            var { persona_id, persona } = ourInfo
             if ( !ourInfo.hasOwnProperty("persona_id") ) {
                 return E('li', 'Error');
             } else {
+                var personaInfo
+
+                if ( persona && persona.display_name )
+                    personaInfo = persona.display_name
+                else
+                    personaInfo = persona_id
+
                 return E('li', {className: 'kite-persona-button'},
-                         this.state.ourInfo.persona_id,
+                         personaInfo,
                          E('div', {className: 'uk-navbar-dropdown'},
                            E('ul', {className: 'uk-nav uk-navbar-dropdown-nav'},
                              E('li', {}, 'Settings...'))));

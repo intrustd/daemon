@@ -10,10 +10,13 @@
 #define APP_SCHEME   "kite+app"
 #define APP_MANIFEST_MAX_SIZE (64 * 1024)
 
+struct appstate;
 struct appinstance {
   struct shared   inst_shared;
   struct app     *inst_app;
   struct persona *inst_persona;
+
+  struct appstate *inst_appstate;
 
   // A mutex controlling access to the init process
   pthread_mutex_t inst_mutex;
@@ -71,7 +74,10 @@ struct app {
   // The application manifest provides data about this application
   struct appmanifest *app_current_manifest;
 
+  // A hash table of persona ids to appinstances
   struct appinstance *app_instances;
+
+  struct appinstance *app_singleton;
 };
 
 #define APP_FLAG_MUTEX_INITIALIZED 0x1
@@ -80,6 +86,10 @@ struct app {
 #define APP_FLAG_BUILT             0x8
 #define APP_FLAG_DOWNLOADING_MFST  0x10
 #define APP_FLAG_RUN_AS_ADMIN      0x20
+#define APP_FLAG_SINGLETON         0x40
+#define APP_FLAG_AUTOSTART         0x80
+
+#define APP_HAS_UNIVERSAL_ACCESS(app) ((app)->app_flags & APP_FLAG_RUN_AS_ADMIN)
 
 #define APPLICATION_REF(app) SHARED_REF(&(app)->app_shared)
 #define APPLICATION_UNREF(app) SHARED_UNREF(&(app)->app_shared)

@@ -23,6 +23,7 @@ struct arpdesc {
   union {
     struct {
       char ad_persona_id[PERSONA_ID_LENGTH];
+      uint64_t ad_conn_id;
     } ad_persona;
     struct {
       char ad_persona_id[PERSONA_ID_LENGTH];
@@ -100,6 +101,7 @@ struct brstate {
   uint32_t br_mutexes_initialized;
 
   const char *br_iproute_path;
+  const char *br_ebroute_path;
 
   uid_t br_uid;
   gid_t br_gid;
@@ -137,7 +139,7 @@ struct brstate {
 #define BR_SCTP_MUTEX_INITIALIZED  0x8
 
 void bridge_clear(struct brstate *br);
-int bridge_init(struct brstate *br, struct appstate *as, const char *iproute_path);
+int bridge_init(struct brstate *br, struct appstate *as, const char *iproute_path, const char *ebroute_path);
 void bridge_release(struct brstate *br);
 
 void bridge_start(struct brstate *br, struct eventloop *el);
@@ -170,5 +172,15 @@ int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
 int bridge_disconnect_port(struct brstate *br, int port);
 
 int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *desc, size_t desc_sz);
+
+int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *mac);
+
+// Ask to write out the routes for the given site. If the site
+// permissions do not exist, this will create the site permissions
+// directory.
+//
+// pc should be locked
+struct pconn;
+int bridge_write_site_routes(struct brstate *br, struct pconn *pc);
 
 #endif

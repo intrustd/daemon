@@ -27,6 +27,8 @@ static void usage(const char *msg) {
   fprintf(stderr,
           "  -c, --conf-dir <DIR>          Appliance configuration directory\n");
   fprintf(stderr,
+          "  --ebroute <EBROUTE>           Path to 'ebroute' executable\n");
+  fprintf(stderr,
           "  --iproute <IPROUTE>           Path to 'iproute' executable\n");
   fprintf(stderr,
           "  --webrtc-proxy <PROXY>        Path to 'webrtc-proxy' executable\n");
@@ -62,7 +64,7 @@ static const char *nix_build(const char *pkg_name, const char *suffix) {
     perror("execlp(nix-build)");
     exit(1);
   } else {
-    int sts;
+    int sts, sz;
     char path[PATH_MAX], *ret;
 
     close(p[1]);
@@ -85,13 +87,19 @@ static const char *nix_build(const char *pkg_name, const char *suffix) {
       close(p[0]);
       return NULL;
     }
-    path[strnlen(path, sizeof(path)) - 1] = '\0'; // Remove newline
+
+    if ( err > 0 )
+      path[err - 1] = '\0'; // Remove newline
 
     close(p[0]);
 
-    ret = malloc(strnlen(path, sizeof(path)) + strlen(suffix) + 2);
-    snprintf(ret, strnlen(path, sizeof(path)) + strlen(suffix) + 2,
-             "%s/%s", path, suffix);
+    sz = strlen(path) + strlen(suffix) + 2;
+    ret = malloc(sz);
+    if ( !ret ) {
+      fprintf(stderr, "nix_build: could not build %s\n", pkg_name);
+      abort();
+    }
+    SAFE_ASSERT( snprintf(ret, sz, "%s/%s", path, suffix) == (sz - 1) );
     return ret;
   }
 }
@@ -99,6 +107,7 @@ static const char *nix_build(const char *pkg_name, const char *suffix) {
 void appconf_init(struct appconf *ac) {
   ac->ac_conf_dir = NULL;
   ac->ac_iproute_bin = NULL;
+  ac->ac_ebroute_bin = NULL;
   ac->ac_webrtc_proxy_path = NULL;
   ac->ac_persona_init_path = NULL;
   ac->ac_app_instance_init_path = NULL;
@@ -149,6 +158,7 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "help", no_argument, &help_flag, 1 },
     { "conf-dir", required_argument, 0, 'c' },
     { "iproute", required_argument, 0, 'I' },
+    { "ebroute", required_argument, 0, 'E' },
     { "valgrind", no_argument, 0, VALGRIND_FLAG },
     { "webrtc-proxy", required_argument, 0, WEBRTC_PROXY_OPTION },
     { "persona-init", required_argument, 0, PERSONA_INIT_OPTION },
@@ -192,6 +202,10 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
 
     case 'I':
       ac->ac_iproute_bin = optarg;
+      break;
+
+    case 'E':
+      ac->ac_ebroute_bin = optarg;
       break;
     }
   }
@@ -263,6 +277,15 @@ int appconf_validate(struct appconf *ac, int do_debug) {
     }
   }
 
+  if ( !ac->ac_ebroute_bin ) {
+    // Attempt to get ebroute information using nix-build
+    ac->ac_ebroute_bin = nix_build("ebtables", "bin/ebtables");
+    if ( !ac->ac_ebroute_bin ) {
+      fprintf(stderr, "Could not build ebroute via nix\n");
+      return -1;
+    }
+  }
+
   APPCONF_ENSURE_EXECUTABLE(ac_webrtc_proxy_path, "webrtc-proxy");
   APPCONF_ENSURE_EXECUTABLE(ac_persona_init_path, "persona-init");
   APPCONF_ENSURE_EXECUTABLE(ac_app_instance_init_path, "app-instance-init");
@@ -270,6 +293,7 @@ int appconf_validate(struct appconf *ac, int do_debug) {
   if ( do_debug ) {
     fprintf(stderr, "Using %s as configuration directory\n", ac->ac_conf_dir);
     fprintf(stderr, "Using %s as iproute path\n", ac->ac_iproute_bin);
+    fprintf(stderr, "Using %s as ebtables path\n", ac->ac_ebroute_bin);
     fprintf(stderr, "Using %s as webrtc-proxy path\n", ac->ac_webrtc_proxy_path);
     fprintf(stderr, "Using %s as persona-init path\n", ac->ac_persona_init_path);
     fprintf(stderr, "Using %s as app-instance-init path\n", ac->ac_app_instance_init_path);

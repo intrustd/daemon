@@ -166,18 +166,3 @@ export class Base64Encoder {
         }, new ByteLengthQueuingStrategy({highWaterMark: 1024}))
     }
 }
-
-export function streamsExample() {
-    var blob = new Blob(["THIS IS A BIG TEST"])
-
-    var reader = BlobReader(blob).pipeThrough(new Base64Encoder()).getReader()
-
-    reader.read().then(function nextChunk({done, value}) {
-        console.log("read", value, done)
-        if ( !done )
-            reader.read().then(nextChunk)
-        else
-            console.log('done')
-    })
-}
-window.streamsExample = streamsExample

@@ -25,6 +25,7 @@ let kite-config = { config, pkgs, lib, ... }: {
     eval = import <nixpkgs/nixos/lib/eval-config.nix> {
       inherit system;
       modules = [ ./modules/top-level.nix (builtins.toPath kite-app-module) ];
+      extraArgs = { kite-lib = (import ./lib/kite.nix) pkgs;  };
     };
 
     root = eval.config.kite.toplevel;

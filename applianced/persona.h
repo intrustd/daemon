@@ -6,7 +6,6 @@
 
 #include "buffer.h"
 #include "util.h"
-#include "container.h"
 #include "bridge.h"
 #include "application.h"
 
@@ -28,10 +27,10 @@ struct pauth {
 struct appstate;
 struct appinstance;
 
-struct personaport {
-  uint16_t pp_port;
-  UT_hash_handle pp_hh;
-};
+// struct personaport {
+//   uint16_t pp_port;
+//   UT_hash_handle pp_hh;
+// };
 
 struct persona {
   struct shared p_shared;
@@ -50,10 +49,8 @@ struct persona {
   // Authentication mechanisms that are required to log in
   struct pauth *p_auths;
 
-  uint16_t p_last_port;
-  struct personaport *p_ports;
-
-  struct container p_container;
+//  uint16_t p_last_port;
+//  struct personaport *p_ports;
 
   struct appinstance *p_instances;
 };
@@ -79,8 +76,8 @@ int persona_write_as_vcard(struct persona *p, struct buffer *b);
 
 int persona_credential_validates(struct persona *p, const char *cred, size_t cred_sz);
 
-int persona_allocate_port(struct persona *p, uint16_t *port);
-void persona_release_port(struct persona *p, uint16_t port);
+// int persona_allocate_port(struct persona *p, uint16_t *port);
+// void persona_release_port(struct persona *p, uint16_t port);
 
 // Runs a new webrtc proxy and returns the PID of the proxy.
 pid_t persona_run_webrtc_proxy(struct persona *p, uint16_t port);
@@ -93,7 +90,7 @@ void persona_kill(struct persona *p, pid_t which, int sig);
 // Wait for the given process to end
 int persona_wait(struct persona *p, pid_t which, int *sts);
 
-struct appinstance *persona_launch_app_instance(struct persona *p, struct app *a);
+struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, struct app *a);
 
 // A personaset is a set of personas that have been serialized to a
 // buffer. The buffer is managed via a shared pointer, so that its

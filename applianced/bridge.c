@@ -78,6 +78,7 @@ void bridge_clear(struct brstate *br) {
   br->br_mutexes_initialized = 0;
   br->br_appstate = NULL;
   br->br_iproute_path = NULL;
+  br->br_ebroute_path = NULL;
   br->br_uid = 0;
   br->br_gid = 0;
   br->br_comm_fd[0] = br->br_comm_fd[1] = 0;
@@ -92,7 +93,8 @@ void bridge_clear(struct brstate *br) {
   br->br_eth_ix = 0;
 }
 
-int bridge_init(struct brstate *br, struct appstate *as, const char *iproute) {
+int bridge_init(struct brstate *br, struct appstate *as,
+                const char *iproute, const char *ebroute) {
   char ip_dbg[INET_ADDRSTRLEN], mac_dbg[32];
   int err;
 
@@ -110,6 +112,7 @@ int bridge_init(struct brstate *br, struct appstate *as, const char *iproute) {
           mac_ntop(br->br_bridge_mac, mac_dbg, sizeof(mac_dbg)));
 
   br->br_iproute_path = iproute;
+  br->br_ebroute_path = ebroute;
 
   err = pthread_rwlock_init(&br->br_arp_mutex, NULL);
   if ( err != 0 ) {
@@ -278,7 +281,18 @@ static void bridge_process_arp(struct brstate *br, int size) {
         memcpy(src_hw_addr, br->br_bridge_mac, ETH_ALEN);
         src_hw_ip = br->br_bridge_addr.s_addr;
       } else {
-        fprintf(stderr, "bridge_process_arp: TODO lookup arp\n");
+        if ( pthread_rwlock_rdlock(&br->br_arp_mutex) == 0 ) {
+          struct arpentry *found;
+          HASH_FIND(ae_hh, br->br_arp_table, &which_ip, sizeof(which_ip), found);
+          if ( found ) {
+            was_found = 1;
+            memcpy(rsp_eth.ether_shost, br->br_bridge_mac, ETH_ALEN);
+            memcpy(src_hw_addr, found->ae_mac, ETH_ALEN);
+            src_hw_ip = found->ae_ip.s_addr;
+          }
+          pthread_rwlock_unlock(&br->br_arp_mutex);
+        } else
+          fprintf(stderr, "bridge_process_arp: could not lock arp table\n");
       }
 
       if ( was_found ) {
@@ -879,7 +893,7 @@ static int bridge_setup_tap(struct brstate *br, char *tap_nm) {
 }
 
 static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
-  char cmd_buf[512];
+  char cmd_buf[512], mac_buf[32];
   int err;
 
   err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link add bridge type bridge", br->br_iproute_path);
@@ -908,7 +922,43 @@ static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
-  err = system("ifconfig -a");
+  // Set up ebtables to drop all packets, except those destined for
+  // the bridge itself or the admin app
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A FORWARD --source %s -j ACCEPT",
+                 br->br_ebroute_path, mac_ntop(br->br_bridge_mac, mac_buf, sizeof(mac_buf)));
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
+
+  // TODO set to DROP for security eventually
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -N KITE -P ACCEPT", br->br_ebroute_path);
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A KITE --destination %s -j ACCEPT",
+                 br->br_ebroute_path, mac_ntop(br->br_bridge_mac, mac_buf, sizeof(mac_buf)));
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
+
+  // TODO may want to prevent ARPing between containers
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A KITE -p ARP -j ACCEPT",
+                 br->br_ebroute_path);
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A FORWARD -j KITE", br->br_ebroute_path);
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
 
   return;
 
@@ -1134,6 +1184,46 @@ int bridge_disconnect_port(struct brstate *br, int port) {
   }
 }
 
+static int bridge_setup_container_ebtable(struct brstate *br, int port_ix, const char *in_if_name) {
+  char cmd_buf[512];
+  int err;
+
+  // Every port gets an automatic ebtable
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -N TABLE%d -P ACCEPT",
+                 br->br_ebroute_path, port_ix);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  // Anything coming in from this port, should be sent to this table
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I FORWARD -1 --in-if %s -j TABLE%d",
+                 br->br_ebroute_path, in_if_name, port_ix);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A TABLE%d -j KITE",
+                 br->br_ebroute_path, port_ix);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  return 0;
+
+  overflow:
+    fprintf(stderr, "bridge_setup_container_ebtable: no space for commmand '%s'\n", cmd_buf);
+    return -1;
+
+  cmd_error:
+    fprintf(stderr, "bridge_setup_container_ebtable: %s failed: %d\n", cmd_buf, err);
+    return -1;
+}
+
 int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
                              struct in_addr *this_ip, const char *if_name,
                              struct arpentry *arp) {
@@ -1181,6 +1271,12 @@ int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
     if ( err < 0 ) {
       fprintf(stderr, "bridge_create_veth_to_ns: could not move interface\n");
       exit(3);
+    }
+
+    err = bridge_setup_container_ebtable(br, port_ix, in_if_name);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_create_veth_to_ns: could not set up ebtables\n");
+      exit(4);
     }
 
     exit(EXIT_SUCCESS);
@@ -1476,6 +1572,81 @@ static int find_hw_addr(const char *if_name, unsigned char *mac_addr) {
   return 0;
 }
 
+// Ask the bridge to accept all traffic going in and out of this port
+int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *mac) {
+  pid_t new_proc;
+  int err;
+
+  new_proc = fork();
+  if ( new_proc < 0 ) {
+    perror("bridge_mark_as_admin: fork");
+    return -1;
+  }
+
+  if ( new_proc == 0 ) {
+    char cmd_buf[512], mac_dbg[32];
+
+    err = bridge_enter_network_namespace(br);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_mark_as_admin: could not enter namespace\n");
+      exit(1);
+    }
+
+    // Ask ebtables to accept all on this table
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -F TABLE%d", br->br_ebroute_path, port_ix);
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A TABLE%d -j ACCEPT", br->br_ebroute_path, port_ix);
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I KITE -1 --destination %s -j ACCEPT",
+                   br->br_ebroute_path,
+                   mac_ntop(mac, mac_dbg, sizeof(mac_dbg)));
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+    fprintf(stderr, "Going to run %s\n", cmd_buf);
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
+    exit(EXIT_SUCCESS);
+
+  overflow:
+    fprintf(stderr, "bridge_mark_as_admin: command overflow\n");
+    exit(EXIT_FAILURE);
+
+  cmd_error:
+    fprintf(stderr, "bridge_mark_as_admin: command '%s' fails with %d\n", cmd_buf, err);
+    exit(EXIT_FAILURE);
+  } else {
+    int sts;
+    err = waitpid(new_proc, &sts, 0);
+    if ( err < 0 ) {
+      perror("bridge_mark_as_admin: waitpid");
+      return -1;
+    }
+
+    if ( sts != 0 ) {
+      fprintf(stderr, "bridge_mark_as_admin: namespace child returned %d\n", sts);
+      return -1;
+    }
+
+    return 0;
+  }
+}
+
 static void bpr_release(struct brpermrequest *bpr) {
   if ( bpr->bpr_persona )
     PERSONA_UNREF(bpr->bpr_persona);
@@ -1549,7 +1720,8 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
                   bpr->bpr_perm_size, bpr->bpr_perm.bp_data);
           bridge_respond_error(br, bpr, STKD_ERROR_APP_DOES_NOT_EXIST);
         } else {
-          struct appinstance *ai = persona_launch_app_instance(bpr->bpr_persona, a);
+          struct appinstance *ai = launch_app_instance(bpr->bpr_persona->p_appstate,
+                                                       bpr->bpr_persona, a);
           APPLICATION_UNREF(a);
           if ( !ai ) {
             fprintf(stderr, "bridge_handle_bpr_response: could not launch app instance\n");
@@ -1558,7 +1730,7 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
             container_release_running(&ai->inst_container, bpr->bpr_el);
             APPINSTANCE_UNREF(ai);
 
-            fprintf(stderr, "bridge_handle_bpr_response: launched application\n");
+            fprintf(stderr, "bridge_handle_bpr_response: launched application %s\n", ai->inst_app->app_canonical_url);
 
             rsp.sm_flags = STKD_MKFLAGS(STKD_RSP, STKD_OPEN_APP_REQUEST);
             rsp.sm_data.sm_opened_app.sm_family = htonl(AF_INET);
@@ -1594,4 +1766,196 @@ int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *
     return ret;
   } else
     return -1;
+}
+
+// Permissions
+
+#define BR_TEMP_ROUTE_PATH 1
+#define BR_PERM_ROUTE_PATH 2
+
+static int bridge_routes_path(struct brstate *br, struct pconn *pc, int which,
+                              char *routes_path, int routes_path_sz) {
+  int n;
+  char persona_digest[PERSONA_ID_X_LENGTH + 1];
+  char fingerprint_digest[EVP_MD_size(pc->pc_remote_cert_fingerprint_digest) * 2 + 1];
+
+  if ( which == BR_TEMP_ROUTE_PATH ) {
+    n = snprintf(routes_path, routes_path_sz,
+                 "%s/personas/%s/sites/%s/.routes.tmp.%p",
+                 br->br_appstate->as_conf_dir,
+                 hex_digest_str((unsigned char *)pc->pc_persona->p_persona_id,
+                                persona_digest, PERSONA_ID_LENGTH),
+                 hex_digest_str((unsigned char *)pc->pc_remote_cert_fingerprint,
+                              fingerprint_digest,
+                                EVP_MD_size(pc->pc_remote_cert_fingerprint_digest)),
+                 pc);
+  } else {
+    n = snprintf(routes_path, routes_path_sz,
+                 "%s/personas/%s/sites/%s/routes",
+                 br->br_appstate->as_conf_dir,
+                 hex_digest_str((unsigned char *)pc->pc_persona->p_persona_id,
+                                persona_digest, PERSONA_ID_LENGTH),
+                 hex_digest_str((unsigned char *)pc->pc_remote_cert_fingerprint,
+                              fingerprint_digest,
+                                EVP_MD_size(pc->pc_remote_cert_fingerprint_digest)));
+  }
+  if ( n >= routes_path_sz ) {
+    fprintf(stderr, "bridge_temp_routes_path: overflow\n");
+    return -1;
+  }
+
+  return 0;
+}
+
+static FILE *bridge_open_temp_routes(struct brstate *br, struct pconn *pc) {
+  char tmp_routes_path[PATH_MAX];
+
+  if ( bridge_routes_path(br, pc, BR_TEMP_ROUTE_PATH, tmp_routes_path, sizeof(tmp_routes_path)) < 0 )
+    return NULL;
+
+  return fopen(tmp_routes_path, "wt");
+}
+
+static void bridge_cleanup_temp_routes(struct brstate *br, struct pconn *pc) {
+  char tmp_routes_path[PATH_MAX];
+  if ( bridge_routes_path(br, pc, BR_TEMP_ROUTE_PATH, tmp_routes_path, sizeof(tmp_routes_path)) < 0 )
+    return;
+
+  if ( unlink(tmp_routes_path) < 0 ) {
+    perror("bridge_cleanup_temp_routes: unlink");
+    fprintf(stderr, "while unlinking %s\n", tmp_routes_path);
+  }
+}
+
+static int bridge_update_routes(struct brstate *br, struct pconn *pc) {
+  char tmp_routes_path[PATH_MAX], real_routes_path[PATH_MAX];
+
+  if ( bridge_routes_path(br, pc, BR_TEMP_ROUTE_PATH, tmp_routes_path, sizeof(tmp_routes_path)) < 0 )
+    return -1;
+
+  if ( bridge_routes_path(br, pc, BR_PERM_ROUTE_PATH, real_routes_path, sizeof(real_routes_path)) < 0 )
+    return -1;
+
+  if ( rename(tmp_routes_path, real_routes_path) < 0 ) {
+    perror("bridge_update_routes: rename");
+    fprintf(stderr, "while renaming %s -> %s\n", tmp_routes_path, real_routes_path);
+    return -1;
+  } else
+    return 0;
+}
+
+static FILE *bridge_open_site_perms(struct brstate *br, struct pconn *pc) {
+  char perms_path[PATH_MAX];
+  char persona_digest[PERSONA_ID_X_LENGTH + 1];
+  char site_digest[EVP_MD_size(pc->pc_remote_cert_fingerprint_digest) * 2 + 1];
+  int n;
+
+  FILE *ret;
+
+  n = snprintf(perms_path, sizeof(perms_path),
+               "%s/personas/%s/sites/%s/perms",
+               br->br_appstate->as_conf_dir,
+               hex_digest_str((unsigned char *) pc->pc_persona->p_persona_id,
+                              persona_digest, PERSONA_ID_LENGTH),
+               hex_digest_str((unsigned char *) pc->pc_remote_cert_fingerprint,
+                              site_digest, EVP_MD_size(pc->pc_remote_cert_fingerprint_digest)));
+  if ( n >= sizeof(persona_digest) ) {
+    fprintf(stderr, "bridge_open_site_perms: path overflow\n");
+    return NULL;
+  }
+
+  ret = fopen(perms_path, "at+");
+  if ( !ret ) return NULL;
+
+  if ( fseek(ret, 0, SEEK_SET) < 0 ) {
+    perror("bridge_open_site_perms: fseek");
+    fclose(ret);
+    return NULL;
+  }
+
+  return ret;
+}
+
+// Site permissions live in
+// <conf-dir>/personas/<persona-id>/site/<site-fingerprint>/permissions
+int bridge_write_site_routes(struct brstate *br, struct pconn *pc) {
+  FILE *perms, *routes;
+  char perm[PATH_MAX];
+  char app_addr[INET_ADDRSTRLEN];
+  struct app *a, *tmp;
+
+  routes = bridge_open_temp_routes(br, pc);
+  if ( !routes ) return -1;
+
+  perms = bridge_open_site_perms(br, pc);
+  if ( !perms ) { fclose(routes); return -1; }
+
+  SAFE_RWLOCK_RDLOCK(&br->br_appstate->as_applications_mutex);
+  while ( fgets(perm, sizeof(perm), perms) ) {
+    if ( validate_canonical_url(perm, NULL, 0, NULL, 0) ) {
+      // Check if any application has this permission
+      HASH_FIND(app_hh, br->br_appstate->as_apps, perm, strlen(perm), a);
+
+      if ( a ) {
+        // Check if this application is running for this persona. If not, launch it
+        struct appinstance *ai;
+
+        ai = launch_app_instance(br->br_appstate, pc->pc_persona, a);
+        if ( !ai ) {
+          fprintf(stderr, "bridge_write_site_routes: skipping %s because of an error while launching\n",
+                  perm);
+        } else {
+          int universal_access = 0;
+
+          SAFE_MUTEX_LOCK(&a->app_mutex);
+          universal_access = APP_HAS_UNIVERSAL_ACCESS(a);
+          pthread_mutex_unlock(&a->app_mutex);
+
+          if ( !universal_access )
+            fprintf(routes, "%s %s\n", perm, inet_ntop(AF_INET, &ai->inst_container.c_ip,
+                                                       app_addr, sizeof(app_addr)));
+        }
+      }
+    }
+  }
+
+  HASH_ITER(app_hh, br->br_appstate->as_apps, a, tmp) {
+    int universal_access = 0;
+    struct appinstance *ai;
+
+    SAFE_MUTEX_LOCK(&a->app_mutex);
+    universal_access = APP_HAS_UNIVERSAL_ACCESS(a);
+    pthread_mutex_unlock(&a->app_mutex);
+
+    if ( universal_access ) {
+      ai = launch_app_instance(br->br_appstate, pc->pc_persona, a);
+      if ( !ai ) {
+        fprintf(stderr, "bridge_write_site_routes: skipping %s because of an error while launching\n",
+                a->app_canonical_url);
+      } else {
+        fprintf(routes, "%s %s\n", a->app_canonical_url, inet_ntop(AF_INET, &ai->inst_container.c_ip,
+                                                                   app_addr, sizeof(app_addr)));
+      }
+    }
+  }
+
+  pthread_rwlock_unlock(&br->br_appstate->as_applications_mutex);
+
+  if ( ferror(perms) ) {
+    fprintf(stderr, "bridge_write_site_routes: could not read permissions. Aborting\n");
+    fclose(perms);
+    fclose(routes);
+    bridge_cleanup_temp_routes(br, pc);
+  }
+
+  // If any permission is the url of an installed application, then, add this to the route set
+  fclose(perms);
+
+  if ( bridge_update_routes(br, pc) < 0 ) {
+    fclose(routes);
+    return -1;
+  } else {
+    fclose(routes);
+    return 0;
+  }
 }

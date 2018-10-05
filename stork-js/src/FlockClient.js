@@ -11,6 +11,7 @@ import { BufferParser } from "./Buffer.js";
 import { SocketType,
          RequestAppControlMessage, RequestAppControlResponse,
          ConnectAppControlRequest, ConnectAppControlResponse } from "./SocketProxy.js";
+import { getSite } from './Site.js';
 
 
 export class FlockConnectionNotOpenError extends Error {
@@ -360,6 +361,9 @@ export class FlockClient extends EventTarget {
         this.applications = {};
         this.rtc_stream_number = 0;
         this.answer_sent = false;
+
+        this.flockUrl = options.url
+
         this.websocket = new WebSocket(url.href);
         this.websocket.binaryType = 'arraybuffer';
 
@@ -434,11 +438,6 @@ export class FlockClient extends EventTarget {
                             this.dispatchEvent(new KiteChannelOpens(this));
                             this.rtc_control_channel.close()
                             delete this.rtc_control_channel
-
-                            window.peer_conn = this.rtc_connection
-
-                            console.log("On control channel open", this.rtc_connection.getConfiguration())
-                            window.rtc_conf = this.rtc_connection.getConfiguration()
                         }
                         this.rtc_control_channel.onclose = function () { console.log('channel closes') }
 
@@ -810,3 +809,51 @@ window.FlockClient = FlockClient;
 //     //     console.log("Websocket message", evt.data);
 //     // };
 // //}
+
+// console.log("Beginning indexed db test");
+// var db = indexedDB.open("kite", 1)
+// db.onerror = (e) => {
+//     console.error("Could not open kite index", e);
+// }
+
+// db.onsuccess = (e) => {
+//     var database = db.result
+//     console.log("Opened indexed db", database)
+
+//     var tx = database.transaction(["cert"], "readonly")
+//     var certStore = tx.objectStore("cert")
+
+//     var hadCerts = false
+//     var onComplete = () => {
+//         if ( !hadCerts ) {
+//             console.log("No certs");
+
+//             RTCPeerConnection.generateCertificate({name: 'ECDSA', namedCurve: 'P-256'}).then((c) => {
+//                 console.log("Adding certificate", c, c.getFingerprints()[0])
+//                 var tx = database.transaction(["cert"], "readwrite")
+//                 var certStore = tx.objectStore("cert")
+//                 certStore.add({ 'flock': 'testflock', 'certificate': c}).onsuccess = () => {
+//                     console.log("Added certificate")
+//                 }
+//             })
+//         } else {
+//             console.log("We had certificates")
+//         }
+//     }
+//     certStore.openCursor().onsuccess = (e) => {
+//         var cursor = e.target.result
+//         if ( cursor ) {
+//             hadCerts = true
+//             console.log("Certificate", cursor.value, cursor.value.certificate.getFingerprints()[0])
+//             cursor.continue()
+//         } else
+//             onComplete()
+//     }
+// }
+
+// db.onupgradeneeded = (e) => {
+//     var db = e.target.result;
+//     console.log("Launching upgrade from", e.oldVersion, "to", e.newVersion)
+
+//     db.createObjectStore("cert", {keyPath: "flock"})
+// }

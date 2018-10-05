@@ -2,11 +2,12 @@
 import { EventTarget } from 'event-target-shim';
 import { HTTPParser } from 'http-parser-js';
 import { FlockClient } from "../FlockClient.js";
-import { ApplianceChooser, PersonaChooser } from "../ApplianceChooser.js";
+import { Authenticator } from "../Authenticator.js";
 import { parseKiteAppUrl, kiteAppCanonicalUrl } from "./Common.js";
 import { generateKiteBonudary, makeFormDataStream } from "./FormData.js";
 import { BlobReader } from "./Streams.js";
 import { CacheControl } from "./Cache.js";
+import { getSite, resetSite } from "../Site.js";
 import ProgressManager from "./Progress.js";
 
 var oldFetch = window.fetch;
@@ -48,7 +49,11 @@ class GlobalAppliance {
                     var chooser = new PersonaChooser (this.defaultPersona);
                     chooser.addEventListener('persona-chosen', ({personaId, creds}) => {
                         this.defaultPersona.tryLogin(personaId, creds)
-                            .then(() => { chooser.hide(); resolve(this.defaultPersona); },
+                            .then(() => { chooser.hide();
+
+                                          requestSitePermissions(this.defaultPersona,
+                                                                 kiteFetch.defaultOptions.permissions)
+                                            .then(() => { resolve(this.defaultPersona) }) },
                                   () => { chooser.showError(); })
                     });
                     chooser.addEventListener('cancel', () => { reject('canceled'); });
@@ -472,6 +477,34 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
     }
 }
 
+var globalClient;
+function chooseNewAppliance(flocks, site) {
+    return new Promise((resolve, reject) => {
+        var chooser = new Authenticator(flocks, site)
+        chooser.addEventListener('error', (e) => {
+            globalClient = undefined;
+            reject(e);
+        });
+
+        chooser.addEventListener('open', (e) => {
+            resolve(e.device)
+        });
+    })
+}
+
+function getGlobalClient(flocks, site) {
+    if ( globalClient === undefined ) {
+        if ( site !== undefined &&
+             site !== null ) {
+            globalClient = loginToSite(site)
+                .catch((e) => { resetSite(); return chooseNewAppliance(flocks, site) })
+        } else {
+            globalClient = chooseNewAppliance(flocks, site)
+        }
+    }
+    return globalClient;
+}
+
 export default function kiteFetch (req, init) {
     var url = req;
     if ( req instanceof Request ) {
@@ -485,97 +518,7 @@ export default function kiteFetch (req, init) {
         else {
             var flockUrls = kiteFetch.flockUrls;
             var canonAppUrl = kiteAppCanonicalUrl(kiteUrl);
-            var appliancePromise, clientPromise;
-
-            console.log("Got kite request", kiteUrl);
-
-            if ( init.hasOwnProperty('flockUrls') ) {
-                flockUrls = init.flockUrls;
-                delete init.flockUrls;
-            }
-
-            else if ( init.hasOwnProperty('flockUrl') ) {
-                flockUrls = [ init.flockUrl ];
-                delete init.flockUrl;
-            }
-
-            if ( flockUrls.length == 0 )
-                throw new TypeError("Expected at least one flock URL");
-
-            console.log("Attempting connection with ", flockUrls)
-            for ( var i in flockUrls ) {
-                var flockUrl = flockUrls[i]
-                if ( !globalFlocks.hasOwnProperty(flockUrl) ) {
-                    globalFlocks[flockUrl] = new GlobalFlock(flockUrl);
-                }
-            }
-            console.log("Got flock ", globalFlocks)
-
-            var applianceByName =
-                (applianceName) => {
-                    var applianceFromFlock = (flock) => {
-                        if ( applianceName === undefined )
-                            return flock.getDefaultAppliance({silent: true})
-                        else
-                            return flock.getAppliance(applianceName)
-                    }
-
-                    var getAppliances = flockUrls.map((flockUrl, i) => {
-                        return () => {
-                            return applianceFromFlock(globalFlocks[flockUrl])
-                                .then((dev) => { console.log("Got appliance success", dev, flockUrl); return dev; })
-                                .catch((e) => {
-                                    if ( (i + 1) >= getAppliances.length )
-                                        return Promise.reject(e)
-                                    else
-                                        return getAppliances[i + 1]()
-                                })
-                        }
-                    })
-
-                    return getAppliances[0]()
-                }
-
-            if ( init.hasOwnProperty('applianceName') ) {
-                appliancePromise = applianceByName(init.applianceName)
-                delete init.applianceName
-            } else {
-                if ( kiteFetch.appliancePromise === undefined ){
-                    kiteFetch.appliancePromise =
-                        // Check if any global flock has a default appliance
-                        applianceByName()
-                        .catch(() => {
-                            return new Promise((resolve, reject) => {
-                                var chooser = new ApplianceChooser(flockUrls)
-                                chooser.addEventListener('appliance-chosen', (e) => {
-                                    applianceByName(e.device).then(
-                                        (devClient) => {
-                                            chooser.hide()
-                                            devClient.markDefault()
-                                                .then(() => { resolve(devClient) })
-                                        },
-                                        (e) => {
-                                            console.error(e)
-                                            chooser.signalError(e)
-                                        })
-                                })
-                                chooser.addEventListener('cancel', () => reject('canceled'))
-                            })
-                        })
-                }
-                appliancePromise = kiteFetch.appliancePromise
-            }
-
-            if ( init.hasOwnProperty('persona') ) {
-                var persona = init.persona;
-                clientPromise = appliancePromise.then((appliance) => {
-                    console.log("Got appliance", appliance)
-                    return appliance.getPersonaClient(persona);
-                })
-                delete init.persona;
-            } else {
-                clientPromise = appliancePromise.then((appliance) => appliance.getDefaultPersonaClient());
-            }
+            var clientPromise = getGlobalClient(flockUrls, getSite())
 
             if ( req instanceof Request )
                 req = new Request(req)
@@ -617,33 +560,35 @@ export default function kiteFetch (req, init) {
                         })
 
                         httpRequestor.addEventListener('response', (resp) => {
-                            var cache = new Promise((resolve, reject) => {
-                                if ( dev._kiteCache === undefined ) {
-                                    appliancePromise.then((app) => {
-                                        var flock = app.flock
-                                        dev._kiteCache = new CacheControl(flock.flockUrl,
-                                                                          app.applianceName,
+                            if ( req.cache != 'no-store' ) {
+                                var cache = new Promise((resolve, reject) => {
+                                    if ( dev._kiteCache === undefined ) {
+                                        dev._kiteCache = new CacheControl(dev.flockUrl,
+                                                                          dev.appliance,
                                                                           dev.personaId,
                                                                           canonAppUrl)
                                         resolve(dev._kiteCache)
-                                    })
-                                } else
-                                    resolve(dev._kiteCache)
-                            })
+                                    } else
+                                        resolve(dev._kiteCache)
+                                })
 
-                            cache.then((cache) => {
-                                console.log("Got response", resp.response);
-                                var responseInit = { status: resp.response.status,
-                                                     statusText: resp.response.statusText,
-                                                     headers: resp.response.headers };
+                                cache.then((cache) => {
+                                    console.log("Got response", resp.response);
+                                    var responseInit = { status: resp.response.status,
+                                                         statusText: resp.response.statusText,
+                                                         headers: resp.response.headers };
 
-                                cache.cacheResponse(req, responseInit, resp.responseBlob)
-                                    .then(() => {
-                                        tracker.done()
-                                        resolve(resp.response)
-                                    })
-                                    .catch(() => { tracker.done() })
-                            }).catch((e) => { console.error("Error while caching", e) })
+                                    cache.cacheResponse(req, responseInit, resp.responseBlob)
+                                        .then(() => {
+                                            tracker.done()
+                                            resolve(resp.response)
+                                        })
+                                        .catch(() => { tracker.done() })
+                                }).catch((e) => { console.error("Error while caching", e) })
+                            } else {
+                                tracker.done()
+                                resolve(resp.response)
+                            }
                         })
                         httpRequestor.addEventListener('error', (e) => {
                             reject(new TypeError(e.explanation))
@@ -653,16 +598,22 @@ export default function kiteFetch (req, init) {
 
             return clientPromise
                 .then((dev) => {
-                    if ( dev._kiteCache ) {
-                        return dev._kiteCache.matchRequest(req)
-                            .then((rsp) => {
-                                if ( rsp === undefined )
-                                    return runRequest(dev)
-                                else
-                                    return rsp
-                            })
-                    } else {
+                    if ( req.cache == 'no-store' ||
+                         req.cache == 'reload' ) {
                         return runRequest(dev)
+                    } else {
+                        if ( dev._kiteCache ) {
+                            return dev._kiteCache.matchRequest(req)
+                                .then((rsp) => {
+                                    if ( rsp === undefined )
+                                        return runRequest(dev)
+                                    else {
+                                        return rsp
+                                    }
+                                })
+                        } else {
+                            return runRequest(dev)
+                        }
                     }
                 })
         }
@@ -670,7 +621,6 @@ export default function kiteFetch (req, init) {
         return oldFetch.apply(this, arguments);
 }
 
-// TODO allow people to update this URL
 kiteFetch.flockUrls = [
     "ws://localhost:6853/",
     "ws://34.221.26.224:6853/"

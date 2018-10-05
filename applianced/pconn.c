@@ -11,6 +11,8 @@
 #include "flock.h"
 #include "state.h"
 
+#define DEFAULT_SCTP_PORT 5000
+
 // According to https://tools.ietf.org/id/draft-ietf-tls-dtls13-02.html#rfc.section.4.1.1,
 // DTLS packets start with 21, 22, 23 or 25
 #define IS_DTLS_PACKET(c) ((c) == 21 || (c) == 22 || (c) == 23 || (c) == 25)
@@ -152,6 +154,8 @@ static int icecand_parse(struct icecand *ic, const char *vls, const char *vle);
 
 static void pconn_fn(struct eventloop *el, int op, void *arg);
 static void pconn_free(struct pconn *pc);
+
+static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t argl);
 
 // Call when the pc->pc_state may have changed
 static void pconn_ice_gathering_state_may_change(struct pconn *pc);
@@ -544,7 +548,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
               // Only write the packet if the webrtc-proxy is up
               //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
               bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
-                                            &cs->cs_pconn->pc_persona->p_container,
+                                            &cs->cs_pconn->pc_container,
                                             &peer_addr.ksa, peer_addr_sz,
                                             my_buf, pkt_sz);
             }
@@ -798,8 +802,6 @@ static void candsrc_add_host_candidate(struct candsrc *cs) {
   struct icecand candidate;
   struct sockaddr disconnect_addr;
   int err, cs_idx;
-
-  fprintf(stderr, "candsrc_add_host_candidate\n");
 
   cs_idx = pconn_cs_idx(cs->cs_pconn, cs);
   if ( cs_idx < 0 ) {
@@ -1151,7 +1153,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
 
   stun_random_tx_id(&ret->pc_tx_id);
   ret->pc_last_req = STUN_KITE_STARTCONN;
-  ret->pc_sctp_port = 0;
+  ret->pc_sctp_port = DEFAULT_SCTP_PORT;
   ret->pc_dtls = NULL;
   ret->pc_dtls_needs_write = ret->pc_dtls_needs_read = 0;
 
@@ -1159,6 +1161,15 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   if ( !random_printable_string(ret->pc_our_ufrag, sizeof(ret->pc_our_ufrag)) ||
        !random_printable_string(ret->pc_our_pwd, sizeof(ret->pc_our_pwd)) ) {
     fprintf(stderr, "pconn_alloc: could not generate ICE parameters\n");
+    pthread_mutex_destroy(&ret->pc_mutex);
+    free(ret);
+    return NULL;
+  }
+
+  if ( container_init(&ret->pc_container, &as->as_bridge, pconn_container_fn,
+                      CONTAINER_FLAG_KILL_IMMEDIATELY | CONTAINER_FLAG_NETWORK_ONLY |
+                      CONTAINER_FLAG_ENABLE_SCTP ) < 0 ) {
+    fprintf(stderr, "pconn_alloc: could not allocate container\n");
     pthread_mutex_destroy(&ret->pc_mutex);
     free(ret);
     return NULL;
@@ -1179,7 +1190,6 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_candidate_pairs_count = 0;
   ret->pc_active_candidate_pair = -1;
   ret->pc_type = type;
-  ret->pc_webrtc_proxy = -1;
   ret->pc_state = PCONN_STATE_WAIT_FOR_LOGIN;
   ret->pc_ice_gathering_state = PCONN_ICE_GATHERING_STATE_NEW;
   ret->pc_auth_attempts = 0;
@@ -1664,7 +1674,6 @@ void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
 
   if ( persona_id &&
        PCONN_CAN_AUTH(pc) ) {
-    int err;
     struct persona *p;
 
     // Attempt to find this persona
@@ -1690,16 +1699,8 @@ void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
           PERSONA_UNREF(p);
           pconn_auth_fails(pc);
         } else {
-          // Get the persona port as well
-          err = persona_allocate_port(p, &pc->pc_sctp_port);
-          if ( err < 0 ) {
-            fprintf(stderr, "pconn_recv_startconn: could not allocate persona port\n");
-            PERSONA_UNREF(p);
-            pconn_auth_fails(pc);
-          } else {
-            pc->pc_state = PCONN_STATE_START_OFFER;
-            pc->pc_persona = p;
-          }
+          pc->pc_state = PCONN_STATE_START_OFFER;
+          pc->pc_persona = p;
         }
       }
     } else {
@@ -2730,6 +2731,8 @@ static void pconn_dtls_handshake(struct pconn *pc) {
 }
 
 static void pconn_on_established(struct pconn *pc) {
+  int err;
+
   pconn_reset_connectivity_check_timeout(pc);
 
   switch ( pc->pc_type ) {
@@ -2746,16 +2749,20 @@ static void pconn_on_established(struct pconn *pc) {
       return;
     }
 
-    if ( pc->pc_webrtc_proxy < 0 ) {
-      // Also add this to the bridge
-      pc->pc_sctp_capture.se_source.sin_addr.s_addr = pc->pc_persona->p_container.c_ip.s_addr;
-      pc->pc_sctp_capture.se_source.sin_port = htons(pc->pc_sctp_port);
+    err = container_ensure_running(&pc->pc_container, &pc->pc_appstate->as_eventloop);
+    if ( err < 0 ) {
+      fprintf(stderr, "pconn_on_established: could not start container\n");
+      return;
+    } else if ( err == 0 ) {
+      // We didn't start this, so release it
+      container_release_running(&pc->pc_container, &pc->pc_appstate->as_eventloop);
+    } else {
+      // We started the container, so keep a reference
+      PCONN_REF(pc);
 
-      pc->pc_webrtc_proxy = persona_run_webrtc_proxy(pc->pc_persona, pc->pc_sctp_port);
-      if ( pc->pc_webrtc_proxy < 0 ) {
-        fprintf(stderr, "pconn_on_established: could not run webrtc-proxy\n");
-        return;
-      }
+      // Also add this to the bridge
+      pc->pc_sctp_capture.se_source.sin_addr.s_addr = pc->pc_container.c_ip.s_addr;
+      pc->pc_sctp_capture.se_source.sin_port = htons(pc->pc_sctp_port);
 
       fprintf(stderr, "Started webrtc proxy\n");
       if ( bridge_register_sctp(&pc->pc_appstate->as_bridge, &pc->pc_sctp_capture) < 0 ) {
@@ -2766,8 +2773,7 @@ static void pconn_on_established(struct pconn *pc) {
         // We must keep this alive while the bridge is delivering events...
         // TODO undo this reference
         PCONN_WREF(pc);
-    } else
-      fprintf(stderr, "pconn_on_established: already running\n");
+    }
     break;
 
   default:
@@ -2868,15 +2874,86 @@ static void pconn_teardown_established(struct pconn *pc) {
     PCONN_WUNREF(pc); // For bridge capture
     SHARED_DEBUG(&pc->pc_shared, "after bridge unregister");
 
-    if ( pc->pc_webrtc_proxy ) {
-      if ( container_kill(&pc->pc_persona->p_container, pc->pc_webrtc_proxy, SIGTERM) < 0 ) {
-        fprintf(stderr, "pconn_teardown_established: failed to stop webrtc-proxy");
-        return;
-      }
-
-      pc->pc_webrtc_proxy = -1;
-    }
+    assert( container_release_running(&pc->pc_container, &pc->pc_appstate->as_eventloop) );
 
     pconn_finish(pc);
+  }
+}
+
+#define MAX_PORT_SZ 5
+static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t argl) {
+  struct pconn *pc = STRUCT_FROM_BASE(struct pconn, pc_container, c);
+  struct brpermrequest *perm;
+  const char **cp;
+  char *port_str, *hostname;
+  int err;
+
+  struct arpdesc *desc;
+
+  switch ( op ) {
+  case CONTAINER_CTL_DESCRIBE:
+    desc = argp;
+    desc->ad_container_type = ARP_DESC_PERSONA;
+    memcpy(desc->ad_persona.ad_persona_id, pc->pc_persona->p_persona_id,
+           sizeof(desc->ad_persona.ad_persona_id));
+    desc->ad_persona.ad_conn_id = pc->pc_conn_id;
+    return 0;
+
+  case CONTAINER_CTL_CHECK_PERMISSION:
+    perm = argp;
+    if ( perm->bpr_perm.bp_type == BR_PERM_APPLICATION ) {
+      PERSONA_REF(pc->pc_persona);
+      perm->bpr_persona = pc->pc_persona;
+      return 0;
+    }
+    return 0;
+
+  case CONTAINER_CTL_GET_INIT_PATH:
+    cp = argp;
+    *cp = pc->pc_appstate->as_webrtc_proxy_path;
+    return 0;
+
+  case CONTAINER_CTL_GET_ARGS:
+    if ( argl < 2 ) {
+      fprintf(stderr, "pconn_container_fn: not enough space for args\n");
+      return -1;
+    }
+
+    cp = argp;
+    cp[0] = port_str = malloc(MAX_PORT_SZ + 1);
+    if ( !cp[0] ) return -1;
+    snprintf(port_str, MAX_PORT_SZ + 1, "%d", pc->pc_answer_sctp);
+
+    cp[1] = "TODO capability";
+    return 2;
+
+  case CONTAINER_CTL_GET_HOSTNAME:
+    cp = argp;
+    err = snprintf(NULL, 0, "pconn-%lu", pc->pc_conn_id);
+
+    *cp = hostname = malloc(err + 1);
+    snprintf(hostname, err + 1, "pconn-%lu", pc->pc_conn_id);
+
+    return 0;
+
+  case CONTAINER_CTL_RELEASE_HOSTNAME:
+    free((char *)argp);
+    return 0;
+
+  case CONTAINER_CTL_RELEASE_ARG:
+    if ( argl == 0 )
+      free((char *) argp);
+    return 0;
+
+  case CONTAINER_CTL_RELEASE_INIT_PATH:
+    return 0;
+
+  case CONTAINER_CTL_ON_SHUTDOWN:
+    PCONN_UNREF(pc);
+    return 0;
+
+  default:
+    fprintf(stderr, "pconn_container_fn: unrecognized op %d\n", op);
+    return -2;
   }
 }

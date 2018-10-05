@@ -132,8 +132,6 @@ struct pconn {
   int pc_ice_gathering_state : 4;
   int pc_type : 4;
 
-  pid_t pc_webrtc_proxy;
-
   int pc_auth_attempts : 2;
   int pc_ice_role : 2; // ICE_ROLE_CONTROLLING or ICE_ROLE_CONTROLLED
   int pc_offer_line;
@@ -175,6 +173,8 @@ struct pconn {
 
   size_t pc_outgoing_size, pc_outgoing_offs;
   char pc_outgoing_pkt[PCONN_OUTGOING_QUEUE_SIZE];
+
+  struct container pc_container;
 };
 
 #define PCONN_REF(pc) SHARED_REF(&(pc)->pc_shared)

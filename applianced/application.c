@@ -336,6 +336,7 @@ struct app *application_from_manifest(struct appmanifest *mf) {
   ret->app_current_manifest = mf;
 
   ret->app_instances = NULL;
+  ret->app_singleton = NULL;
 
   return ret;
 }

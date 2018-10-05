@@ -1,3 +1,3 @@
-import { FlockClient, installStork } from './src/Flock.js';
+import { FlockClient, installKite } from './src/Flock.js';
 
-export { installStork }
+export { installKite }

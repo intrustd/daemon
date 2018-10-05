@@ -1,0 +1,33 @@
+#!/bin/sh
+
+closure=$(`nix-build --no-out-link '<nixpkgs>' -A jq`/bin/jq .[\"nix-closure\"] "$@" -r)
+
+tmp=$(mktemp -d)
+upper=$(mktemp -d)
+merged=$(mktemp -d)
+
+chmod 755 "$tmp"
+chmod 755 "$upper"
+chmod 755 "$merged"
+
+finish() {
+  echo "Cleanup"
+  umount "$merged/proc"
+  umount "$merged/sys"
+  umount "$merged/nix"
+  umount "$merged/dev"
+  umount "$merged"
+  rmdir $merged
+  rmdir $upper
+  rm -ri $tmp
+}
+trap finish EXIT
+
+mount -t overlay overlay -olowerdir="$closure",upperdir="$upper",workdir="$tmp" "$merged"
+
+mount -o bind /proc "$merged/proc"
+mount -o bind /sys "$merged/sys"
+mount -o bind /nix "$merged/nix"
+mount -o bind /dev "$merged/dev"
+
+chroot $merged /bin/bash

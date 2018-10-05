@@ -102,6 +102,7 @@ struct localapi *localapi_alloc(struct appstate *as, int sk) {
     goto error;
   }
 
+  ret->la_current_updater = NULL;
   ret->la_app_state = as;
   ret->la_socket = sk;
   ret->la_busy = 0;
@@ -264,13 +265,97 @@ static int localsock_return_not_found(struct localapi *api, struct eventloop *el
   return localsock_return_simple(api, el, in_response_to, KLE_NOT_FOUND);
 }
 
+static int localsock_return_not_implemented(struct localapi *api, struct eventloop *el,
+                                            struct kitelocalmsg *in_response_to) {
+  return localsock_return_simple(api, el, in_response_to, KLE_NOT_IMPLEMENTED);
+}
+
 static int localsock_return_internal_error(struct localapi *api, struct eventloop *el,
                                            struct kitelocalmsg *in_response_to) {
   return localsock_return_simple(api, el, in_response_to, KLE_SYSTEM_ERROR);
 }
 
-static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
-                                   struct kitelocalmsg *msg, int msgsz) {
+static void localsock_respond_persona(struct localapi *api, struct eventloop *el,
+                                      struct kitelocalmsg *in_response_to,
+                                      const char *display_name) {
+  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+  struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
+  struct kitelocalattr *attr;
+  int rspsz = KLM_SIZE_INIT;
+
+  rsp->klm_req = htons(KLM_RESPONSE | htons(in_response_to->klm_req));
+  rsp->klm_req_flags = 0;
+
+  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  assert(attr);
+
+  attr->kla_name = htons(KLA_RESPONSE_CODE);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
+  KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+  attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+  assert(attr);
+  attr->kla_name = htons(KLA_PERSONA_DISPLAYNM);
+  attr->kla_length = htons(KLA_SIZE(strlen(display_name)));
+  memcpy(KLA_DATA_UNSAFE(attr, char *), display_name, strlen(display_name));
+  KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+  localsock_respond(api, el, ret_buf, rspsz);
+  return;
+}
+
+static void localsock_get_persona(struct localapi *api, struct eventloop *el,
+                                  struct kitelocalmsg *msg, int msgsz) {
+  struct kitelocalattr *attr;
+
+  int has_persona_id = 0;
+  char persona_id[PERSONA_ID_LENGTH];
+  struct persona *p;
+
+  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( KLA_NAME(attr) ) {
+    case KLA_PERSONA_ID:
+      if ( KLA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH ) {
+        has_persona_id = 1;
+        memcpy(persona_id, KLA_DATA_UNSAFE(attr, void *), PERSONA_ID_LENGTH);
+      } else {
+        localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+      }
+      break;
+    default:
+      localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+      return;
+    }
+  }
+
+  if ( !has_persona_id ) {
+    // Should list
+    localsock_return_not_implemented(api, el, msg);
+    return;
+  }
+
+  // Look up persona
+  if ( appstate_lookup_persona(api->la_app_state, persona_id, &p) < 0 ) {
+    localsock_return_not_found(api, el, msg);
+    return;
+  }
+  if ( !p ) {
+    localsock_return_not_found(api, el, msg);
+    return;
+  }
+
+  if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
+    localsock_respond_persona(api, el, msg,
+                              p->p_display_name);
+    pthread_mutex_unlock(&p->p_mutex);
+    PERSONA_UNREF(p);
+  } else
+    localsock_return_internal_error(api, el, msg);
+}
+
+static void localsock_create_persona(struct localapi *api, struct eventloop *el,
+                                     struct kitelocalmsg *msg, int msgsz) {
   char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
 
   struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
@@ -292,77 +377,67 @@ static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
   attr->kla_name = htons(KLA_RESPONSE_CODE);
   attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
 
-  switch ( KLM_REQ_OP(msg) ) {
-  case KLM_REQ_CREATE:
-    for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-      switch ( KLA_NAME(attr) ) {
-      case KLA_PERSONA_DISPLAYNM:
-        display_name = KLA_DATA_AS(attr, msg, msgsz, char *);
-        display_name_sz = KLA_PAYLOAD_SIZE(attr);
-        break;
-      case KLA_PERSONA_PASSWORD:
-        password = KLA_DATA_AS(attr, msg, msgsz, char *);
-        password_sz = KLA_PAYLOAD_SIZE(attr);
-        break;
-      default:
-        goto bad_request;
-      }
-    }
-    if ( !display_name || !password )
-      goto bad_request;
-
-    if ( appstate_create_persona(api->la_app_state, display_name, display_name_sz,
-                                 password, password_sz, &persona) < 0 ) {
+  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( KLA_NAME(attr) ) {
+    case KLA_PERSONA_DISPLAYNM:
+      display_name = KLA_DATA_AS(attr, msg, msgsz, char *);
+      display_name_sz = KLA_PAYLOAD_SIZE(attr);
+      break;
+    case KLA_PERSONA_PASSWORD:
+      password = KLA_DATA_AS(attr, msg, msgsz, char *);
+      password_sz = KLA_PAYLOAD_SIZE(attr);
+      break;
+    default:
       goto bad_request;
     }
+  }
+  if ( !display_name || !password )
+    goto bad_request;
 
-    assert(persona);
-
-    attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
-    assert(attr);
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
-
-    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-    assert(attr);
-    attr->kla_name = htons(KLA_PERSONA_ID);
-    attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
-    memcpy(KLA_DATA_UNSAFE(attr, char *), persona->p_persona_id, PERSONA_ID_LENGTH);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
-
-    localsock_respond(api, el, ret_buf, rspsz);
-
-    PERSONA_UNREF(persona);
-
-    break;
-
-  default:
+  if ( appstate_create_persona(api->la_app_state, display_name, display_name_sz,
+                               password, password_sz, &persona) < 0 ) {
     goto bad_request;
   }
-  return;
 
- bad_request:
+  assert(persona);
+
   attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
-  // TODO consolidate
-  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_BAD_OP);
+  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
   KLM_SIZE_ADD_ATTR(rspsz, attr);
 
   attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
   assert(attr);
-  attr->kla_name = htons(KLA_ENTITY);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLM_REQ_ENTITY(msg));
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
-
-  attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-  assert(attr);
-  attr->kla_name = htons(KLA_OPERATION);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLM_REQ_OP(msg));
+  attr->kla_name = htons(KLA_PERSONA_ID);
+  attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
+  memcpy(KLA_DATA_UNSAFE(attr, char *), persona->p_persona_id, PERSONA_ID_LENGTH);
   KLM_SIZE_ADD_ATTR(rspsz, attr);
 
   localsock_respond(api, el, ret_buf, rspsz);
+
+  PERSONA_UNREF(persona);
+
+  return;
+
+ bad_request:
+  localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+}
+
+static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
+                                   struct kitelocalmsg *msg, int msgsz) {
+  switch ( KLM_REQ_OP(msg) ) {
+  case KLM_REQ_GET:
+    localsock_get_persona(api, el, msg, msgsz);
+    break;
+
+  case KLM_REQ_CREATE:
+    localsock_create_persona(api, el, msg, msgsz);
+    break;
+
+  default:
+    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    break;
+  }
 }
 
 static void localsock_crud_flock(struct localapi *api, struct eventloop *el,
@@ -830,7 +905,8 @@ static int localsock_flush(struct localapi *api, struct eventloop *el) {
   if ( (outgoing_ptr + 4) < api->la_outgoing_sz ) {
     memcpy(api->la_outgoing, api->la_outgoing + outgoing_ptr, api->la_outgoing_sz - outgoing_ptr);
     api->la_outgoing_sz -= outgoing_ptr;
-  }
+  } else
+    api->la_outgoing_sz = 0;
 
   return 0;
 }

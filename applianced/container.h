@@ -35,7 +35,6 @@ typedef int(*containerctlfn)(struct container *, int, void *, ssize_t);
 
 #define CONTAINER_CTL_DO_SETUP         9
 
-#define CONTAINER_CTL_GET_TMP_PATH    10
 #define CONTAINER_CTL_DESCRIBE        11
 
 struct container {
@@ -46,6 +45,8 @@ struct container {
   pid_t           c_init_process;
   // <0 if container is not running
   int             c_init_comm;
+
+  uint32_t        c_flags;
 
   int             c_bridge_port;
   struct in_addr  c_ip;
@@ -62,8 +63,12 @@ struct container {
   struct arpentry c_arp_entry;
 };
 
+#define CONTAINER_FLAG_KILL_IMMEDIATELY 0x1
+#define CONTAINER_FLAG_NETWORK_ONLY     0x2
+#define CONTAINER_FLAG_ENABLE_SCTP      0x4
+
 void container_clear(struct container *c);
-int container_init(struct container *c, struct brstate *br, containerctlfn cfn);
+int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags);
 void container_release(struct container *c);
 
 // Negative on error, 0 on succes, and 1 on success, if the container was launched

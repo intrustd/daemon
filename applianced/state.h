@@ -63,6 +63,7 @@ struct appstate {
   int as_local_fd;
   struct fdsub as_local_sub;
 
+  struct qdevtsub as_autostart_evt;
   struct eventloop as_eventloop;
 };
 

@@ -13,10 +13,9 @@
 #define SCTP_LOWEST_PRIVATE_PORT 49152
 
 static void persona_release(struct persona *p);
-static int personacontainerfn(struct container *c, int op, void *argp, ssize_t argl);
 
-static int persona_ensure_container_running(struct persona *p);
-static int persona_release_container(struct persona *p);
+// static int persona_ensure_container_running(struct persona *p);
+// static int persona_release_container(struct persona *p);
 
 static int appinstance_setup(struct appinstance *ai);
 static int appinstance_container_ctl(struct container *c, int op, void *argp, ssize_t argl);
@@ -36,20 +35,13 @@ static int persona_init_default(struct persona *p, struct appstate *as) {
   p->p_private_key = NULL;
   p->p_display_name = NULL;
   p->p_auths = NULL;
-  p->p_ports = NULL;
+  // p->p_ports = NULL;
   p->p_appstate = as;
-  p->p_last_port = SCTP_LOWEST_PRIVATE_PORT;
+  //  p->p_last_port = SCTP_LOWEST_PRIVATE_PORT;
   p->p_instances = NULL;
 
-  container_clear(&p->p_container);
-
-  if ( container_init(&p->p_container, &as->as_bridge, personacontainerfn) < 0 )
+  if ( pthread_mutex_init(&p->p_mutex, NULL) != 0 )
     return -1;
-
-  if ( pthread_mutex_init(&p->p_mutex, NULL) != 0 ) {
-    container_release(&p->p_container);
-    return -1;
-  }
 
   return 0;
 }
@@ -247,8 +239,6 @@ static void persona_release(struct persona *p) {
     free(a);
   }
   p->p_auths = NULL;
-
-  container_release(&p->p_container);
 }
 
 int persona_add_password(struct persona *p,
@@ -392,276 +382,326 @@ int persona_credential_validates(struct persona *p, const char *cred, size_t cre
   return ret;
 }
 
-static int personacontainerfn(struct container *c, int op, void *argp, ssize_t argl) {
-  struct persona *p = STRUCT_FROM_BASE(struct persona, p_container, c);
-  struct brpermrequest *perm;
-  const char **cp;
-  char *hostname, *persona_id;
-  int hostname_len, err;
-  char persona_id_str[PERSONA_ID_X_LENGTH];
+// static int personacontainerfn(struct container *c, int op, void *argp, ssize_t argl) {
+//   struct persona *p = STRUCT_FROM_BASE(struct persona, p_container, c);
+//   struct brpermrequest *perm;
+//   const char **cp;
+//   char *hostname, *persona_id;
+//   int hostname_len, err;
+//   char persona_id_str[PERSONA_ID_X_LENGTH];
+// 
+//   struct arpdesc *desc;
+// 
+//   switch ( op ) {
+// 
+//   case CONTAINER_CTL_DESCRIBE:
+//     desc = argp;
+//     desc->ad_container_type = ARP_DESC_PERSONA;
+//     memcpy(desc->ad_persona.ad_persona_id, p->p_persona_id,
+//            sizeof(desc->ad_persona.ad_persona_id));
+//     return 0;
+// 
+//   case CONTAINER_CTL_CHECK_PERMISSION:
+//     perm = argp;
+//     if ( perm->bpr_perm.bp_type == BR_PERM_APPLICATION ) {
+//       PERSONA_REF(p);
+//       perm->bpr_persona = p;
+//       return 0;
+//     }
+//     return -1;
+// 
+//   case CONTAINER_CTL_GET_TMP_PATH:
+//     err = snprintf((char *) argp, argl, "%s/proc", p->p_appstate->as_conf_dir);
+//     if ( err >= argl ) return -1;
+//     else return 0;
+// 
+//   case CONTAINER_CTL_GET_INIT_PATH:
+//     cp = argp;
+//     *cp = p->p_appstate->as_persona_init_path;
+//     return 0;
+// 
+//   case CONTAINER_CTL_GET_ARGS:
+//     if ( argl < 1 ) {
+//       fprintf(stderr, "personacontainerfn: not enough space for args\n");
+//       return -1;
+//     }
+// 
+//     cp = argp;
+// 
+//     cp[0] = persona_id = malloc(PERSONA_ID_X_LENGTH + 1);
+//     if ( !cp[0] ) {
+//       fprintf(stderr, "personacontainerfn: could not allocate argument 1\n");
+//       return -1;
+//     }
+//     persona_id[PERSONA_ID_X_LENGTH] = '\0';
+//     hex_digest_str((unsigned char *)p->p_persona_id, persona_id, PERSONA_ID_LENGTH);
+//     return 1;
+// 
+//   case CONTAINER_CTL_GET_HOSTNAME:
+//     cp = argp;
+//     hostname_len = strlen(PERSONA_HOSTNAME_PREFIX) + 16; //PERSONA_ID_X_LENGTH;
+//     *cp = hostname = malloc(hostname_len + 1);
+//     if ( !(*cp) ) {
+//       fprintf(stderr, "personacontainerfn: could not allocate hostname\n");
+//       return -1;
+//     }
+// 
+//     err = snprintf(hostname, hostname_len + 1, "%s%.16s", PERSONA_HOSTNAME_PREFIX,
+//                    hex_digest_str((const unsigned char *)p->p_persona_id,
+//                                   persona_id_str, PERSONA_ID_LENGTH));
+//     assert(err == hostname_len);
+//     (void)err;
+// 
+//     return 0;
+// 
+//   case CONTAINER_CTL_ON_SHUTDOWN:
+//     PERSONA_UNREF(p);
+//     return 0;
+// 
+//   case CONTAINER_CTL_RELEASE_INIT_PATH:
+//     return 0;
+//   case CONTAINER_CTL_RELEASE_ARG:
+//   case CONTAINER_CTL_RELEASE_HOSTNAME:
+//     free(argp);
+//     return 0;
+//   default:
+//     fprintf(stderr, "personacontainerfn: unknown op %d\n", op);
+//     return -2;
+//   }
+// }
 
-  struct arpdesc *desc;
+// pid_t persona_run_ping_test(struct persona *p) {
+//   const char *argv[] = { "ping", "10.0.0.1", NULL };
+//   int err;
+//   pid_t ret;
+// 
+//   err = persona_ensure_container_running(p);
+//   if ( err < 0 ) {
+//     fprintf(stderr, "persona_run_ping_test: could not launch\n");
+//     return -1;
+//   }
+// 
+//   ret = container_execute(&p->p_container, 0, "/run/wrappers/bin/ping", argv, NULL);
+//   if ( ret < 0 )
+//     persona_release_container(p);
+// 
+//   return ret;
+// }
+// 
+// pid_t persona_run_webrtc_proxy(struct persona *p, uint16_t port) {
+//   char port_str[16];
+//   const char *argv[] = {
+//     "webrtc-proxy", port_str, "TODO capability", NULL
+//   };
+//   int err;
+//   pid_t ret;
+// 
+//   fprintf(stderr, "attempting to launch webRTC proxy on port %d\n", port);
+// 
+//   err = snprintf(port_str, sizeof(port_str), "%d", port);
+//   assert(err < sizeof(port_str));
+// 
+//   err = persona_ensure_container_running(p);
+//   if ( err < 0 ) {
+//     fprintf(stderr, "persona_run_webrtc_proxy: could not launch persona container\n");
+//     return -1;
+//   }
+// 
+//   ret = container_execute(&p->p_container, CONTAINER_EXEC_WAIT_FOR_KITE,
+//                           p->p_appstate->as_webrtc_proxy_path,
+//                           argv, NULL);
+//   if ( ret < 0 )
+//     persona_release_container(p);
+// 
+//   return ret;
+// }
 
-  switch ( op ) {
+// int persona_allocate_port(struct persona *p, uint16_t *port) {
+//   *port = 0;
+// 
+//   if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
+//     struct personaport *pp;
+//     int ret = 0;
+//     uint16_t attempts = 0;
+// 
+//     for ( attempts = 0; attempts < (0xFFFF - SCTP_LOWEST_PRIVATE_PORT); ++attempts ) {
+//       p->p_last_port++;
+//       if ( p->p_last_port < SCTP_LOWEST_PRIVATE_PORT )
+//         p->p_last_port = SCTP_LOWEST_PRIVATE_PORT;
+// 
+//       HASH_FIND(pp_hh, p->p_ports, &p->p_last_port, sizeof(p->p_last_port), pp);
+//       if ( !pp ) {
+//         pp = malloc(sizeof(*pp));
+//         if ( !pp ) {
+//           fprintf(stderr, "persona_allocate_port: out of memory\n");
+//           ret = -1;
+//           goto done;
+//         }
+// 
+//         pp->pp_port = p->p_last_port;
+//         HASH_ADD(pp_hh, p->p_ports, pp_port, sizeof(pp->pp_port), pp);
+// 
+//         *port = pp->pp_port;
+//         ret = 0;
+//         goto done;
+//       }
+//     }
+// 
+//     ret = -1;
+//   done:
+//     pthread_mutex_unlock(&p->p_mutex);
+//     return ret;
+//   } else
+//     return -1;
+// }
+// 
+// void persona_release_port(struct persona *p, uint16_t port) {
+//   struct personaport *pp;
+//   SAFE_MUTEX_LOCK(&p->p_mutex);
+//   HASH_FIND(pp_hh, p->p_ports, &port, sizeof(port), pp);
+//   if ( pp ) {
+//     HASH_DELETE(pp_hh, p->p_ports, pp);
+//   }
+//   pthread_mutex_unlock(&p->p_mutex);
+// 
+//   free(pp);
+// }
+// 
+// static int persona_ensure_container_running(struct persona *p) {
+//   int err;
+// 
+//   err = container_ensure_running(&p->p_container, &p->p_appstate->as_eventloop);
+//   if ( err < 0 ) {
+//     fprintf(stderr, "persona_ensure_container_running: container_ensure_running failed\n");
+//     return -1;
+//   }
+// 
+//   return err;
+// }
+// 
+// static int persona_release_container(struct persona *p) {
+//   return container_release_running(&p->p_container, &p->p_appstate->as_eventloop);
+// }
 
-  case CONTAINER_CTL_DESCRIBE:
-    desc = argp;
-    desc->ad_container_type = ARP_DESC_PERSONA;
-    memcpy(desc->ad_persona.ad_persona_id, p->p_persona_id,
-           sizeof(desc->ad_persona.ad_persona_id));
-    return 0;
+struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, struct app *a) {
+  int singleton = 0;
+  struct appinstance *ret;
 
-  case CONTAINER_CTL_CHECK_PERMISSION:
-    perm = argp;
-    if ( perm->bpr_perm.bp_type == BR_PERM_APPLICATION ) {
-      PERSONA_REF(p);
-      perm->bpr_persona = p;
-      return 0;
-    }
-    return -1;
+  if ( pthread_mutex_lock(&a->app_mutex) == 0 ) {
+    if ( a->app_flags & APP_FLAG_SINGLETON ) {
+      fprintf(stderr, "Going to launch %s as singleton\n", a->app_canonical_url);
+      if ( a->app_singleton ) {
+        ret = a->app_singleton;
+        APPINSTANCE_REF(ret);
+        container_ensure_running(&ret->inst_container, &p->p_appstate->as_eventloop);
+        pthread_mutex_unlock(&a->app_mutex);
 
-  case CONTAINER_CTL_GET_TMP_PATH:
-    err = snprintf((char *) argp, argl, "%s/proc", p->p_appstate->as_conf_dir);
-    if ( err >= argl ) return -1;
-    else return 0;
-
-  case CONTAINER_CTL_GET_INIT_PATH:
-    cp = argp;
-    *cp = p->p_appstate->as_persona_init_path;
-    return 0;
-
-  case CONTAINER_CTL_GET_ARGS:
-    if ( argl < 1 ) {
-      fprintf(stderr, "personacontainerfn: not enough space for args\n");
-      return -1;
-    }
-
-    cp = argp;
-
-    cp[0] = persona_id = malloc(PERSONA_ID_X_LENGTH + 1);
-    if ( !cp[0] ) {
-      fprintf(stderr, "personacontainerfn: could not allocate argument 1\n");
-      return -1;
-    }
-    persona_id[PERSONA_ID_X_LENGTH] = '\0';
-    hex_digest_str((unsigned char *)p->p_persona_id, persona_id, PERSONA_ID_LENGTH);
-    return 1;
-
-  case CONTAINER_CTL_GET_HOSTNAME:
-    cp = argp;
-    hostname_len = strlen(PERSONA_HOSTNAME_PREFIX) + 16; //PERSONA_ID_X_LENGTH;
-    *cp = hostname = malloc(hostname_len + 1);
-    if ( !(*cp) ) {
-      fprintf(stderr, "personacontainerfn: could not allocate hostname\n");
-      return -1;
-    }
-
-    err = snprintf(hostname, hostname_len + 1, "%s%.16s", PERSONA_HOSTNAME_PREFIX,
-                   hex_digest_str((const unsigned char *)p->p_persona_id,
-                                  persona_id_str, PERSONA_ID_LENGTH));
-    assert(err == hostname_len);
-    (void)err;
-
-    return 0;
-
-  case CONTAINER_CTL_ON_SHUTDOWN:
-    PERSONA_UNREF(p);
-    return 0;
-
-  case CONTAINER_CTL_RELEASE_INIT_PATH:
-    return 0;
-  case CONTAINER_CTL_RELEASE_ARG:
-  case CONTAINER_CTL_RELEASE_HOSTNAME:
-    free(argp);
-    return 0;
-  default:
-    fprintf(stderr, "personacontainerfn: unknown op %d\n", op);
-    return -2;
-  }
-}
-
-pid_t persona_run_ping_test(struct persona *p) {
-  const char *argv[] = { "ping", "10.0.0.1", NULL };
-  int err;
-  pid_t ret;
-
-  err = persona_ensure_container_running(p);
-  if ( err < 0 ) {
-    fprintf(stderr, "persona_run_ping_test: could not launch\n");
-    return -1;
-  }
-
-  ret = container_execute(&p->p_container, 0, "/run/wrappers/bin/ping", argv, NULL);
-  if ( ret < 0 )
-    persona_release_container(p);
-
-  return ret;
-}
-
-pid_t persona_run_webrtc_proxy(struct persona *p, uint16_t port) {
-  char port_str[16];
-  const char *argv[] = {
-    "webrtc-proxy", port_str, "TODO capability", NULL
-  };
-  int err;
-  pid_t ret;
-
-  fprintf(stderr, "attempting to launch webRTC proxy on port %d\n", port);
-
-  err = snprintf(port_str, sizeof(port_str), "%d", port);
-  assert(err < sizeof(port_str));
-
-  err = persona_ensure_container_running(p);
-  if ( err < 0 ) {
-    fprintf(stderr, "persona_run_webrtc_proxy: could not launch persona container\n");
-    return -1;
-  }
-
-  ret = container_execute(&p->p_container, CONTAINER_EXEC_WAIT_FOR_KITE,
-                          p->p_appstate->as_webrtc_proxy_path,
-                          argv, NULL);
-  if ( ret < 0 )
-    persona_release_container(p);
-
-  return ret;
-}
-
-int persona_allocate_port(struct persona *p, uint16_t *port) {
-  *port = 0;
-
-  if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
-    struct personaport *pp;
-    int ret = 0;
-    uint16_t attempts = 0;
-
-    for ( attempts = 0; attempts < (0xFFFF - SCTP_LOWEST_PRIVATE_PORT); ++attempts ) {
-      p->p_last_port++;
-      if ( p->p_last_port < SCTP_LOWEST_PRIVATE_PORT )
-        p->p_last_port = SCTP_LOWEST_PRIVATE_PORT;
-
-      HASH_FIND(pp_hh, p->p_ports, &p->p_last_port, sizeof(p->p_last_port), pp);
-      if ( !pp ) {
-        pp = malloc(sizeof(*pp));
-        if ( !pp ) {
-          fprintf(stderr, "persona_allocate_port: out of memory\n");
-          ret = -1;
-          goto done;
-        }
-
-        pp->pp_port = p->p_last_port;
-        HASH_ADD(pp_hh, p->p_ports, pp_port, sizeof(pp->pp_port), pp);
-
-        *port = pp->pp_port;
-        ret = 0;
-        goto done;
-      }
-    }
-
-    ret = -1;
-  done:
-    pthread_mutex_unlock(&p->p_mutex);
-    return ret;
-  } else
-    return -1;
-}
-
-void persona_release_port(struct persona *p, uint16_t port) {
-  struct personaport *pp;
-  SAFE_MUTEX_LOCK(&p->p_mutex);
-  HASH_FIND(pp_hh, p->p_ports, &port, sizeof(port), pp);
-  if ( pp ) {
-    HASH_DELETE(pp_hh, p->p_ports, pp);
-  }
-  pthread_mutex_unlock(&p->p_mutex);
-
-  free(pp);
-}
-
-static int persona_ensure_container_running(struct persona *p) {
-  int err;
-
-  err = container_ensure_running(&p->p_container, &p->p_appstate->as_eventloop);
-  if ( err < 0 ) {
-    fprintf(stderr, "persona_ensure_container_running: container_ensure_running failed\n");
-    return -1;
-  }
-
-  return err;
-}
-
-static int persona_release_container(struct persona *p) {
-  return container_release_running(&p->p_container, &p->p_appstate->as_eventloop);
-}
-
-struct appinstance *persona_launch_app_instance(struct persona *p, struct app *a) {
-  // Check if there is an instance available
-  if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
-    struct appinstance *ret;
-    HASH_FIND(inst_persona_hh, p->p_instances,
-              a->app_canonical_url,
-              strlen(a->app_canonical_url),
-              ret);
-    if ( ret ) {
-      APPINSTANCE_REF(ret);
-      container_ensure_running(&ret->inst_container, &p->p_appstate->as_eventloop);
-      pthread_mutex_unlock(&p->p_mutex);
-      return ret;
-    }
-
-    ret = malloc(sizeof(*ret));
-    SHARED_INIT(&ret->inst_shared, freeinstfn);
-    if ( pthread_mutex_init(&ret->inst_mutex, NULL) != 0 ) {
-      free(ret);
+        return ret;
+      } else
+        singleton = 1;
+    } else if ( !p ) {
+      fprintf(stderr, "cannot launch non-singleton app without persona\n");
+      pthread_mutex_unlock(&a->app_mutex);
       return NULL;
     }
+    pthread_mutex_unlock(&a->app_mutex);
+  }
 
-    APPLICATION_REF(a);
+  if ( !singleton ) {
+    assert(p);
+
+    // Check if there is an instance available
+    if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
+      HASH_FIND(inst_persona_hh, p->p_instances,
+                a->app_canonical_url,
+                strlen(a->app_canonical_url),
+                ret);
+      if ( ret ) {
+        APPINSTANCE_REF(ret);
+        container_ensure_running(&ret->inst_container, &p->p_appstate->as_eventloop);
+        pthread_mutex_unlock(&p->p_mutex);
+        return ret;
+      }
+    } else
+      return NULL;
+  }
+
+  ret = malloc(sizeof(*ret));
+  SHARED_INIT(&ret->inst_shared, freeinstfn);
+  if ( pthread_mutex_init(&ret->inst_mutex, NULL) != 0 ) {
+    free(ret);
+    return NULL;
+  }
+
+  ret->inst_appstate = as;
+
+  APPLICATION_REF(a);
+  ret->inst_app = a;
+
+  if ( !singleton ) {
     PERSONA_REF(p);
-    ret->inst_app = a;
     ret->inst_persona = p;
+  } else
+    ret->inst_persona = NULL;
 
-    ret->inst_init_comm = -1;
-    container_init(&ret->inst_container, &p->p_appstate->as_bridge, appinstance_container_ctl);
+  ret->inst_init_comm = -1;
+  container_init(&ret->inst_container, &as->as_bridge, appinstance_container_ctl, 0);
 
-    if ( pthread_mutex_lock(&a->app_mutex) == 0 ) {
+  if ( pthread_mutex_lock(&a->app_mutex) == 0 ) {
+    if ( p )
       HASH_ADD_KEYPTR(inst_persona_hh, p->p_instances,
                       a->app_canonical_url, strlen(a->app_canonical_url), ret);
-      HASH_ADD_KEYPTR(inst_app_hh, a->app_instances,
-                      a->app_canonical_url, strlen(a->app_canonical_url), ret);
-      pthread_mutex_unlock(&a->app_mutex);
 
-      // Start the container. The running container holds an instance of us
-      APPINSTANCE_REF(ret);
-      container_ensure_running(&ret->inst_container, &p->p_appstate->as_eventloop);
+    if ( singleton ) {
+      a->app_singleton = ret;
     } else {
-      free(ret);
-      ret = NULL;
+      HASH_ADD_KEYPTR(inst_app_hh, a->app_instances,
+                      p->p_persona_id, PERSONA_ID_LENGTH, ret);
     }
+    pthread_mutex_unlock(&a->app_mutex);
+
+    // Start the container. The running container holds an instance of us
+    APPINSTANCE_REF(ret);
+    container_ensure_running(&ret->inst_container, &as->as_eventloop);
+  } else {
+    free(ret);
+    ret = NULL;
+  }
+
+  if ( !singleton )
     pthread_mutex_unlock(&p->p_mutex);
-    return ret;
-  } else
-    return NULL;
+  return ret;
 }
 
 static void freeinstfn(const struct shared *sh, int level) {
   if ( level == SHFREE_NO_MORE_REFS ) {
     struct appinstance *ai = STRUCT_FROM_BASE(struct appinstance, inst_shared, sh), *existing;
 
-    SAFE_MUTEX_LOCK(&ai->inst_persona->p_mutex);
-    SAFE_MUTEX_LOCK(&ai->inst_app->app_mutex);
-    HASH_FIND(inst_persona_hh, ai->inst_persona->p_instances,
-              ai->inst_app->app_canonical_url, strlen(ai->inst_app->app_canonical_url), existing);
-    if ( existing == ai ) {
-      HASH_DELETE(inst_persona_hh, ai->inst_persona->p_instances, existing);
-    }
+    if ( ai->inst_persona )
+      SAFE_MUTEX_LOCK(&ai->inst_persona->p_mutex);
 
-    HASH_FIND(inst_app_hh, ai->inst_app->app_instances,
-              ai->inst_app->app_canonical_url, strlen(ai->inst_app->app_canonical_url), existing);
-    if ( existing == ai ) {
-      HASH_DELETE(inst_app_hh, ai->inst_app->app_instances, existing);
+    SAFE_MUTEX_LOCK(&ai->inst_app->app_mutex);
+
+    if ( ai->inst_persona ) {
+      HASH_FIND(inst_persona_hh, ai->inst_persona->p_instances,
+                ai->inst_app->app_canonical_url, strlen(ai->inst_app->app_canonical_url), existing);
+      if ( existing == ai ) {
+        HASH_DELETE(inst_persona_hh, ai->inst_persona->p_instances, existing);
+      }
+
+
+      HASH_FIND(inst_app_hh, ai->inst_app->app_instances,
+                ai->inst_app->app_canonical_url, strlen(ai->inst_app->app_canonical_url), existing);
+      if ( existing == ai ) {
+        HASH_DELETE(inst_app_hh, ai->inst_app->app_instances, existing);
+      }
+      pthread_mutex_unlock(&ai->inst_app->app_mutex);
+      pthread_mutex_unlock(&ai->inst_persona->p_mutex);
+    } else {
+      SAFE_ASSERT( ai->inst_app->app_singleton == ai );
+      ai->inst_app->app_singleton = NULL;
+      pthread_mutex_unlock(&ai->inst_app->app_mutex);
     }
-    pthread_mutex_unlock(&ai->inst_app->app_mutex);
-    pthread_mutex_unlock(&ai->inst_persona->p_mutex);
 
     // The container will certainly be stopped, since a running container holds one ref
     if ( ai->inst_init_comm >= 0 ) {
@@ -672,7 +712,9 @@ static void freeinstfn(const struct shared *sh, int level) {
     pthread_mutex_destroy(&ai->inst_mutex);
 
     APPLICATION_UNREF(ai->inst_app);
-    PERSONA_UNREF(ai->inst_persona);
+
+    if ( ai->inst_persona )
+      PERSONA_UNREF(ai->inst_persona);
 
     free(ai);
   }
@@ -682,7 +724,6 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
   struct appinstance *ai = STRUCT_FROM_BASE(struct appinstance, inst_container, c);
   const char **cp;
   char *persona_id;
-  int err;
 
   struct arpdesc *desc;
 
@@ -690,20 +731,18 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
   case CONTAINER_CTL_DESCRIBE:
     desc = argp;
     desc->ad_container_type = ARP_DESC_APP_INSTANCE;
-    memcpy(desc->ad_app_instance.ad_persona_id, ai->inst_persona->p_persona_id,
-           sizeof(desc->ad_app_instance.ad_persona_id));
+    if ( ai->inst_persona ) {
+      memcpy(desc->ad_app_instance.ad_persona_id, ai->inst_persona->p_persona_id,
+             sizeof(desc->ad_app_instance.ad_persona_id));
+    } else
+      memset(desc->ad_app_instance.ad_persona_id, 0, sizeof(desc->ad_app_instance.ad_persona_id));
     strncpy(desc->ad_app_instance.ad_app_url, ai->inst_app->app_canonical_url,
             sizeof(desc->ad_app_instance.ad_app_url));
     return 0;
 
-  case CONTAINER_CTL_GET_TMP_PATH:
-    err = snprintf((char *) argp, argl, "%s/proc", ai->inst_persona->p_appstate->as_conf_dir);
-    if ( err >= argl ) return -1;
-    else return 0;
-
   case CONTAINER_CTL_GET_INIT_PATH:
     cp = argp;
-    *cp = ai->inst_persona->p_appstate->as_app_instance_init_path;
+    *cp = ai->inst_appstate->as_app_instance_init_path;
     return 0;
 
   case CONTAINER_CTL_GET_ARGS:
@@ -713,10 +752,13 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
     }
 
     cp = argp;
-    cp[0] = persona_id = malloc(PERSONA_ID_X_LENGTH + 1);
-    if ( !persona_id ) return -1;
+    if ( ai->inst_persona ) {
+      cp[0] = persona_id = malloc(PERSONA_ID_X_LENGTH + 1);
+      if ( !persona_id ) return -1;
 
-    hex_digest_str((unsigned char *)ai->inst_persona->p_persona_id, persona_id, PERSONA_ID_LENGTH);
+      hex_digest_str((unsigned char *)ai->inst_persona->p_persona_id, persona_id, PERSONA_ID_LENGTH);
+    } else
+      cp[0] = "0000000000000000000000000000000000000000000000000000000000000000";
 
     cp[1] = ai->inst_app->app_canonical_url;
     cp[2] = ai->inst_app->app_current_manifest->am_nix_closure;
@@ -780,6 +822,7 @@ static int appinstance_setup(struct appinstance *ai) {
   uint32_t app_flags = 0;
 
   if ( pthread_mutex_lock(&ai->inst_app->app_mutex) == 0 ) {
+    fprintf(stderr, "appinstance_setup: read flags\n");
     app_flags = ai->inst_app->app_flags;
     pthread_mutex_unlock(&ai->inst_app->app_mutex);
   }
@@ -811,13 +854,19 @@ static int appinstance_setup(struct appinstance *ai) {
   FORMAT_PATH("%s/sys", image_path);
   DO_MOUNT("sysfs", path, "sysfs", MS_NOSUID | MS_NOEXEC | MS_NODEV | MS_RDONLY, "");
 
+  if ( ai->inst_persona ) {
+    hex_digest_str((unsigned char *) ai->inst_persona->p_persona_id,
+                   persona_id_str, PERSONA_ID_LENGTH);
+  } else {
+    memset(persona_id_str, '0', sizeof(persona_id_str));
+    persona_id_str[PERSONA_ID_X_LENGTH] = '\0';
+  }
+
   SAFE_ASSERT(validate_canonical_url(ai->inst_app->app_canonical_url,
                                      app_name_or_path, sizeof(app_name_or_path),
                                      app_domain, sizeof(app_domain)));
-  FORMAT_PATH("%s/personas/%s/data/%s/%s", ai->inst_persona->p_appstate->as_conf_dir,
-              hex_digest_str((unsigned char *)ai->inst_persona->p_persona_id,
-                             persona_id_str, PERSONA_ID_LENGTH),
-              app_domain, app_name_or_path);
+  FORMAT_PATH("%s/personas/%s/data/%s/%s", ai->inst_appstate->as_conf_dir,
+              persona_id_str, app_domain, app_name_or_path);
   fprintf(stderr, "Made path %s\n", path);
   err = mkdir_recursive(path);
   if ( err < 0 ) {
@@ -832,7 +881,7 @@ static int appinstance_setup(struct appinstance *ai) {
   SAFE_ASSERT(validate_canonical_url(ai->inst_app->app_canonical_url,
                                      app_name_or_path, sizeof(app_name_or_path),
                                      app_domain, sizeof(app_domain)));
-  FORMAT_PATH("%s/personas/%s/log/%s/%s", ai->inst_persona->p_appstate->as_conf_dir,
+  FORMAT_PATH("%s/personas/%s/log/%s/%s", ai->inst_appstate->as_conf_dir,
               persona_id_str, app_domain, app_name_or_path);
   fprintf(stderr, "Making log path %s\n", path);
   err = mkdir_recursive(path);
@@ -846,6 +895,7 @@ static int appinstance_setup(struct appinstance *ai) {
   DO_MOUNT(app_name_or_path, path, "bind", MS_BIND | MS_REC, "");
 
   // If this app has the 'run_with_admin' permission, then run this application with administrator privileges
+  fprintf(stderr, "testing run as admin: %p %s %08x\n", ai->inst_app, ai->inst_app->app_canonical_url, app_flags);
   if ( app_flags & APP_FLAG_RUN_AS_ADMIN ) {
     FORMAT_PATH("%s/kite/appliance", image_path);
     err = mkdir_recursive(path);
@@ -854,7 +904,14 @@ static int appinstance_setup(struct appinstance *ai) {
       fprintf(stderr, "appinstance_setup: while making %s\n", path);
     }
 
-    DO_MOUNT(ai->inst_persona->p_appstate->as_conf_dir, path, "bind", MS_BIND | MS_REC, "");
+    DO_MOUNT(ai->inst_appstate->as_conf_dir, path, "bind", MS_BIND | MS_REC, "");
+
+    if ( bridge_mark_as_admin(&ai->inst_appstate->as_bridge,
+                              ai->inst_container.c_bridge_port,
+                              ai->inst_container.c_arp_entry.ae_mac) < 0 ) {
+      fprintf(stderr, "appinstance_setup: bridge_mark_as_admin fails\n");
+    } else
+      fprintf(stderr, "appinstance_setup: marked as admin\n");
   }
 
   if ( setenv("HOME", path, 1) < 0 ) {

@@ -482,11 +482,8 @@ static int sdp_parse_line(struct sdpparsest *st) {
     st->sps_mode = SPS_MODE_PARSED_MEDIA_ATTRIBUTE;
     if ( type == 'a' ) {
       const char *nms, *nme, *vls, *vle;
-      fprintf(stderr, "This is an sdp attribute\n");
       if ( sdp_parse_attribute(st, &nms, &nme, &vls, &vle) < 0 )
         SDP_RETURN_ERROR;
-
-      fprintf(stderr, "Got sdp attribute %.*s\n", (int)(nme - nms), nms);
 
       if ( st->sps_attr_fn(st->sps_user_data, nms, nme, vls, vle) < 0 )
         SDP_ERROR(SPS_INVALID_ATTR);

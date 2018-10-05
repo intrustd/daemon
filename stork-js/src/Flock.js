@@ -1,4 +1,4 @@
 import { FlockClient } from "./FlockClient.js";
-import installStork from "./polyfill/Install.js";
+import installKite from "./polyfill/Install.js";
 
-window.installStork = installStork
+window.installKite = installKite
