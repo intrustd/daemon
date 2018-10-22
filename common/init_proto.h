@@ -29,6 +29,13 @@ struct stkinitmsg {
 
 // The process follows the kite initialization protocol. Set this flag
 // to wait for the process to really start
-#define STK_RUN_FLAG_KITE 0x00000001
+#define STK_RUN_FLAG_KITE   0x00000001
+
+#define STK_RUN_FLAG_STDIN  0x00000002
+#define STK_RUN_FLAG_STDOUT 0x00000004
+#define STK_RUN_FLAG_STDERR 0x00000008
+
+// Causes the process to send its return code on a pipe when it exits
+#define STK_RUN_FLAG_WAIT   0x00000010
 
 #endif

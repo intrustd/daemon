@@ -9,9 +9,11 @@
 #define OP_APPUPDATER_DL_PROGRESS EVT_CTL_CUSTOM
 #define OP_APPUPDATER_PARSE_ASYNC (EVT_CTL_CUSTOM + 1)
 #define OP_APPUPDATER_BUILD_PROCESS_EVENT (EVT_CTL_CUSTOM + 2)
+#define OP_APPUPDATER_DL_SIGN_PROGRESS (EVT_CTL_CUSTOM + 3)
 
 #define MF_TMPFILE_TEMPLATE "%s/manifests/.%08lx-download.tmp"
 #define MF_FINAL_TEMPLATE "%s/manifests/%s"
+#define SIGN_SUFFIX ".sign"
 
 static void appupdater_parse_manifest(struct appupdater *au);
 static void appupdater_error(struct appupdater *au, int sts);
@@ -58,50 +60,97 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
     appupdater_parse_manifest(au);
     break;
 
+  case OP_APPUPDATER_DL_SIGN_PROGRESS:
+    dle = arg;
+    au = STRUCT_FROM_BASE(struct appupdater, au_sign_download, dle->dle_dl);
+
+    if ( download_complete(dle->dle_dl) ) {
+      fclose(au->au_sign_output);
+      au->au_sign_output = NULL;
+
+      if ( dle->dle_dl->dl_sts == DL_STATUS_NOT_FOUND ||
+           dle->dle_dl->dl_sts >= 0 ) {
+        au->au_sts = AU_STATUS_PARSING;
+        eventloop_invoke_async(&au->au_appstate->as_eventloop, &au->au_parse_async);
+      } else if ( dle->dle_dl->dl_sts < 0 ) {
+        fprintf(stderr, "appupdater: %p: failed: %d\n", au, dle->dle_dl->dl_sts);;
+        appupdater_error(au,AU_STATUS_ERROR);
+      }
+    } else {
+      fprintf(stderr, "appupdater: %p: downloaded %lu/%lu bytes of signature\n",
+              au, dle->dle_dl->dl_complete, dle->dle_dl->dl_total);
+      if ( fwrite(dle->dle_dl->dl_buf, 1, dle->dle_dl->dl_bufsz, au->au_sign_output) !=
+           dle->dle_dl->dl_bufsz ) {
+        perror("fwrite(signature)");
+        download_cancel(&au->au_sign_download);
+        appupdater_error(au,AU_STATUS_ERROR);
+      } else {
+        download_continue(&au->au_sign_download);
+      }
+    }
+    break;
+
   case OP_APPUPDATER_DL_PROGRESS:
     dle = arg;
     au = STRUCT_FROM_BASE(struct appupdater, au_download, dle->dle_dl);
     SAFE_MUTEX_LOCK(&au->au_mutex);
     if ( download_complete(dle->dle_dl) ) {
-      if ( au->au_application )
-        application_unset_flags(au->au_application, APP_FLAG_DOWNLOADING_MFST);
-      fprintf(stderr, "appupdater: %p complete\n", au);
-      if ( !SHA256_Final(au->au_sha256_digest, &au->au_sha256_ctx) ) {
-        fprintf(stderr, "appupdater: could not calculate digest\n");
+      if ( dle->dle_dl->dl_sts < 0 ) {
+        fprintf(stderr, "appupdater: %p errored: %d\n", au, dle->dle_dl->dl_sts);
         appupdater_error(au, AU_STATUS_ERROR);
       } else {
-        char old_name[PATH_MAX], new_name[PATH_MAX];
-        int err;
-
-        fclose(au->au_output);
-        au->au_output = NULL;
-
-        err = snprintf(old_name, sizeof(old_name), MF_TMPFILE_TEMPLATE,
-                       au->au_appstate->as_conf_dir, (uintptr_t)au);
-        if ( err >= sizeof(old_name) ) {
-          fprintf(stderr, "appupdate: overflowed path\n");
+        if ( au->au_application )
+          application_unset_flags(au->au_application, APP_FLAG_DOWNLOADING_MFST);
+        fprintf(stderr, "appupdater: %p complete\n", au);
+        if ( !SHA256_Final(au->au_sha256_digest, &au->au_sha256_ctx) ) {
+          fprintf(stderr, "appupdater: could not calculate digest\n");
           appupdater_error(au, AU_STATUS_ERROR);
-        }
+        } else {
+          char old_name[PATH_MAX], new_name[PATH_MAX];
+          int err;
 
+          fclose(au->au_output);
+          au->au_output = NULL;
 
-        err = appupdater_manifest_path(au, new_name, sizeof(new_name));
-        if ( err < 0 ) {
-          fprintf(stderr, "appupdate: overflowed path\n");
-          appupdater_error(au, AU_STATUS_ERROR);
-        }
-
-        if ( au->au_sts != AU_STATUS_ERROR ) {
-          err = rename(old_name, new_name);
-          if ( err < 0 ) {
-            perror("appupdate: rename");
+          err = snprintf(old_name, sizeof(old_name), MF_TMPFILE_TEMPLATE,
+                         au->au_appstate->as_conf_dir, (uintptr_t)au);
+          if ( err >= sizeof(old_name) ) {
+            fprintf(stderr, "appupdate: overflowed path\n");
             appupdater_error(au, AU_STATUS_ERROR);
           }
 
-          au->au_sts = AU_STATUS_PARSING;
-        }
+          err = appupdater_manifest_path(au, new_name, sizeof(new_name));
+          if ( err < 0 ) {
+            fprintf(stderr, "appupdate: overflowed path\n");
+            appupdater_error(au, AU_STATUS_ERROR);
+          }
 
-        if ( au->au_sts == AU_STATUS_PARSING )
-          eventloop_invoke_async(&au->au_appstate->as_eventloop, &au->au_parse_async);
+          if ( au->au_sts != AU_STATUS_ERROR ) {
+            err = rename(old_name, new_name);
+            if ( err < 0 ) {
+              perror("appupdate: rename");
+              appupdater_error(au, AU_STATUS_ERROR);
+            } else {
+              au->au_sts = AU_STATUS_DOWNLOADING_SIG;
+            }
+          }
+
+          if ( au->au_sts == AU_STATUS_DOWNLOADING_SIG ) {
+            err = snprintf(old_name, sizeof(old_name), "%s.sign", new_name);
+            if ( err >= sizeof(old_name) ) {
+              fprintf(stderr, "appupdater: overflowed path (signature)\n");
+              appupdater_error(au, AU_STATUS_ERROR);
+            } else {
+              au->au_sign_output = fopen(old_name, "wb");
+              if ( !au->au_sign_output ) {
+                perror("appupdater: fopen(signature)");
+                appupdater_error(au, AU_STATUS_ERROR);
+              } else {
+                download_start(&au->au_sign_download);
+              }
+            }
+          }
+        }
       }
     } else {
       fprintf(stderr, "appupdater: %p: downloaded %lu/%lu bytes\n", au,
@@ -129,11 +178,11 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
 struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t uri_len,
                                   int reason, struct app *app) {
   UriParserStateA urip;
-  UriUriA uri_uri;
+  UriUriA uri_uri, sign_uri;
 
   char output_path[PATH_MAX];
   int err;
-  char *au_url;
+  char *au_url, *au_sign_url;
   struct appupdater *u;
 
   urip.uri = &uri_uri;
@@ -181,14 +230,27 @@ struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t u
     SHARED_INIT(&u->au_shared, appupdater_free);
 
     u->au_output = NULL;
+    u->au_sign_output = NULL;
     u->au_application = NULL;
     u->au_manifest = NULL;
     download_clear(&u->au_download);
+    download_clear(&u->au_sign_download);
     u->au_url = au_url = malloc(uri_len + 1);
     if ( !u->au_url ) goto error;
+    u->au_sign_url = au_sign_url = malloc(uri_len + strlen(SIGN_SUFFIX) + 1);
+    if ( !u->au_sign_url ) goto error;
 
     memcpy(au_url, uri, uri_len);
     au_url[uri_len] = '\0';
+
+    strcpy(au_sign_url, au_url);
+    strcat(au_sign_url, SIGN_SUFFIX);
+
+    urip.uri = &sign_uri;
+    if ( uriParseUriExA(&urip, au_sign_url, au_sign_url + strlen(au_sign_url)) != URI_SUCCESS ) {
+      fprintf(stderr, "appupdater_new: could not parse signature URL\n");
+      goto error;
+    }
 
     u->au_appstate = as;
     if ( app )
@@ -209,6 +271,12 @@ struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t u
     if ( download_init(&u->au_download, &u->au_appstate->as_eventloop, &uri_uri,
                        OP_APPUPDATER_DL_PROGRESS, appupdaterfn) < 0 ) {
       fprintf(stderr, "appupdater_new: download_init error\n");
+      goto error;
+    }
+
+    if ( download_init(&u->au_sign_download, &u->au_appstate->as_eventloop, &sign_uri,
+                       OP_APPUPDATER_DL_SIGN_PROGRESS, appupdaterfn) < 0 ) {
+      fprintf(stderr, "appupdater_new: download_init(signature) error\n");
       goto error;
     }
 
@@ -242,11 +310,22 @@ void appupdater_free(const struct shared *sh, int level) {
       au->au_url = NULL;
     }
 
+    if ( au->au_sign_url ) {
+      free((void *)au->au_sign_url);
+      au->au_sign_url = NULL;
+    }
+
     download_release(&au->au_download);
+    download_release(&au->au_sign_download);
 
     if ( au->au_output ) {
       fclose(au->au_output);
       au->au_output = NULL;
+    }
+
+    if ( au->au_sign_output ) {
+      fclose(au->au_sign_output);
+      au->au_sign_output = NULL;
     }
 
     if ( au->au_manifest ) {

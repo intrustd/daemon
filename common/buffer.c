@@ -30,7 +30,7 @@ void buffer_finalize(struct buffer *b, const char **data, size_t *data_sz) {
 
 void buffer_finalize_str(struct buffer *b, const char **d) {
   size_t sz;
-  assert( buffer_write(b, "\0", 1) > 0 );
+  assert( buffer_write(b, "\0", 1) >= 0 );
   buffer_finalize(b, d, &sz);
 }
 
@@ -99,18 +99,26 @@ int buffer_printf(struct buffer *b, const char *fmt, ...) {
 }
 
 int buffer_read_from_file(struct buffer *b, const char *path) {
-  char chunk[1024];
+  int ret;
   FILE *fp = fopen(path, "rb");
-  size_t sz;
   if ( !fp ) return -1;
+
+  ret = buffer_read_from_file_ex(b, fp);
+
+  fclose(fp);
+
+  return ret;
+}
+
+int buffer_read_from_file_ex(struct buffer *b, FILE *fp) {
+  char chunk[1024];
+  size_t sz;
 
   buffer_init(b);
 
   while ( (sz = fread(chunk, 1, sizeof(chunk), fp)) ) {
     buffer_write(b, chunk, sz);
   }
-
-  fclose(fp);
 
   return 0;
 }

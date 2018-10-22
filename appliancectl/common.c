@@ -14,6 +14,7 @@ const char *kite_error_code_str(uint16_t code) {
   switch ( code ) {
   case KLE_SUCCESS: return "Success";
   case KLE_NOT_IMPLEMENTED: return "Not implemented";
+  case KLE_NOT_FOUND: return "Not found";
   case KLE_BAD_ENTITY: return "Bad entity";
   case KLE_BAD_OP: return "Bad operation";
   case KLE_MISSING_ATTRIBUTES: return "Missing attributes";
@@ -30,6 +31,7 @@ const char *kite_entity_str(uint16_t entity) {
   case KLM_REQ_ENTITY_PERSONA: return "Persona";
   case KLM_REQ_ENTITY_APP: return "Application";
   case KLM_REQ_ENTITY_FLOCK: return "Flock";
+  case KLM_REQ_ENTITY_CONTAINER: return "Container";
   default: return "Unknown";
   }
 }
@@ -174,4 +176,32 @@ int mk_api_socket() {
   }
 
   return sk;
+}
+
+int send_with_fds(int sk, const void *buf, size_t bufsz, int flags,
+                  int *fds, int nfds) {
+  char *cbuf[CMSG_SPACE(sizeof(int) * nfds)];
+  struct iovec iov[1] = {
+    { .iov_base = (void *) buf, .iov_len = bufsz }
+  };
+  struct msghdr msg = {
+    .msg_name = NULL,
+    .msg_namelen = 0,
+
+    .msg_iov = iov,
+    .msg_iovlen = 1,
+
+    .msg_control = cbuf,
+    .msg_controllen = CMSG_SPACE(sizeof(int) * nfds),
+
+    .msg_flags = flags
+  };
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
+  cmsg->cmsg_level = SOL_SOCKET;
+  cmsg->cmsg_type = SCM_RIGHTS;
+  cmsg->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
+  memcpy((int *) CMSG_DATA(cmsg), fds, sizeof(*fds) * nfds);
+
+  return sendmsg(sk, &msg, 0);
 }

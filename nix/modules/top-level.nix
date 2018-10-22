@@ -1,5 +1,5 @@
 { config, pkgs, lib, ... }: {
-  imports = [ ./supervisord.nix ] ; # ./activation.nix ];
+  imports = [ ./supervisord.nix ./permissions.nix ] ; # ./activation.nix ];
 
   options = with lib; {
     kite.app-domain = mkOption {
@@ -96,6 +96,16 @@
             default = [];
             description = "Names of package authors";
           };
+
+          app-url = mkOption {
+            type = types.str;
+            description = "Default homepage of app on the internet";
+          };
+
+          icon = mkOption {
+            type = types.str;
+            description = "Application icon";
+          };
         };
       };
       description = "Meta description about package";
@@ -137,6 +147,8 @@
     kite.manifest = pkgs.writeText "${config.kite.app-name}-manifest"
       (builtins.toJSON {
         name = config.kite.meta.name;
+        app-url = config.kite.meta.app-url;
+        icon = config.kite.meta.icon;
 #        authors = config.kite.meta.authors;
         canonical = "kite+app://${config.kite.app-domain}/${config.kite.app-name}";
         nix-closure = config.kite.toplevel;
@@ -153,6 +165,19 @@
             #!/bin/sh
             ${config.kite.healthCheckHook}
           '';
+
+          cmpPrio = a: b: a.priority < b.priority;
+          mkPermission = perm: with perm;
+             let base = { inherit description; } //
+                        if !(builtins.isNull perm.verifyCmd)
+                        then { verify = verifyCmd; } else {};
+             in if !(builtins.isNull perm.name)
+                then base // { inherit name; }
+                else if !(builtins.isNull perm.regex)
+                     then base // { inherit regex; }
+                     else builtins.abort "Either name or regex must be specified in permission";
+          sortedPermissions = map mkPermission (lib.sort cmpPrio config.kite.permissions);
+          kitePermissions = pkgs.writeText "permissions.json" (builtins.toJSON sortedPermissions);
       in pkgs.buildEnv {
            name = "kite-environment-${config.kite.app-name}";
            ignoreCollisions = true;
@@ -172,6 +197,7 @@
              mkdir -p $out/var/log
              ln -s ${healthCheckScript} $out/app/hc
              ln -s ${startScript} $out/app/start
+             ln -s ${kitePermissions} $out/permissions.json
 
              cat >$out/etc/passwd <<EOF
              root:x:0:0:System administrator:/kite:${pkgs.bash}/bin/bash

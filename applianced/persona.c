@@ -9,6 +9,7 @@
 #include "util.h"
 #include "persona.h"
 #include "state.h"
+#include "token.h"
 
 #define SCTP_LOWEST_PRIVATE_PORT 49152
 
@@ -95,6 +96,8 @@ static int persona_parse_auth(struct persona *p, char *vls, char *vle) {
               SHA256_DIGEST_LENGTH * 2, (int)(vle - vls));
       goto error;
     }
+  } else if ( strncmp(tys, "token", tye - tys) == 0 ) {
+    auth->pa_type = PAUTH_TYPE_TOKEN;
   } else {
     fprintf(stderr, "persona_parse_auth: Unknown auth method '%.*s'\n", (int)(tye - tys), tys);
     free(auth);
@@ -247,6 +250,8 @@ int persona_add_password(struct persona *p,
   struct pauth *new_auth = malloc(sizeof(*new_auth));
   SHA256_CTX c;
 
+  if ( !new_auth ) return -1;
+
   if ( password_sz < 0 )
     password_sz = strlen(password);
 
@@ -280,6 +285,25 @@ int persona_add_password(struct persona *p,
   return 0;
 }
 
+int persona_add_token_security(struct persona *p) {
+  struct pauth *new_auth = malloc(sizeof(*new_auth));
+  if ( !new_auth ) return -1;
+
+  new_auth->pa_type = PAUTH_TYPE_TOKEN;
+
+  if ( pthread_mutex_lock(&p->p_mutex) < 0 ) {
+    free(new_auth);
+    return -1;
+  }
+
+  new_auth->pa_next = p->p_auths;
+  p->p_auths = new_auth;
+
+  pthread_mutex_unlock(&p->p_mutex);
+
+  return 0;
+}
+
 int persona_save_fp(struct persona *p, FILE *fp) {
   struct pauth *a;
   char sha256buf[SHA256_DIGEST_LENGTH * 2 + 1];
@@ -293,6 +317,9 @@ int persona_save_fp(struct persona *p, FILE *fp) {
     switch ( a->pa_type ) {
     case PAUTH_TYPE_SHA256:
       fprintf(fp, "auth sha256 %s\n", hex_digest_str((unsigned char *)a->pa_data, sha256buf, SHA256_DIGEST_LENGTH));
+      break;
+    case PAUTH_TYPE_TOKEN:
+      fprintf(fp, "token\n");
       break;
     default:
       fprintf(stderr, "WARNING: persona_save_fp: unknown type %d\n", a->pa_type);
@@ -352,24 +379,86 @@ struct personaset *personaset_from_buf(const char *data, size_t sz) {
   return ret;
 }
 
-static int pauth_verify(struct pauth *p, const char *cred, size_t cred_sz) {
+static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth *p,
+                        const char *cred, size_t cred_sz) {
+  static const char pwd_prefix[] = { 'p', 'w', 'd', ':' };
+  static const char token_prefix[] = { 't', 'o', 'k', 'e', 'n', ':' };
+
   unsigned char expected_sha256[SHA256_DIGEST_LENGTH];
+
+  fprintf(stderr, "pauth_verify: %.*s\n", (int) cred_sz, cred);
 
   switch ( p->pa_type ) {
   case PAUTH_TYPE_SHA256:
-    SHA256((const unsigned char *)cred, cred_sz, expected_sha256);
-    return memcmp(expected_sha256, p->pa_data, SHA256_DIGEST_LENGTH) == 0;
+    if ( cred_sz > sizeof(pwd_prefix) &&
+         memcmp(cred, pwd_prefix, sizeof(pwd_prefix)) == 0 ) {
+      SHA256((const unsigned char *)cred + sizeof(pwd_prefix), cred_sz - sizeof(pwd_prefix),
+             expected_sha256);
+      if ( memcmp(expected_sha256, p->pa_data, SHA256_DIGEST_LENGTH) == 0 ) {
+          pc->pc_is_logged_in = 1; // Verified using username / password
+          return 1;
+      } else
+        return 0;
+    } else
+      return 0;
+
+  case PAUTH_TYPE_TOKEN:
+    fprintf(stderr, "Verify token\n");
+    // Check tokens
+    if ( cred_sz > sizeof(token_prefix) &&
+         memcmp(cred, token_prefix, sizeof(token_prefix)) == 0 ) {
+      // A token is represented by <sha256sum>.<token signature>
+      struct token *tok;
+      const char *cred_start = cred + sizeof(token_prefix);
+      const char *sign_start =
+        memchr(cred_start, '.', cred_sz - sizeof(token_prefix));
+      if ( !sign_start ) {
+        fprintf(stderr, "pauth_verify: no signature in token\n");
+        return 0;
+      }
+
+      fprintf(stderr, "Attempting to open token\n");
+      tok = appstate_open_token_ex(persona->p_appstate,
+                                   cred_start, sign_start - cred_start,
+                                   sign_start + 1,
+                                   cred + cred_sz - sign_start - 1);
+      if ( !tok ) return 0;
+
+      fprintf(stderr, "Checking token permission\n");
+      // Check that the token has the login permission
+      if ( token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
+           (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) &&
+           memcmp(tok->tok_persona_id, persona->p_persona_id, PERSONA_ID_LENGTH) == 0 ) {
+        // Save token and return
+        if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
+          fprintf(stderr, "Token confirmed!\n");
+          TOKEN_UNREF(tok);
+          return 1;
+        } else {
+          TOKEN_UNREF(tok);
+          return 0;
+        }
+      } else {
+        fprintf(stderr, "Could not find login permission\n");
+        TOKEN_UNREF(tok);
+        return 0;
+      }
+    } else
+      return 0;
+
   default:
     return 0;
   }
 }
 
-int persona_credential_validates(struct persona *p, const char *cred, size_t cred_sz) {
+// pc mutex is locked
+int persona_credential_validates(struct persona *p, struct pconn *pc,
+                                 const char *cred, size_t cred_sz) {
   int ret = -1;
   struct pauth *auth;
   if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
     for ( auth = p->p_auths; auth; auth = auth->pa_next ) {
-      if ( pauth_verify(auth, cred, cred_sz) ) {
+      if ( pauth_verify(p, pc, auth, cred, cred_sz) ) {
         ret = 1;
         break;
       }
@@ -738,6 +827,8 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
       memset(desc->ad_app_instance.ad_persona_id, 0, sizeof(desc->ad_app_instance.ad_persona_id));
     strncpy(desc->ad_app_instance.ad_app_url, ai->inst_app->app_canonical_url,
             sizeof(desc->ad_app_instance.ad_app_url));
+    desc->ad_app_instance.ad_app_instance = ai;
+    APPINSTANCE_REF(ai);
     return 0;
 
   case CONTAINER_CTL_GET_INIT_PATH:

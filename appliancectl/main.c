@@ -16,6 +16,8 @@ static struct {
 
   { "register-app", register_app },
 
+  { "run-in-container", run_in_container },
+
   { NULL, 0 }
 };
 

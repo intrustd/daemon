@@ -92,6 +92,8 @@ in {
             ${if cfg.oneshot then oneShotConf else ""}
             ${if environment == "" then "" else "environment=${environment}"}
             ${if isNull cfg.priority then "" else "priority=${builtins.toString cfg.priority}"}
+            stdout_logfile=/var/log/${name}-stdout.log
+            stderr_logfile=/var/log/${name}-stderr.log
           '';
 
         serviceConfigs = lib.mapAttrsToList mkServiceConfig config.kite.services;

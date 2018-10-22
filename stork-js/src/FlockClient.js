@@ -215,6 +215,7 @@ export class FlockSocket extends EventTarget {
     }
 
     close() {
+        console.log("Close data channel")
         this.data_chan.close()
         delete this.data_chan
     }
@@ -348,12 +349,11 @@ export class FlockClient extends EventTarget {
 
         if ( options.hasOwnProperty('appliance') ) {
             console.log("Adding path", encodeURIComponent(options.appliance));
-            url.pathname = '/' + encodeURIComponent(options.appliance);
+            url.pathname = url.pathname + encodeURIComponent(options.appliance);
             console.log("Path is now", url.pathname, url);
             this.state = FlockClientState.Connected;
             this.appliance = options.appliance;
         } else {
-            url.pathname = '/';
             this.state = FlockClientState.Connecting;
         }
 
@@ -614,9 +614,9 @@ export class FlockClient extends EventTarget {
                 this.personaId = personaId;
                 resolve()
             }
-            var onError = () => {
+            var onError = (e) => {
                 removeEventListeners()
-                reject()
+                reject(e)
             }
             this.addEventListener('-kite-channel-opens', onOpen)
             this.addEventListener('error', onError)
@@ -633,9 +633,10 @@ export class FlockClient extends EventTarget {
     requestApps(apps) {
         var channel = this.newDataChannel()
         return new Promise((resolve, reject) => {
-            if ( this.state != FlockClientState.Complete )
+            if ( this.state != FlockClientState.Complete ) {
+                console.error("State is ", this.state)
                 throw new TypeError("Can't request apps until flock client is connected")
-            else {
+            } else {
                 var cur_app, cur_timer = null;
                 var complete = () => {
                     if ( cur_timer !== null ) {

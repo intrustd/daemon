@@ -15,6 +15,7 @@
 #define PAUTH_DATA_SIZE     256
 
 #define PAUTH_TYPE_SHA256   1
+#define PAUTH_TYPE_TOKEN    2
 
 #define PERSONA_HOSTNAME_PREFIX "persona-"
 
@@ -26,6 +27,7 @@ struct pauth {
 
 struct appstate;
 struct appinstance;
+struct pconn;
 
 // struct personaport {
 //   uint16_t pp_port;
@@ -67,6 +69,7 @@ int persona_init_fp(struct persona *p, struct appstate *as, FILE *fp);
 int persona_add_password(struct persona *p,
                          const char *password,
                          int password_sz);
+int persona_add_token_security(struct persona *p);
 
 // Save the persona to the FILE. You must hold p_mutex
 int persona_save_fp(struct persona *p, FILE *fp);
@@ -74,7 +77,9 @@ struct persona *persona_read_fp(FILE *fp);
 
 int persona_write_as_vcard(struct persona *p, struct buffer *b);
 
-int persona_credential_validates(struct persona *p, const char *cred, size_t cred_sz);
+// pc->pc_mutex must be held!!
+int persona_credential_validates(struct persona *p, struct pconn *pc,
+                                 const char *cred, size_t cred_sz);
 
 // int persona_allocate_port(struct persona *p, uint16_t *port);
 // void persona_release_port(struct persona *p, uint16_t port);

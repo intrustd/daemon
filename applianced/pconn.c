@@ -10,6 +10,7 @@
 #include "pconn.h"
 #include "flock.h"
 #include "state.h"
+#include "token.h"
 
 #define DEFAULT_SCTP_PORT 5000
 
@@ -151,6 +152,7 @@ static int icecand_parse(struct icecand *ic, const char *vls, const char *vle);
 #define OP_PCONN_CANDSRC_RETRANSMIT (EVT_CTL_CUSTOM + 3)
 #define OP_PCONN_CONN_CHECK_TIMER_RINGS (EVT_CTL_CUSTOM + 4)
 #define OP_PCONN_CONN_CHECK_TIMEOUT (EVT_CTL_CUSTOM + 5)
+#define OP_PCONN_NEW_TOKEN (EVT_CTL_CUSTOM + 6)
 
 static void pconn_fn(struct eventloop *el, int op, void *arg);
 static void pconn_free(struct pconn *pc);
@@ -165,6 +167,9 @@ static void pconn_reset_connectivity_check_timeout(struct pconn *pc);
 static void pconn_teardown_established(struct pconn *pc);
 
 static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix, int flags);
+
+static void pconn_on_new_tokens(struct pconn *pc);
+static void pconn_enable_traffic_deferred(struct pconn *pc);
 
 #define PCONN_LOCAL_CANDIDATE  1
 #define PCONN_REMOTE_CANDIDATE 2
@@ -974,6 +979,16 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
   int has_error = 0, cs_idx;
 
   switch ( op ) {
+  case OP_PCONN_NEW_TOKEN:
+    pc = STRUCT_FROM_BASE(struct pconn, pc_new_token_evt, evt->qde_sub);
+    if ( PCONN_LOCK(pc) == 0 ) {
+      if ( pthread_mutex_lock(&pc->pc_mutex) == 0 ) {
+        pconn_on_new_tokens(pc);
+        pthread_mutex_unlock(&pc->pc_mutex);
+      }
+      PCONN_UNREF(pc);
+    }
+    break;
   case OP_PCONN_EXPIRES:
     pc = STRUCT_FROM_BASE(struct pconn, pc_timeout, evt->qde_sub);
     pconn_finish(pc);
@@ -1131,10 +1146,11 @@ static void pconn_free_fn(const struct shared *s, int level) {
   struct pconn *pc = STRUCT_FROM_BASE(struct pconn, pc_shared, s);
 
   fprintf(stderr, "free pconn at level %d\n", level);
-  if ( level != SHFREE_NO_MORE_REFS ) return;
-  fprintf(stderr, "freeing pconn\n");
+  if ( level == SHFREE_NO_MORE_REFS ) {
+    fprintf(stderr, "freeing pconn\n");
 
-  pconn_free(pc);
+    pconn_free(pc);
+  }
 }
 
 struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as, int type) {
@@ -1156,6 +1172,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_sctp_port = DEFAULT_SCTP_PORT;
   ret->pc_dtls = NULL;
   ret->pc_dtls_needs_write = ret->pc_dtls_needs_read = 0;
+  ret->pc_is_logged_in = 0;
 
   // Generate user fragment and password
   if ( !random_printable_string(ret->pc_our_ufrag, sizeof(ret->pc_our_ufrag)) ||
@@ -1211,6 +1228,9 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_remote_ufrag[0] = '\0';
   ret->pc_remote_pwd[0] = '\0';
 
+  ret->pc_tokens = NULL;
+  ret->pc_apps = NULL;
+
   ret->pc_static_pkt_bio.bs_buf = ret->pc_incoming_pkt;
   BIO_STATIC_SET_READ_SZ(&ret->pc_static_pkt_bio, 0);
 
@@ -1236,15 +1256,36 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   timersub_init_default(&ret->pc_conn_check_timer, OP_PCONN_CONN_CHECK_TIMER_RINGS, pconn_fn);
   timersub_init_default(&ret->pc_conn_check_timeout_timer, OP_PCONN_CONN_CHECK_TIMEOUT, pconn_fn);
   qdevtsub_init(&ret->pc_start_evt, OP_PCONN_STARTS, pconn_fn);
+  qdevtsub_init(&ret->pc_new_token_evt, OP_PCONN_NEW_TOKEN, pconn_fn);
 
   return ret;
 }
 
 static void pconn_free(struct pconn *pc) {
+  struct pconntoken *cur_pconntok, *tmp_pconntok;
+  struct pconnapp *cur_pconnapp, *tmp_pconnapp;
   int i;
 
   fprintf(stderr, "pconn_free called\n");
   SAFE_MUTEX_LOCK(&pc->pc_mutex);
+
+  HASH_ITER(pct_hh, pc->pc_tokens, cur_pconntok, tmp_pconntok) {
+    HASH_DELETE(pct_hh, pc->pc_tokens, cur_pconntok);
+    TOKEN_UNREF(cur_pconntok->pct_token);
+    free(cur_pconntok);
+  }
+  HASH_CLEAR(pct_hh, pc->pc_tokens);
+
+  HASH_ITER(pca_hh, pc->pc_apps, cur_pconnapp, tmp_pconnapp) {
+    HASH_DELETE(pca_hh, pc->pc_apps, cur_pconnapp);
+
+    container_release_running(&cur_pconnapp->pca_app->inst_container,
+                              &pc->pc_appstate->as_eventloop);
+    APPINSTANCE_UNREF(cur_pconnapp->pca_app);
+    BRTUNNEL_UNREF(cur_pconnapp->pca_tun);
+    free(cur_pconnapp);
+  }
+  HASH_CLEAR(pca_hh, pc->pc_apps);
 
   if ( pc->pc_personaset ) {
     PERSONASET_UNREF(pc->pc_personaset);
@@ -1694,7 +1735,7 @@ void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
         pconn_auth_fails(pc);
       } else {
         // Ensure the persona credential validates
-        if ( persona_credential_validates(p, credential, cred_sz) != 1 ) {
+        if ( persona_credential_validates(p, pc, credential, cred_sz) != 1 ) {
           pc->pc_persona = NULL;
           PERSONA_UNREF(p);
           pconn_auth_fails(pc);
@@ -2773,6 +2814,9 @@ static void pconn_on_established(struct pconn *pc) {
         // We must keep this alive while the bridge is delivering events...
         // TODO undo this reference
         PCONN_WREF(pc);
+
+      // Open up all bridge ports for registered apps
+      pconn_enable_traffic_deferred(pc);
     }
     break;
 
@@ -2896,7 +2940,8 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
     desc->ad_container_type = ARP_DESC_PERSONA;
     memcpy(desc->ad_persona.ad_persona_id, pc->pc_persona->p_persona_id,
            sizeof(desc->ad_persona.ad_persona_id));
-    desc->ad_persona.ad_conn_id = pc->pc_conn_id;
+    desc->ad_persona.ad_pconn = pc;
+    PCONN_REF(pc);
     return 0;
 
   case CONTAINER_CTL_CHECK_PERMISSION:
@@ -2955,5 +3000,149 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
   default:
     fprintf(stderr, "pconn_container_fn: unrecognized op %d\n", op);
     return -2;
+  }
+}
+
+int pconn_add_token(struct pconn *pc, struct token *tok) {
+  if ( pthread_mutex_lock(&pc->pc_mutex) == 0 ) {
+    int ret = pconn_add_token_unlocked(pc, tok);
+    pthread_mutex_unlock(&pc->pc_mutex);
+    return ret;
+  } else
+    return -1;
+}
+
+int pconn_add_token_unlocked(struct pconn *pc, struct token *tok) {
+  struct pconntoken *pct;
+  HASH_FIND(pct_hh, pc->pc_tokens, tok->tok_token_id, sizeof(tok->tok_token_id), pct);
+
+  if ( !pct ) {
+    pct = malloc(sizeof(*pct));
+    if ( !pct ) {
+      return -1;
+    }
+
+    TOKEN_REF(tok);
+    pct->pct_token = tok;
+    pct->pct_started = 0;
+    HASH_ADD_KEYPTR(pct_hh, pc->pc_tokens, tok->tok_token_id, sizeof(tok->tok_token_id), pct);
+
+    // Queue the start event
+    PCONN_WREF(pc);
+    if ( !eventloop_queue(&pc->pc_appstate->as_eventloop,
+                          &pc->pc_new_token_evt) ) {
+      PCONN_WUNREF(pc);
+    }
+  }
+  return 0;
+}
+
+static int pconn_launch_app(struct pconn *pc, const char *app_uri, struct pconnapp **pca) {
+  struct pconnapp *existing;
+
+  *pca = NULL;
+
+  HASH_FIND(pca_hh, pc->pc_apps, app_uri, strlen(app_uri), existing);
+  if ( !existing ) {
+    struct app *a = appstate_get_app_by_url(pc->pc_appstate, app_uri);
+    if ( !a ) {
+      fprintf(stderr, "pconn_launch_app: could not find app %s: skipping\n",
+              app_uri);
+      return -1;
+    } else {
+      existing = malloc(sizeof(*existing));
+      if ( !existing ) {
+        APPLICATION_UNREF(a);
+        fprintf(stderr, "pconn_launch_app: could not allocate new pconnapp\n");
+        return -1;
+      }
+
+      existing->pca_tun = NULL;
+      existing->pca_app = launch_app_instance(pc->pc_appstate, pc->pc_persona, a);
+      APPLICATION_UNREF(a);
+      if ( !existing->pca_app ) {
+        free(existing);
+        fprintf(stderr, "pconn_launch_app: could not launch application instance for %s\n",
+                app_uri);
+        return -1;
+      }
+
+      HASH_ADD_KEYPTR(pca_hh, pc->pc_apps,
+                      existing->pca_app->inst_app->app_canonical_url,
+                      strlen(existing->pca_app->inst_app->app_canonical_url),
+                      existing);
+
+      *pca = existing;
+      return 1;
+    }
+  } else {
+    *pca = existing;
+    return 0;
+  }
+}
+
+// pc_mutex should be locked
+static int pconnapp_enable_traffic(struct pconn *pc, struct pconnapp *pca) {
+  if ( pca->pca_tun ) return 1;
+  else {
+    if ( container_is_running(&pc->pc_container) ) {
+      struct brtunnel *tun =
+        bridge_create_tunnel(&pc->pc_appstate->as_bridge,
+                             pc->pc_container.c_bridge_port,
+                             pca->pca_app->inst_container.c_bridge_port);
+      if ( !tun ) return -1;
+
+      fprintf(stderr, "pconnapp: create tunnel %d -> %d\n",
+              pc->pc_container.c_bridge_port,
+              pca->pca_app->inst_container.c_bridge_port);
+
+      pca->pca_tun = tun;
+      return 1;
+    } else
+      return 0;
+  }
+}
+
+static void pconn_on_new_tokens(struct pconn *pc) {
+  struct pconntoken *tok, *tmp;
+  int i;
+
+  HASH_ITER(pct_hh, pc->pc_tokens, tok, tmp) {
+    if ( !tok->pct_started ) {
+      tok->pct_started = 1;
+
+      // Launch the application instances
+      for ( i = 0; i < tok->pct_token->tok_app_count; ++i ) {
+        struct pconnapp *pca;
+        int err = pconn_launch_app(pc, tok->pct_token->tok_apps[i], &pca);
+        if ( err < 0 ) {
+          fprintf(stderr, "pconn_on_new_tokens: could not launch app %s\n", tok->pct_token->tok_apps[i]);
+        } else if ( err > 0 ) {
+          fprintf(stderr, "pconn_on_new_tokens: Adding app access to %s from port %d\n",
+                  tok->pct_token->tok_apps[i], pc->pc_container.c_bridge_port);
+
+          err = pconnapp_enable_traffic(pc, pca);
+          if ( err < 0 ) {
+            fprintf(stderr, "pconn_on_new_tokens: pconnapp_enable_traffic failed\n");
+          } else if ( err == 0 ) {
+            fprintf(stderr, "pconn_on_new_tokens: pconnapp_enable_traffic: container not running yet\n");
+          }
+        }
+      }
+    }
+  }
+}
+
+static void pconn_enable_traffic_deferred(struct pconn *pc) {
+  struct pconnapp *app, *tmp;
+
+  HASH_ITER(pca_hh, pc->pc_apps, app, tmp) {
+    int err = pconnapp_enable_traffic(pc, app);
+    if ( err < 0 ) {
+      fprintf(stderr, "pconn_enable_traffic_deferred: pconn_app_enable_traffic failed\n");
+    } else if ( err == 0 ) {
+      fprintf(stderr, "pconn_enable_traffic_deferred: container not running!\n");
+      abort();
+    }
   }
 }

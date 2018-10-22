@@ -58,6 +58,17 @@ struct kitelocalattr {
 #define KLA_FORCE              0x000F
 #define KLA_ADDR               0x0010
 #define KLA_CONTAINER_TYPE     0x0011
+#define KLA_PCONN_ID           0x0012
+#define KLA_SITE_ID            0x0013
+#define KLA_MANIFEST_NAME      0x0014
+#define KLA_SIGNED             0x0015
+#define KLA_TOKEN              0x0016
+#define KLA_ARG                0x0017
+#define KLA_STDOUT             0x0018
+#define KLA_STDERR             0x0019
+#define KLA_STDIN              0x001A
+#define KLA_ATTRIBUTE          0x001B
+#define KLA_EXIT_CODE          0x001C
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001
@@ -67,13 +78,14 @@ struct kitelocalattr {
 #define KLE_INVALID_URL        0x0005
 #define KLE_SYSTEM_ERROR       0x0006
 #define KLE_NOT_FOUND          0x0007
+#define KLE_NOT_ALLOWED        0x0008
 
 #define KLM_SIZE_INIT sizeof(struct kitelocalmsg)
 #define KLA_PAYLOAD_SIZE(a) (ntohs((a)->kla_length) - sizeof(struct kitelocalattr))
 #define KLA_SIZE(data_sz) (sizeof(struct kitelocalattr) + data_sz)
 #define KLM_SIZE_ADD_ATTR(sz, attr) (sz) += 4 * (((htons((attr)->kla_length)) + 3) / 4)
 #define KLM_FIRSTATTR(msg, sz) ((sz) <= sizeof(struct kitelocalmsg) ? NULL : ((struct kitelocalattr *) (((uintptr_t) msg) + sizeof(struct kitelocalmsg))))
-#define KLM_NEXTATTR_(attr) (((uintptr_t) attr) + 4 * ((htons((attr)->kla_length) + 3) / 4))
+#define KLM_NEXTATTR_(attr) (((attr)->kla_length == 0) ? 0 : (((uintptr_t) attr) + 4 * ((htons((attr)->kla_length) + 3) / 4)))
 #define KLM_NEXTATTR(msg, attr, sz) (((KLM_NEXTATTR_(attr) - ((uintptr_t) msg)) < sz) ? (struct kitelocalattr *) KLM_NEXTATTR_(attr) : NULL)
 #define KLA_DATA(attr, buf, sz)                                         \
   ((((((uintptr_t) attr) + sizeof(struct kitelocalattr)) - ((uintptr_t) buf)) < sz) ? \

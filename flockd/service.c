@@ -69,7 +69,7 @@ static int flockservice_handle_offer_response(struct flockservice *svc,
                                               const struct stunmsg *msg, int buf_sz);
 
 // client state functions
-// Ensure that the client is in the outgoing queue. fscs_outgoing_mutex must be held
+// Ensure that the client is in the outgoing queue. fscs_outgoing_mutex must not be held
 static void fscs_ensure_enqueued_out(struct flockservice *svc, struct flocksvcclientstate *st);
 static int fscs_release(struct flocksvcclientstate *st);
 static void fscs_touch_timeout(struct flocksvcclientstate *st, struct eventloop *el);
@@ -92,13 +92,12 @@ void ai_do_queue(struct fcspktwriter *pw) {
       SHARED_REF(pw->fcspw_sh);
     DLIST_INSERT(&st->fscs_outgoing_packets, fcspw_dl, pw);
   }
+  pthread_mutex_unlock(&st->fscs_outgoing_mutex);
 
   fscs_ensure_enqueued_out(st->fscs_svc, st);
   eventloop_subscribe_fd(&(FLOCKSTATE_FROM_SERVICE(st->fscs_svc)->fs_eventloop),
                          st->fscs_svc->fs_service_sk, FD_SUB_WRITE,
                          &st->fscs_svc->fs_service_sub);
-
-  pthread_mutex_unlock(&st->fscs_outgoing_mutex);
 
   if ( pw->fcspw_sh )
     SHARED_UNREF(pw->fcspw_sh);
@@ -398,6 +397,7 @@ static void fscs_touch_timeout(struct flocksvcclientstate *st, struct eventloop 
 
 static void fscs_ensure_enqueued_out(struct flockservice *svc, struct flocksvcclientstate *st) {
   pthread_mutex_lock(&svc->fs_service_mutex);
+  pthread_mutex_lock(&st->fscs_outgoing_mutex);
 
   if ( !st->fscs_next_outgoing ) {
     FSCS_REF(st);
@@ -412,6 +412,7 @@ static void fscs_ensure_enqueued_out(struct flockservice *svc, struct flocksvccl
       svc->fs_first_outgoing = svc->fs_last_outgoing = st;
   }
 
+  pthread_mutex_unlock(&st->fscs_outgoing_mutex);
   pthread_mutex_unlock(&svc->fs_service_mutex);
 }
 

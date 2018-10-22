@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <openssl/bio.h>
 #include <openssl/opensslconf.h>
+#include <openssl/evp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
@@ -307,6 +308,8 @@ int uri_decode(const char *url, size_t url_sz,
                char *out, size_t out_sz);
 
 int atoi_ex(char *s, char *e, int *out);
+
+const EVP_MD *digest_scheme(const char *nm, size_t nm_sz);
 
 // Generates out_sz characters and places them in out. Each character
 // chosen is human readable

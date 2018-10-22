@@ -74,11 +74,27 @@ void container_release(struct container *c);
 // Negative on error, 0 on succes, and 1 on success, if the container was launched
 int container_ensure_running(struct container *c, struct eventloop *el);
 int container_release_running(struct container *c, struct eventloop *el);
+int container_is_running(struct container *c);
 
-#define CONTAINER_EXEC_WAIT_FOR_KITE 0x00000001
+#define CONTAINER_EXEC_WAIT_FOR_KITE   0x00000001
+#define CONTAINER_EXEC_ENABLE_WAIT     0x00000002
+#define CONTAINER_EXEC_REDIRECT_STDIN  0x00000004
+#define CONTAINER_EXEC_REDIRECT_STDOUT 0x00000008
+#define CONTAINER_EXEC_REDIRECT_STDERR 0x00000010
+
+struct containerexecinfo {
+  uint32_t cei_flags;
+  const char *cei_exec;
+  const char **cei_argv, **cei_envv;
+
+  int cei_stdin_fd, cei_stdout_fd, cei_stderr_fd, cei_wait_fd;
+};
 
 int container_execute(struct container *c, uint32_t exec_flags, const char *path,
                       const char **argv, const char **envp);
+int container_execute_ex(struct container *c, struct containerexecinfo *opts);
 int container_kill(struct container *c, pid_t pid, int sig);
+int container_wait_async(struct container *c, pid_t pid,
+                         int *sts, struct qdevtsub *on_complete);
 
 #endif

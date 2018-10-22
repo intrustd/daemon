@@ -360,3 +360,14 @@ int fread_base64(FILE *sig, void **buf, size_t *buf_len) {
   buffer_finalize(&ret, (const char **) buf, buf_len);
   return 0;
 }
+
+const EVP_MD *digest_scheme(const char *nm, size_t nm_sz) {
+  if ( strncasecmp(nm, "sha256", nm_sz) == 0 ) {
+    return EVP_sha256();
+  } else if ( strncasecmp(nm, "sha512", nm_sz) == 0 ) {
+    return EVP_sha512();
+  } else if ( strncasecmp(nm, "sha1", nm_sz) == 0 ) {
+    return EVP_sha1();
+  } else
+    return NULL;
+}

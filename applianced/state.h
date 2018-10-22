@@ -21,6 +21,7 @@ struct pconn;
 struct appstate;
 struct app;
 struct appupdater;
+struct token;
 
 struct appstate {
   uint32_t as_mutexes_initialized;
@@ -51,6 +52,10 @@ struct appstate {
   struct persona *as_personas;
   struct personaset *as_cur_personaset;
 
+  // Tokens we have loaded
+  pthread_mutex_t as_tokens_mutex;
+  struct token *as_tokens;
+
   // Apps that we have loaded
   pthread_rwlock_t as_applications_mutex;
   struct app *as_apps;
@@ -71,6 +76,7 @@ struct appstate {
 #define AS_PERSONAS_MUTEX_INITIALIZED 0x2
 #define AS_APPS_MUTEX_INITIALIZED     0x4
 #define AS_DTLS_COOKIES_MUTEX_INITIALIZED 0x8
+#define AS_TOKENS_MUTEX_INITIALIZED 0x10
 
 void init_appliance_global();
 int SSL_CTX_set_appstate(SSL_CTX *ctx, struct appstate *as);
@@ -116,5 +122,9 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
 
 // Update the application state (mainly the run_as_admin flag from the manifest)
 void appstate_update_application_state(struct appstate *as, struct app *a);
+
+struct token *appstate_open_token_ex(struct appstate *as,
+                                     const char *token_hex, size_t token_sz,
+                                     const char *signature_hex, size_t signature_sz);
 
 #endif

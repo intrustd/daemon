@@ -71,7 +71,7 @@ in pkgs.stdenv.mkDerivation {
   buildInputs = with pkgs; [
     pkgconfig cmake gdb openssl_1_1_0.dev
     uriparser nodejs-8_x
-    uthash zlib
+    uthash zlib check
 
     ncat
 
@@ -80,8 +80,10 @@ in pkgs.stdenv.mkDerivation {
     lksctp-tools-1-0-18 libnl thrift
     curl-kite curl-kite.dev
 
+    nginx
+
     (python3.withPackages (ps: [
-       ps.flask ps.sqlalchemy
+       ps.flask ps.sqlalchemy ps.pyopenssl
      ]))
   ];
 

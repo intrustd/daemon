@@ -17,6 +17,7 @@ PKG_SEARCH_MODULE(URIPARSER liburiparser REQUIRED)
 # pkg_check_modules(USRSCTP usrsctp REQUIRED)
 pkg_check_modules(SCTP libsctp REQUIRED)
 pkg_check_modules(CURL libcurl REQUIRED)
+pkg_check_modules(CHECK check REQUIRED)
 
 find_package(Uthash)
 
@@ -35,10 +36,15 @@ add_executable(flockd flockd/main.c flockd/configuration.c flockd/connection.c
 target_link_libraries(flockd PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES})
 target_compile_options(flockd PUBLIC -Wall ${KITE_CFLAGS})
 
-add_executable(applianced applianced/main.c applianced/configuration.c applianced/state.c
+add_library(kite-applianced STATIC  applianced/configuration.c applianced/state.c
   applianced/bridge.c applianced/local.c applianced/flock.c applianced/persona.c
-  applianced/pconn.c applianced/container.c applianced/update.c applianced/application.c)
-target_link_libraries(applianced PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
+  applianced/pconn.c applianced/container.c applianced/update.c applianced/application.c
+  applianced/token.c)
+target_compile_options(kite-applianced PUBLIC -Wall ${KITE_CFLAGS})
+target_link_libraries(kite-applianced PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
+
+add_executable(applianced applianced/main.c)
+target_link_libraries(applianced PUBLIC kite-common kite-applianced)
 target_compile_options(applianced PUBLIC -Wall ${KITE_CFLAGS})
 
 add_executable(webrtc-proxy webrtc-proxy/main.c)
@@ -49,7 +55,8 @@ add_executable(persona-init init/persona.c init/init_common.c)
 add_executable(app-instance-init init/app_instance.c init/init_common.c)
 
 add_executable(appliancectl appliancectl/main.c appliancectl/common.c
-  appliancectl/flock.c appliancectl/persona.c appliancectl/app.c)
+  appliancectl/flock.c appliancectl/persona.c appliancectl/app.c
+  appliancectl/container.c)
 target_link_libraries(appliancectl kite-common ${OPENSSL_LIBRARIES})
 
 add_executable(timer-test common/tests/timer-test.c)
@@ -57,3 +64,5 @@ target_link_libraries(timer-test kite-common ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(shared-test common/tests/shared-test.c)
 
+add_executable(appliance-tests applianced/tests/main.c applianced/tests/token.c)
+target_link_libraries(appliance-tests PUBLIC kite-common kite-applianced ${CHECK_LIBRARIES})

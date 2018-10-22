@@ -15,23 +15,24 @@
 #define AU_STATUS_CANCELED (-1)
 #define AU_STATUS_WAITING 0
 #define AU_STATUS_DOWNLOADING 1
-#define AU_STATUS_PARSING 2
-#define AU_STATUS_UPDATING 3
-#define AU_STATUS_INSTALLING 4
-#define AU_STATUS_DONE 5
+#define AU_STATUS_DOWNLOADING_SIG 2
+#define AU_STATUS_PARSING 3
+#define AU_STATUS_UPDATING 4
+#define AU_STATUS_INSTALLING 5
+#define AU_STATUS_DONE 6
 
 struct appupdater {
   struct shared au_shared;
 
   pthread_mutex_t au_mutex;
 
-  const char *au_url;
+  const char *au_url, *au_sign_url;
   UT_hash_handle au_hh;
 
   struct appstate* au_appstate;
   struct app *au_application;
-  struct download au_download;
-  FILE *au_output;
+  struct download au_download, au_sign_download;
+  FILE *au_output, *au_sign_output;
   int au_reason;
   int au_force : 1;
 

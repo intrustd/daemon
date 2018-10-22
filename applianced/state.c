@@ -19,6 +19,7 @@
 #include "buffer.h"
 #include "pconn.h"
 #include "update.h"
+#include "token.h"
 
 #define OP_APPSTATE_ACCEPT_LOCAL EVT_CTL_CUSTOM
 #define OP_APPSTATE_SAVE_FLOCK   (EVT_CTL_CUSTOM + 1)
@@ -1049,6 +1050,7 @@ void appstate_clear(struct appstate *as) {
   as->as_flocks = NULL;
   as->as_personas = NULL;
   as->as_cur_personaset = NULL;
+  as->as_tokens = NULL;
   as->as_apps = NULL;
   as->as_updates = NULL;
   as->as_local_fd = 0;
@@ -1124,6 +1126,13 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   }
   as->as_mutexes_initialized |= AS_DTLS_COOKIES_MUTEX_INITIALIZED;
 
+  err = pthread_mutex_init(&as->as_tokens_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "appstate_setup: could not initialize tokens mutex: %s\n", strerror(err));
+    goto error;
+  }
+  as->as_mutexes_initialized |= AS_TOKENS_MUTEX_INITIALIZED;
+
   if ( dtlscookies_init(&as->as_dtls_cookies,
                         30, 60 * 5, 32) < 0 ) {
     fprintf(stderr, "appstate_setup: could not initialize dtls cookies\n");
@@ -1158,6 +1167,8 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
 }
 
 void appstate_release(struct appstate *as) {
+  struct token *cur_token, *tmp_token;
+
   if ( as->as_cert ) {
     X509_free(as->as_cert);
     as->as_cert = NULL;
@@ -1198,6 +1209,14 @@ void appstate_release(struct appstate *as) {
   if ( as->as_mutexes_initialized & AS_DTLS_COOKIES_MUTEX_INITIALIZED )
     pthread_mutex_destroy(&as->as_dtls_cookies_mutex);
   as->as_mutexes_initialized &= ~AS_DTLS_COOKIES_MUTEX_INITIALIZED;
+
+  HASH_ITER(tok_hh, as->as_tokens, cur_token, tmp_token) {
+    TOKEN_UNREF(cur_token);
+  }
+  HASH_CLEAR(tok_hh, as->as_tokens);
+  if ( as->as_mutexes_initialized & AS_TOKENS_MUTEX_INITIALIZED )
+    pthread_mutex_destroy(&as->as_tokens_mutex);
+  as->as_mutexes_initialized &= ~AS_TOKENS_MUTEX_INITIALIZED;
 
   // TODO release flocks, personas, and applications
 
@@ -1506,6 +1525,12 @@ int appstate_create_persona(struct appstate *as,
   }
 
   if ( persona_add_password(p, password, password_sz) < 0 ) {
+    PERSONA_UNREF(p);
+    pthread_rwlock_unlock(&as->as_personas_mutex);
+    return -1;
+  }
+
+  if ( persona_add_token_security(p) < 0 ) {
     PERSONA_UNREF(p);
     pthread_rwlock_unlock(&as->as_personas_mutex);
     return -1;
@@ -1822,11 +1847,13 @@ static int appstate_can_run_as_admin(struct appstate *as, struct app *a) {
 
 void appstate_update_application_state(struct appstate *as, struct app *a) {
   SAFE_MUTEX_LOCK(&a->app_mutex);
-  a->app_flags &= ~(APP_FLAG_RUN_AS_ADMIN | APP_FLAG_SINGLETON);
+  a->app_flags &= ~(APP_FLAG_RUN_AS_ADMIN | APP_FLAG_SINGLETON | APP_FLAG_SIGNED);
   if ( a->app_current_manifest->am_flags &
          (APPMANIFEST_FLAG_RUN_AS_ADMIN | APPMANIFEST_FLAG_SINGLETON) ) {
     fprintf(stderr, "Requesting run as singleton or admin %p\n", a);
     if ( appstate_can_run_as_admin(as, a) ) {
+      a->app_flags |= APP_FLAG_SIGNED; // TODO allow any app to be signed
+
       if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN )
         a->app_flags |= APP_FLAG_RUN_AS_ADMIN;
       if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_SINGLETON )
@@ -1853,6 +1880,74 @@ int appstate_log_path(struct appstate *as, const char *mf_digest_str, const char
     if ( (n1 + n2) >= out_sz ) return -1;
   }
   return 0;
+}
+
+struct token *appstate_open_token_ex(struct appstate *as,
+                                     const char *token_hex, size_t token_sz,
+                                     const char *sign_hex, size_t hex_sz) {
+  unsigned char exp_digest[TOKEN_ID_LENGTH];
+
+  if ( token_sz != sizeof(exp_digest) * 2 ) {
+    fprintf(stderr, "appstate_open_token_ex: invalid token name. Expected size %lu, got %lu\n",
+            sizeof(exp_digest) * 2, token_sz);
+    return NULL;
+  }
+
+  if ( !parse_hex_str(token_hex, exp_digest, sizeof(exp_digest)) ) {
+    fprintf(stderr, "appstate_open_token_ex: invalid token name: %.*s\n",
+            (int)(token_sz), token_hex);
+    return NULL;
+  }
+
+  if ( pthread_mutex_lock(&as->as_tokens_mutex) == 0 ) {
+    struct token *ret;
+    HASH_FIND(tok_hh, as->as_tokens, exp_digest, sizeof(exp_digest), ret);
+    if ( ret ) {
+      TOKEN_REF(ret);
+    } else {
+      char path[PATH_MAX];
+
+      if ( snprintf(path, sizeof(path), "%s/tokens/%.*s",
+                    as->as_conf_dir, (int) token_sz, token_hex) >= sizeof(path) ) {
+        fprintf(stderr, "appstate_open_token_ex: path overflow\n");
+        ret = NULL;
+      } else {
+        FILE *token_file = fopen(path, "rb");
+        if ( !token_file ) {
+          perror("appstate_open_token_ex: fopen");
+          ret = NULL;
+        } else {
+          if ( token_verify_signature(token_file, as->as_privkey, sign_hex, hex_sz) != 0 ) {
+            fprintf(stderr, "appstate_open_token_ex: invalid signature\n");
+            ret = NULL;
+            fclose(token_file);
+          } else {
+            if ( fseek(token_file, 0, SEEK_SET) < 0 ) {
+              perror("appstate_open_token_ex: fseek");
+              ret = NULL;
+              fclose(token_file);
+            } else {
+              ret = token_new_from_file(token_file);
+              if ( ret ) {
+                if ( memcmp(ret->tok_token_id, exp_digest, sizeof(exp_digest)) != 0 ) {
+                  fprintf(stderr, "appstate_open_token_ex: token hash mismatch\n");
+                  TOKEN_UNREF(ret);
+                  ret = NULL;
+                } else {
+                  TOKEN_REF(ret);
+                  HASH_ADD(tok_hh, as->as_tokens, tok_token_id, sizeof(ret->tok_token_id), ret);
+                }
+              }
+              fclose(token_file);
+            }
+          }
+        }
+      }
+    }
+    pthread_mutex_unlock(&as->as_tokens_mutex);
+    return ret;
+  } else
+    return NULL;
 }
 
 void init_appliance_global() {

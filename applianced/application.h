@@ -88,6 +88,7 @@ struct app {
 #define APP_FLAG_RUN_AS_ADMIN      0x20
 #define APP_FLAG_SINGLETON         0x40
 #define APP_FLAG_AUTOSTART         0x80
+#define APP_FLAG_SIGNED            0x100
 
 #define APP_HAS_UNIVERSAL_ACCESS(app) ((app)->app_flags & APP_FLAG_RUN_AS_ADMIN)
 
@@ -102,5 +103,7 @@ void application_set_flags(struct app *a, uint32_t fs);
 void application_request_instance_resets(struct app *a); // app_mutex must be locked
 int validate_canonical_url(const char *url, char *app_name, size_t app_name_sz,
                            char *app_domain, size_t app_domain_sz);
+
+struct appmanifest *application_get_manifest(struct app *a);
 
 #endif

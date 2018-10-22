@@ -3,6 +3,7 @@ import { EventTarget } from 'event-target-shim';
 import { HTTPParser } from 'http-parser-js';
 import { FlockClient } from "../FlockClient.js";
 import { Authenticator } from "../Authenticator.js";
+import { PortalAuthenticator } from "../Portal.js";
 import { parseKiteAppUrl, kiteAppCanonicalUrl } from "./Common.js";
 import { generateKiteBonudary, makeFormDataStream } from "./FormData.js";
 import { BlobReader } from "./Streams.js";
@@ -19,199 +20,6 @@ if ( !window.ReadableStream ) {
     var streamsPolyfill = require('web-streams-polyfill')
     window.ReadableStream = streamsPolyfill.ReadableStream;
 }
-
-class GlobalAppliance {
-    constructor ( flock, applianceName, defClient ) {
-        this.flock = flock;
-        this.applianceName = applianceName;
-        this.defaultPersona = defClient
-        this.personas = {};
-    }
-
-    markDefault() {
-        return this.flock.setDefaultAppliance(this.applianceName)
-    }
-
-    getPersonaClient(persona) {
-        if ( this.personas.hasOwnProperty(persona) )
-            return this.personas[persona]
-        else {
-            console.error("TODO getPersonaClient");
-        }
-    }
-
-    getDefaultPersonaClient() {
-        if ( this.defaultPersona.isLoggedIn() ) {
-            return Promise.resolve(this.defaultPersona);
-        } else {
-            if ( this.defaultPersonaPromise === undefined ) {
-                this.defaultPersonaPromise = new Promise((resolve, reject) => {
-                    var chooser = new PersonaChooser (this.defaultPersona);
-                    chooser.addEventListener('persona-chosen', ({personaId, creds}) => {
-                        this.defaultPersona.tryLogin(personaId, creds)
-                            .then(() => { chooser.hide();
-
-                                          requestSitePermissions(this.defaultPersona,
-                                                                 kiteFetch.defaultOptions.permissions)
-                                            .then(() => { resolve(this.defaultPersona) }) },
-                                  () => { chooser.showError(); })
-                    });
-                    chooser.addEventListener('cancel', () => { reject('canceled'); });
-                });
-            }
-
-            return this.defaultPersonaPromise
-        }
-    }
-}
-
-class GlobalFlock {
-    constructor ( flockUrl ) {
-        this.flockUrl = flockUrl;
-        this.defaultAppliance = null;
-        this.appliances = {};
-    }
-
-    setDefaultAppliance(applianceName) {
-        return this.getAppliance(applianceName)
-            .then((app) => {
-                console.log("Setting default appliance", app)
-                this.defaultAppliance = Promise.resolve(app);
-                return app
-            })
-    }
-
-    getAppliance(applianceName) {
-        console.log("Attempt to get ", applianceName);
-        // Attempt connect to this appliance
-        if ( !this.appliances.hasOwnProperty(applianceName) ) {
-            this.appliances[applianceName] = new Promise((resolve, reject) => {
-                console.log("Get appliance", applianceName)
-                var client = new FlockClient({ url: this.flockUrl,
-                                               appliance: applianceName });
-                var removeEventListeners = () => {
-                    client.removeEventListener('open', onOpen);
-                    client.removeEventListener('error', onError);
-                }
-                var onOpen = () => {
-                    console.log("Appliance", applianceName, " opens")
-                    removeEventListeners();
-                    var app = new GlobalAppliance(this, applianceName, client);
-                    console.log("Got appliance app", app)
-                    resolve(app);
-                };
-                var onError = (e) => {
-                    removeEventListeners();
-                    delete this.appliances[applianceName]
-                    reject(e);
-                }
-                client.addEventListener('open', onOpen);
-                client.addEventListener('error', onError);
-            });
-        }
-
-        return this.appliances[applianceName]
-    }
-
-    getDefaultAppliance(options) {
-        if (options === undefined) options = {}
-
-        console.log("Request default")
-        if ( this.defaultAppliance === undefined ||
-             this.defaultAppliance === null ) {
-            if ( options.silent ) return Promise.reject()
-            else {
-                this.defaultAppliance = new Promise((resolve, reject) => {
-                    console.log("Starting new appliance chooser for", this.flockUrl)
-                    var chooser = new ApplianceChooser(this.flockUrl);
-                    chooser.addEventListener('appliance-chosen', (e) => {
-                        this.getAppliance(e.device).then(
-                            (devClient) => {
-                                chooser.hide();
-                                resolve(devClient)
-                            },
-                            (e) => { console.error(e); chooser.signalError() }
-                        );
-                    });
-                    chooser.addEventListener('cancel', () => reject('canceled'));
-                });
-            }
-        }
-
-        return this.defaultAppliance
-    }
-};
-
-// function withLoggedInDevice ( flockUrl ) {
-//     if ( kiteFetch.device === undefined ) {
-//         var clientPromise;
-//         if ( globalClients.hasOwnProperty(flockUrl) )
-//             clientPromise = globalClients[flockUrl];
-//         else {
-//             clientPromise = globalClients[flockUrl] =
-//                 new Promise((resolve, reject) => {
-//                     var client = new FlockClient(flockUrl);
-// 
-//                     var removeEventListeners = () => {
-//                         client.removeEventListener('open', onOpen);
-//                         client.removeEventListener('error', onError);
-//                     }
-//                     var onOpen = () => {
-//                         removeEventListeners()
-//                         resolve(client)
-//                     }
-//                     var onError = (e) => {
-//                         removeEventListeners()
-//                         reject(e)
-//                     }
-// 
-//                     client.addEventListener('open', onOpen);
-//                     client.addEventListener('error', onError);
-//                 }).then((client) => {
-//                     return new Promise((resolve, reject) => {
-//                         var deviceChooser = new ApplianceChooser(client);
-//                         deviceChooser.addEventListener('persona-chosen', (e) => {
-//                             console.log("Chose person", e);
-//                             deviceChooser.hide();
-//                             resolve({client, device: e.device, personaId: e.persona});
-//                         });
-//                         deviceChooser.addEventListener('cancel', () => {
-//                             deviceChooser.hide();
-//                             reject(new TypeError("The login was canceled by the user"));
-//                         });
-//                     });
-//                 }).then(({client, device, personaId}) => {
-//                     console.log("Going to log in", client, device, personaId)
-//                     return new Promise((resolve, reject) => {
-//                         // TODO password?
-//                         var conn = client.startConnection(device, personaId, [])
-// 
-//                         var removeEventListeners = () => {
-//                             conn.removeEventListener('open', onOpen);
-//                             conn.removeEventListener('error', onError);
-//                         };
-//                         var onOpen = () => {
-//                             removeEventListeners();
-//                             globalClients[flockUrl] = Promise.resolve(conn)
-//                             resolve(conn);
-//                         };
-//                         var onError = () => {
-//                             removeEventListeners();
-//                             reject(new TypeError("Could not initiate appliance connection"));
-//                         };
-// 
-//                         conn.addEventListener('open', onOpen);
-//                         conn.addEventListener('error', onError);
-// 
-//                         conn.login("") // TODO send some kind of credential (likely a token or something)
-//                     });
-//                 });
-//         }
-// 
-//         return clientPromise
-//     } else
-//         return Promise.resolve(kiteFetch.device);
-// }
 
 class HTTPResponseEvent {
     constructor (response, responseBlob) {
@@ -292,14 +100,6 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
             (b, offset, length) => {
                 var sliced = b.slice(offset, offset + length)
                 totalBody += length
-//                if ( !noted ) {
-//                    noted = true;
-//                    console.log("Started", totalBody, "for", this.url.path)
-//                } else
-//                    console.log("Body", totalBody, "for", this.url.path)
-//                console.log("Got body", sliced, totalBody)
-//                window.currentKiteReq = this
-//                console.log("Got body ", b, offset, length)
                 this.body.push(sliced)
                 if ( frameRequested === null ) {
                     frameRequested = window.requestAnimationFrame(() => { this.sendPartialLoadEvent(totalBody); frameRequested = null })
@@ -327,6 +127,7 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
             }
 
         this.socket.addEventListener('open', () => {
+            console.log("Going to send headers", this.request.headers)
             var headers = new Headers(this.request.headers)
             headers.append('Host', url.appId)
             headers.append('Accept', '*/*')
@@ -478,18 +279,37 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
 }
 
 var globalClient;
-function chooseNewAppliance(flocks, site) {
-    return new Promise((resolve, reject) => {
-        var chooser = new Authenticator(flocks, site)
-        chooser.addEventListener('error', (e) => {
-            globalClient = undefined;
-            reject(e);
-        });
 
-        chooser.addEventListener('open', (e) => {
-            resolve(e.device)
-        });
-    })
+function chooseNewAppliance(flocks, site) {
+    if ( kiteFetch.require_login ) {
+        return new Promise((resolve, reject) => {
+            var chooser = new Authenticator(flocks, site)
+            chooser.addEventListener('error', (e) => {
+                globalClient = undefined;
+                reject(e);
+            });
+
+            chooser.addEventListener('open', (e) => {
+                // TODO request permissions from admin app
+                resolve(e.device)
+            });
+        })
+    } else {
+        // The best way to log in is to use the flock recommended
+        // portal app. Ask the flock which application is best
+        return new Promise((resolve, reject) => {
+            var chooser = new PortalAuthenticator(flocks, site, oldFetch, kiteFetch.permissions)
+
+            chooser.addEventListener('error', (e) => {
+                globalClient = undefined;
+                reject(e);
+            })
+
+            chooser.addEventListener('open', (e) => {
+                resolve(e.device)
+            })
+        })
+    }
 }
 
 function getGlobalClient(flocks, site) {
@@ -518,7 +338,12 @@ export default function kiteFetch (req, init) {
         else {
             var flockUrls = kiteFetch.flockUrls;
             var canonAppUrl = kiteAppCanonicalUrl(kiteUrl);
-            var clientPromise = getGlobalClient(flockUrls, getSite())
+            var clientPromise
+
+            if ( init.hasOwnProperty('kiteClient') )
+                clientPromise = Promise.resolve(init['kiteClient'])
+            else
+                clientPromise = getGlobalClient(flockUrls, getSite())
 
             if ( req instanceof Request )
                 req = new Request(req)
@@ -622,6 +447,10 @@ export default function kiteFetch (req, init) {
 }
 
 kiteFetch.flockUrls = [
-    "ws://localhost:6853/",
-    "ws://34.221.26.224:6853/"
+    { url: "localhost:6855",
+      secure: false,
+      path: '/flock/' },
+    { url: "flock.flywithkite.com",
+      path: "/flock/",
+      secure: true }
 ]

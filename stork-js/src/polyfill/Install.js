@@ -6,7 +6,19 @@ export default function (options) {
 
     if ( options === undefined )
         options = {}
-    kiteFetch.defaultOptions = options
+
+    // Set this option if you want to enable explicit logins as part
+    // of your app.
+    if ( options.require_login ) {
+        kiteFetch.require_login = true;
+    }
+
+    if ( options.permissions instanceof Array )
+        kiteFetch.permissions = options.permissions
+    else
+        kiteFetch.permissions = []
+
+    // TODO Add basic permissions
 
     window.XMLHttpRequest = kiteXMLHttpRequest
     window.fetch = kiteFetch

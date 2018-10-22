@@ -6,7 +6,7 @@
 #define MANIFEST_URL_ARG 0x200
 #define IDENTIFIER_ARG   0x201
 
-int register_app_usage() {
+static int register_app_usage() {
   fprintf(stderr, "Usage: appliancectl register-app [-h] [-f] <app-manifest-url>\n");
   return 1;
 }

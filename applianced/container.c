@@ -86,6 +86,15 @@ void container_release(struct container *c) {
   }
 }
 
+int container_is_running(struct container *c) {
+  if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
+    int ret = c->c_running_refs > 0;
+    pthread_mutex_unlock(&c->c_mutex);
+    return ret;
+  } else
+    return 0;
+}
+
 int container_ensure_running(struct container *c, struct eventloop *el) {
   if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
     int ret = 0;
@@ -160,9 +169,11 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
     te = (struct qdevent *) arg;
     c = STRUCT_FROM_BASE(struct container, c_timeout, te->qde_timersub);
     if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
-      if ( c->c_running_refs == 0 )
+      if ( c->c_running_refs == 0 ) {
+        pthread_mutex_unlock(&c->c_mutex);
         container_stop(c, el);
-      pthread_mutex_unlock(&c->c_mutex);
+      } else
+        pthread_mutex_unlock(&c->c_mutex);
     }
     return;
 
@@ -409,6 +420,7 @@ static int container_stop(struct container *c, struct eventloop *el) {
     err = c->c_control(c, CONTAINER_CTL_ON_SHUTDOWN, NULL, 0);
     if ( err < 0 ) {
       fprintf(stderr, "container_stop: CONTAINER_CTL_ON_SHUTDOWN returned error\n");
+      pthread_mutex_unlock(&c->c_mutex);
       return err;
     }
 
@@ -600,23 +612,50 @@ static int container_start_child(void *c_) {
 
 int container_execute(struct container *c, uint32_t exec_flags, const char *path,
                       const char **argv, const char **envv) {
+  struct containerexecinfo info;
+
+  info.cei_flags = exec_flags & ~(CONTAINER_EXEC_ENABLE_WAIT |
+                                  CONTAINER_EXEC_REDIRECT_STDIN |
+                                  CONTAINER_EXEC_REDIRECT_STDOUT |
+                                  CONTAINER_EXEC_REDIRECT_STDERR);
+  info.cei_exec = path;
+  info.cei_argv = argv;
+  info.cei_envv = envv;
+
+  return container_execute_ex(c, &info);
+}
+
+int container_execute_ex(struct container *c, struct containerexecinfo *info) {
   char *buf, *out;
   struct stkinitmsg msg;
   size_t buf_size = sizeof(struct stkinitmsg);
   int i = 0, argc = 1, envc = 0, err;
 
-  buf_size += strlen(path) + 1;
+  struct iovec iov;
+  struct msghdr skmsg = {
+    .msg_flags = 0,
+    .msg_name = NULL,
+    .msg_namelen = 0,
 
-  for ( i = 0; i < CONTAINER_MAX_ARGC && argv && argv[i]; ++i, ++argc ) {
-    buf_size += strlen(argv[i]) + 1; // Final NULL byte
+    .msg_iov = &iov,
+    .msg_iovlen = 1,
+
+    .msg_control = NULL,
+    .msg_controllen = 0
+  };
+
+  buf_size += strlen(info->cei_exec) + 1;
+
+  for ( i = 0; i < CONTAINER_MAX_ARGC && info->cei_argv && info->cei_argv[i]; ++i, ++argc ) {
+    buf_size += strlen(info->cei_argv[i]) + 1; // Final NULL byte
   }
   if ( i == CONTAINER_MAX_ARGC ) {
     fprintf(stderr, "container_execute: too many arguments\n");
     return -1;
   }
 
-  for ( i = 0; i < CONTAINER_MAX_ENVC && envv && envv[i]; ++i, ++envc ) {
-    buf_size += strlen(envv[i]) + 1;
+  for ( i = 0; i < CONTAINER_MAX_ENVC && info->cei_envv && info->cei_envv[i]; ++i, ++envc ) {
+    buf_size += strlen(info->cei_envv[i]) + 1;
   }
   if ( i == CONTAINER_MAX_ENVC ) {
     fprintf(stderr, "container_execute: too many envirorment variables\n");
@@ -634,8 +673,45 @@ int container_execute(struct container *c, uint32_t exec_flags, const char *path
   msg.sim_req = STK_REQ_RUN;
   msg.sim_flags = 0;
 
-  if ( exec_flags & CONTAINER_EXEC_WAIT_FOR_KITE )
+  if ( info->cei_flags & CONTAINER_EXEC_WAIT_FOR_KITE )
     msg.sim_flags |= STK_RUN_FLAG_KITE;
+
+  if ( info->cei_flags & (CONTAINER_EXEC_REDIRECT_STDIN |
+                          CONTAINER_EXEC_REDIRECT_STDOUT |
+                          CONTAINER_EXEC_REDIRECT_STDERR) ) {
+
+    int nfds = 0, fds[3];
+    struct cmsghdr *cmsg;
+
+    fprintf(stderr, "Adding redirection fds\n");
+
+    if ( info->cei_flags & CONTAINER_EXEC_REDIRECT_STDIN ) {
+      fds[nfds++] = info->cei_stdin_fd;
+      msg.sim_flags |= STK_RUN_FLAG_STDIN;
+    }
+    if ( info->cei_flags & CONTAINER_EXEC_REDIRECT_STDOUT ) {
+      fds[nfds++] = info->cei_stdout_fd;
+      msg.sim_flags |= STK_RUN_FLAG_STDOUT;
+    }
+    if ( info->cei_flags & CONTAINER_EXEC_REDIRECT_STDERR ) {
+      fds[nfds++] = info->cei_stderr_fd;
+      msg.sim_flags |= STK_RUN_FLAG_STDERR;
+    }
+
+    skmsg.msg_controllen += CMSG_SPACE(sizeof(int) * nfds);
+    skmsg.msg_control = alloca(skmsg.msg_controllen);
+    assert(skmsg.msg_control);
+
+    cmsg = CMSG_FIRSTHDR(&skmsg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
+
+    memcpy(CMSG_DATA(cmsg), fds, nfds * sizeof(fds[0]));
+  }
+
+  if ( info->cei_flags & CONTAINER_EXEC_ENABLE_WAIT )
+    msg.sim_flags |= STK_RUN_FLAG_WAIT;
 
   msg.un.run.argc = argc;
   msg.un.run.envc = envc;
@@ -644,25 +720,29 @@ int container_execute(struct container *c, uint32_t exec_flags, const char *path
 
   out = buf + sizeof(msg);
 
-  memcpy(out, path, strlen(path) + 1);
-  out += strlen(path) + 1;
+  memcpy(out, info->cei_exec, strlen(info->cei_exec) + 1);
+  out += strlen(info->cei_exec) + 1;
 
-  for ( i = 0; argv && argv[i]; ++i ) {
-    size_t sz = strlen(argv[i]);
-    memcpy(out, argv[i], sz + 1);
+  for ( i = 0; info->cei_argv && info->cei_argv[i]; ++i ) {
+    size_t sz = strlen(info->cei_argv[i]);
+    memcpy(out, info->cei_argv[i], sz + 1);
     out += sz + 1;
   }
 
-  for ( i = 0; envv && envv[i]; ++i ) {
-    size_t sz = strlen(envv[i]);
-    memcpy(out, envv[i], sz + 1);
+  for ( i = 0; info->cei_envv && info->cei_envv[i]; ++i ) {
+    size_t sz = strlen(info->cei_envv[i]);
+    memcpy(out, info->cei_envv[i], sz + 1);
     out += sz + 1;
   }
 
   if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
     pid_t ret;
+    char wait_cbuf[CMSG_SPACE(sizeof(int))];
 
-    err = send(c->c_init_comm, buf, buf_size, 0);
+    iov.iov_base = buf;
+    iov.iov_len = buf_size;
+
+    err = sendmsg(c->c_init_comm, &skmsg, 0);
     if ( err < 0 ) {
       perror("container_execute: send");
       pthread_mutex_unlock(&c->c_mutex);
@@ -670,11 +750,44 @@ int container_execute(struct container *c, uint32_t exec_flags, const char *path
     }
 
     // Wait for pid
-    err = recv(c->c_init_comm, &ret, sizeof(ret), 0);
+    skmsg.msg_flags = 0;
+    skmsg.msg_name = NULL;
+    skmsg.msg_namelen = 0;
+    skmsg.msg_iov = &iov;
+    skmsg.msg_iovlen = 1;
+    iov.iov_base = &ret;
+    iov.iov_len = sizeof(ret);
+
+    if ( info->cei_flags & CONTAINER_EXEC_ENABLE_WAIT ) {
+      skmsg.msg_control = wait_cbuf;
+      skmsg.msg_controllen = CMSG_SPACE(sizeof(int));
+    } else {
+      skmsg.msg_control = NULL;
+      skmsg.msg_controllen = 0;
+    }
+
+    err = recvmsg(c->c_init_comm, &skmsg, 0);
     if ( err < 0 ) {
       perror("container_execute: recv");
       pthread_mutex_unlock(&c->c_mutex);
       return -1;
+    }
+
+    if ( info->cei_flags & CONTAINER_EXEC_ENABLE_WAIT ) {
+      struct cmsghdr *cmsg;
+      cmsg = CMSG_FIRSTHDR(&skmsg);
+      if ( !cmsg ||
+           cmsg->cmsg_level != SOL_SOCKET ||
+           cmsg->cmsg_type != SCM_RIGHTS ||
+           cmsg->cmsg_len != CMSG_LEN(sizeof(int)) ) {
+        fprintf(stderr, "container_execute: did not return wait fd\n");
+        pthread_mutex_unlock(&c->c_mutex);
+        return -1;
+      }
+
+      memcpy(&info->cei_wait_fd, CMSG_DATA(cmsg), sizeof(info->cei_wait_fd));
+    } else {
+      info->cei_wait_fd = -1;
     }
 
     pthread_mutex_unlock(&c->c_mutex);

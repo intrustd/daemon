@@ -36,6 +36,7 @@
 struct flock;
 struct appstate;
 struct candsrc;
+struct token;
 
 #define ICE_ROLE_CONTROLLING 1
 #define ICE_ROLE_CONTROLLED  2
@@ -89,6 +90,18 @@ struct icecandpair {
   int             icp_flags;
 };
 
+struct pconntoken {
+  UT_hash_handle pct_hh;
+  struct token  *pct_token;
+  int pct_started : 1;
+};
+
+struct pconnapp {
+  UT_hash_handle pca_hh;
+  struct appinstance *pca_app;
+  struct brtunnel *pca_tun;
+};
+
 struct pconn {
   struct shared pc_shared;
 
@@ -105,10 +118,14 @@ struct pconn {
   SSL *pc_dtls;
   int pc_dtls_needs_write : 1;
   int pc_dtls_needs_read : 1;
+  int pc_is_logged_in : 1; // Whether or not this pconn was authenticated using username/password
 
   // An event that is triggered to start action on this PCONN (ICE
   // candidate collection and other delayed initialization)
   struct qdevtsub pc_start_evt;
+
+  // An event that is triggered when there are one or more new tokens
+  struct qdevtsub pc_new_token_evt;
 
   // Along with the channel, a pending connection has several STUN /
   // TURN servers. These are collected from the set of flocks in the
@@ -173,6 +190,9 @@ struct pconn {
 
   size_t pc_outgoing_size, pc_outgoing_offs;
   char pc_outgoing_pkt[PCONN_OUTGOING_QUEUE_SIZE];
+
+  struct pconntoken *pc_tokens;
+  struct pconnapp *pc_apps;
 
   struct container pc_container;
 };
@@ -261,5 +281,8 @@ int pconn_write_response(struct pconn *pc, char *buf, int buf_sz);
 void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
                           const char *credential, size_t cred_sz);
 void pconn_recv_sendoffer(struct pconn *pc, int line, const char *answer, uint16_t answer_offs, size_t answer_sz);
+
+int pconn_add_token(struct pconn *pc, struct token *tok);
+int pconn_add_token_unlocked(struct pconn *pc, struct token *tok);
 
 #endif

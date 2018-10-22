@@ -36,5 +36,6 @@ int buffer_printf(struct buffer *b, const char *c, ...)
   __attribute__ ((format (printf, 2, 3)));
 
 int buffer_read_from_file(struct buffer *b, const char *path);
+int buffer_read_from_file_ex(struct buffer *b, FILE *fl);
 
 #endif

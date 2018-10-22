@@ -479,6 +479,13 @@ void mark_channel_closed(struct wrtcchan *chan) {
   PUSH_STACK(&g_pending_free_channels, chan, wrc_closed_stack);
 }
 
+void force_close_channel(struct wrtcchan *chan) {
+  if ( chan->wrc_sk > 0 ) {
+    close(chan->wrc_sk);
+    chan->wrc_sk = -1;
+  }
+}
+
 void rsp_cmsg_error(int srv, struct wrtcchan *chan, uint8_t req, int rsperr) {
   struct stkcmsg msg;
   struct sctp_sndrcvinfo sri;
@@ -631,7 +638,7 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
   int stream_cnt = stream_list_sz / sizeof(rse->strreset_stream_list[0]);
   int i;
   struct wrtcchan *chan;
-  struct stack_ent to_free = STACK_INIT;
+  struct stack_ent to_free = STACK_INIT, still_resetting = STACK_INIT;
 
   if ( sz != rse->strreset_length )
     fprintf(stderr, "process_strreset_ack: warning: length mismatch between header and recv()\n");
@@ -641,7 +648,10 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
     return;
   }
 
-  log_printf( "process_strreset_ack: received stream reset for %d channels\n", stream_cnt);
+  log_printf("process_strreset_ack: got stream reset\n");
+
+  log_printf(stderr, "process_strreset_ack: received stream reset ack for %d channels: %08x\n",
+             stream_cnt, rse->strreset_flags);
 
   if ( rse->strreset_flags & SCTP_STREAM_RESET_DENIED ) {
     fprintf(stderr, "process_strreset_ack: WARNING: reset denied. This is almost certainly an error in the remote WebRTC implementation\n");
@@ -675,6 +685,7 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
       if ( WEBRTC_CHANID(rse->strreset_stream_list[i]) == chan->wrc_chan_id ) {
         log_printf( "process_strreset_ack: received ack for %d\n", chan->wrc_chan_id);
         channel_was_reset = 1;
+        rse->strreset_stream_list[i] = 0xFFFF;
         break;
       }
     }
@@ -683,7 +694,25 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
       // This channel was reset
       PUSH_STACK(&to_free, chan, wrc_closed_stack);
     } else {
-      PUSH_STACK(&g_pending_free_channels, chan, wrc_closed_stack);
+      PUSH_STACK(&still_resetting, chan, wrc_closed_stack);
+    }
+  }
+
+  CONSUME_STACK(&still_resetting, chan, struct wrtcchan, wrc_closed_stack) {
+    PUSH_STACK(&g_reset_in_progress, chan, wrc_reset_stack);
+  }
+
+  for ( i = 0; i < stream_cnt; ++i ) {
+    if ( rse->strreset_stream_list[i] != 0xFFFF ) {
+      chan = find_chan(WEBRTC_CHANID(rse->strreset_stream_list[i]));
+      if ( !chan ) {
+        fprintf(stderr, "process_strreset_ack: received new stream reset for unopened channel %d\n",
+                rse->strreset_stream_list[i]);
+      } else {
+        log_printf("process_strreset_ack: received new stream reset for %d\n", rse->strreset_stream_list[i]);
+        force_close_channel(chan);
+        mark_channel_closed(chan);
+      }
     }
   }
 

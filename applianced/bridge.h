@@ -18,19 +18,24 @@ typedef unsigned char mac_addr[ETH_ALEN];
 
 #define ARP_DESC_PERSONA 1
 #define ARP_DESC_APP_INSTANCE 2
+struct pconn;
+struct appinstance;
 struct arpdesc {
   int ad_container_type;
   union {
     struct {
       char ad_persona_id[PERSONA_ID_LENGTH];
-      uint64_t ad_conn_id;
+      struct pconn *ad_pconn;
     } ad_persona;
     struct {
       char ad_persona_id[PERSONA_ID_LENGTH];
       char ad_app_url[APP_URL_MAX];
+      struct appinstance *ad_app_instance;
     } ad_app_instance;
   };
 };
+
+void arpdesc_release(struct arpdesc *desc, size_t descsz);
 
 struct container;
 
@@ -56,6 +61,29 @@ struct sctpentry {
   struct sockaddr_in se_source;
   pktfn se_on_packet;
 };
+
+// brtunnel -- defines a two-way tunnel between two running containers.
+//
+// As long as this object is referenced, the two containers can talk
+//
+// You get these objects using bridge_create_tunnel
+//
+// Invariant: port[0] <= port[1]
+struct brtunnel {
+  struct shared brtun_sh;
+
+  UT_hash_handle brtun_ports_hh;
+
+  int brtun_ports[2];
+
+  struct brstate *brtun_br;
+  struct qdevtsub brtun_init_evt;
+};
+
+#define BRTUNNEL_REF(tun) SHARED_REF(&(tun)->brtun_sh)
+#define BRTUNNEL_UNREF(tun) SHARED_UNREF(&(tun)->brtun_sh)
+#define BRTUNNEL_WREF(tun) SHARED_WREF(&(tun)->brtun_sh)
+#define BRTUNNEL_WUNREF(tun) SHARED_WUNREF(&(tun)->brtun_sh)
 
 #define BR_PERM_APPLICATION 1
 
@@ -127,16 +155,20 @@ struct brstate {
   pthread_rwlock_t br_sctp_mutex;
   struct sctpentry *br_sctp_table;
 
+  pthread_mutex_t br_tunnel_mutex;
+  struct brtunnel *br_tunnels;
+
   // Only access via bridge_allocate
   uint32_t br_next_ip, br_eth_ix;
 
   unsigned char br_tap_pkt[2048];
 };
 
-#define BR_DEBUG_MUTEX_INITIALIZED 0x1
-#define BR_ARP_MUTEX_INITIALIZED   0x2
-#define BR_TAP_MUTEX_INITIALIZED   0x4
-#define BR_SCTP_MUTEX_INITIALIZED  0x8
+#define BR_DEBUG_MUTEX_INITIALIZED  0x1
+#define BR_ARP_MUTEX_INITIALIZED    0x2
+#define BR_TAP_MUTEX_INITIALIZED    0x4
+#define BR_SCTP_MUTEX_INITIALIZED   0x8
+#define BR_TUNNEL_MUTEX_INITIALIZED 0x10
 
 void bridge_clear(struct brstate *br);
 int bridge_init(struct brstate *br, struct appstate *as, const char *iproute_path, const char *ebroute_path);
@@ -172,6 +204,8 @@ int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
 int bridge_disconnect_port(struct brstate *br, int port);
 
 int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *desc, size_t desc_sz);
+
+struct brtunnel *bridge_create_tunnel(struct brstate *br, int port1, int port2);
 
 int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *mac);
 

@@ -10,7 +10,9 @@ import "./Authenticator.scss";
 function loginToAppliance(flocks, appliance) {
     var attempts = flocks.map((flock, flockIndex) => () => {
         return new Promise((resolve, reject) => {
-            var client = new FlockClient({ url: flock,
+            var protocol = flock.secure ? 'wss' : 'ws';
+            var path = flock.path ? flock.path : '';
+            var client = new FlockClient({ url: `${protocol}://${flock.url}${path}`,
                                            appliance })
 
             var onError = (e) => {
@@ -47,7 +49,7 @@ class AuthenticationEvent {
     }
 }
 
-class AuthenticatorModal extends React.Component {
+export class AuthenticatorModal extends React.Component {
     constructor() {
         super()
 
@@ -99,11 +101,13 @@ class AuthenticatorModal extends React.Component {
             }
         }
 
+        var origin = this.props.origin || location.origin;
+
         return E('div', {className: 'kite-auth-modal'},
                  E('header', {className: 'kite-auth-modal-header'},
                    E('h3', {}, 'Authenticate with Kite')),
                  E('p', {className: 'kite-auth-explainer'},
-                   `The page at ${location.hostname} is requesting to log in to your Kite device.`),
+                   `The page at ${origin} is requesting to log in to your Kite device.`),
                  E('div', {className: 'kite-login-form'},
                    error,
                    E('div', {className: 'kite-form-row'},
@@ -135,7 +139,7 @@ class AuthenticatorModal extends React.Component {
             var personaId = this.state.personas[this.state.selectedPersona].id
 
             this.setState({loading: true})
-            this.state.device.tryLogin(personaId, this.passwordRef.current.value)
+            this.state.device.tryLogin(personaId, `pwd:${this.passwordRef.current.value}`)
                 .then(() => this.props.onSuccess(this.state.device),
                       (e) => this.setState({device: undefined, personas: undefined, loading: false,
                                             error: 'Invalid login', state: 'connecting'}))

@@ -5,5 +5,6 @@
 
 void close_all_files();
 void setup_signals();
+void restore_sigchld();
 
 #endif
