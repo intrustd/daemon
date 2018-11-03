@@ -7,7 +7,6 @@
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/prctl.h>
-#include <linux/prctl.h>
 
 #include "init_common.h"
 
