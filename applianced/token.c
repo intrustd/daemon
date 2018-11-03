@@ -57,7 +57,6 @@ struct perm *perm_find_perm_unlocked(const char *perm_name, size_t perm_name_sz)
   if ( ret ) {
     PERM_REF(ret);
   } else {
-    fprintf(stderr, "malloc %lu %lu\n", sizeof(*ret) + perm_name_sz + 1, perm_name_sz);
     ret = malloc(sizeof(*ret) + perm_name_sz + 1);
     if ( ret ) {
       char *new_perm_name = (char *) ret->perm_name;
@@ -464,7 +463,7 @@ int token_verify_signature(FILE *fl, EVP_PKEY *pkey, const char *sign_hex, size_
   size_t pkey_sz = EVP_PKEY_size(pkey) + 2;
 
   if ( hex_sz > (pkey_sz * 2) ) {
-    fprintf(stderr, "token_verify_signature: invalid signature size, expected %lu, got %lu\n",
+    fprintf(stderr, "token_verify_signature: invalid signature size, expected %zu, got %zu\n",
             pkey_sz * 2, hex_sz);
     fprintf(stderr, "signature is %.*s\n", (int) hex_sz, sign_hex);
     return -1;

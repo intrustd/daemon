@@ -439,8 +439,8 @@ static int connection_write_request(struct fcspktwriter *fcspw, char *req_buf, i
       if ( conn->conn_answer_offset < buffer_size(&conn->conn_answer_buffer) ) {
         int space_left = max_req_sz;
         struct stunattr *nextattr = STUN_NEXTATTR(attr);
-        fprintf(stderr, "going to write answer in request: %d %lu\n", max_req_sz, STUN_OFFSET(msg, nextattr));
-        fprintf(stderr, "writing answer at offset %d (%ld bytes total)\n", conn->conn_answer_offset,
+        fprintf(stderr, "going to write answer in request: %d %zu\n", max_req_sz, STUN_OFFSET(msg, nextattr));
+        fprintf(stderr, "writing answer at offset %d (%zu bytes total)\n", conn->conn_answer_offset,
                 buffer_size(&conn->conn_answer_buffer));
         if ( space_left > STUN_OFFSET(msg, nextattr) ) {
           space_left -= STUN_OFFSET(msg, nextattr);

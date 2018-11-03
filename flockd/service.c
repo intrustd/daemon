@@ -530,7 +530,7 @@ static void fscs_write_response(struct flocksvcclientstate *st, const char *rsp,
   int err;
 
   pthread_mutex_lock(&st->fscs_outgoing_mutex);
-  fprintf(stderr, "fscs_write_response: response size is %ld\n", sz);
+  fprintf(stderr, "fscs_write_response: response size is %zd\n", sz);
   err = SSL_write(st->fscs_dtls, rsp, sz);
   if ( err <= 0 ) {
     err = SSL_get_error(st->fscs_dtls, err);
@@ -1304,7 +1304,7 @@ static int flockservice_handle_offer_response(struct flockservice *svc,
     }
   }
 
-  fprintf(stderr, "flockservire_handle_offer_response: %08lx for line %d\n", conn_id, has_lines);
+  fprintf(stderr, "flockservice_handle_offer_response: %08"PRIu64" for line %d\n", conn_id, has_lines);
 
   if ( !has_lines && answer_offs < 0 ) {
     fprintf(stderr, "flockservice_handle_offer_response: Ignoring response with no lines and no salient answer offset\n");
@@ -1366,7 +1366,7 @@ static int flockservice_handle_startconn_response(struct flockservice *svc,
     }
   }
 
-  fprintf(stderr, "flockservice_handle_startconn_response: Got response %08lx\n", conn_id);
+  fprintf(stderr, "flockservice_handle_startconn_response: Got response %08"PRIu64"\n", conn_id);
 
   if ( has_personas ) {
     char persona_hash_str[SHA256_DIGEST_LENGTH * 2 + 1];
@@ -1551,7 +1551,7 @@ int flockservice_new_connection(struct flockservice *svc, struct connection *con
       HASH_FIND(conn_hh, svc->fs_connections, &conn->conn_id, sizeof(conn->conn_id), existing);
     } while (existing || conn->conn_id == 0);
 
-    fprintf(stderr, "flockservice_new_connection: new connection is %08lx\n", conn->conn_id);
+    fprintf(stderr, "flockservice_new_connection: new connection is %08"PRIu64"\n", conn->conn_id);
 
     CONN_REF(conn);
     HASH_ADD(conn_hh, svc->fs_connections, conn_id, sizeof(conn->conn_id), conn);

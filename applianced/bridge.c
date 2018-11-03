@@ -1476,7 +1476,7 @@ static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int net
   close(nl_sk);
 
   if ( err < sizeof(rsp) ) {
-    fprintf(stderr, "bridge_move_if_to_ns: not enough bytes in response: %d < %ld\n",
+    fprintf(stderr, "bridge_move_if_to_ns: not enough bytes in response: %d < %zu\n",
             err, sizeof(rsp));
     return -1;
   }

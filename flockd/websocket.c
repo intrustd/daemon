@@ -365,13 +365,13 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
       if ( err == 0 ) {
         const char *real_end = handshake.ws_loc_end;
 
-        fprintf(stderr, "Going to parse location\n");
+        //fprintf(stderr, "Going to parse location\n");
         // Remove trailing /s
         while ( *(real_end - 1) == '/' && (real_end - 1) > handshake.ws_loc_start )
           real_end--;
 
-        fprintf(stderr, "Got location %ld\n", real_end - handshake.ws_loc_start);
-        fprintf(stderr, "Location %.*s\n", (int) (real_end - handshake.ws_loc_start), handshake.ws_loc_start);
+        //        fprintf(stderr, "Got location %ld\n", real_end - handshake.ws_loc_start);
+        // fprintf(stderr, "Location %.*s\n", (int) (real_end - handshake.ws_loc_start), handshake.ws_loc_start);
 
         // Success, write out response
         if( handshake.ws_loc_start == real_end ||
@@ -464,7 +464,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
         else break;
 
         if ( (wsc_len + mask_offs + sizeof(masking)) > wsc->wsc_pkt_sz ) {
-          fprintf(stderr, "wsconnection_onread: need more websocket data for frame: %d %d %ld %d\n",
+          fprintf(stderr, "wsconnection_onread: need more websocket data for frame: %d %d %zu %d\n",
                   wsc_len, mask_offs, sizeof(masking), wsc->wsc_pkt_sz);
           break;
         }

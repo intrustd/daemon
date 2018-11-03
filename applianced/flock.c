@@ -3,6 +3,7 @@
 #include <openssl/ssl.h>
 #include <arpa/inet.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #include "flock.h"
 #include "state.h"
@@ -544,7 +545,7 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
     return -1;
   }
 
-  dbgprintf("flock_process_startconn: starting connection %08lx %p\n", conn_id, f->f_pconns);
+  dbgprintf("flock_process_startconn: starting connection %08"PRIu64" %p\n", conn_id, f->f_pconns);
 
   HASH_FIND(pc_hh, f->f_pconns, &conn_id, sizeof(conn_id), conn);
   if ( !conn ) {
@@ -1075,7 +1076,7 @@ static void flock_start_connection(struct flock *f, struct eventloop *el) {
 
 void flock_pconn_expires(struct flock *f, struct pconn *pc) {
   struct pconn *existing;
-  fprintf(stderr, "flock_fn: TODO Expiring pending connection %08lx\n", pc->pc_conn_id);
+  fprintf(stderr, "flock_fn: TODO Expiring pending connection %08"PRIu64"\n", pc->pc_conn_id);
   HASH_FIND(pc_hh, f->f_pconns, &pc->pc_conn_id, sizeof(pc->pc_conn_id), existing);
   if ( existing ) {
     HASH_DELETE(pc_hh, f->f_pconns, pc);

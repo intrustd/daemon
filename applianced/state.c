@@ -1892,7 +1892,7 @@ struct token *appstate_open_token_ex(struct appstate *as,
   unsigned char exp_digest[TOKEN_ID_LENGTH];
 
   if ( token_sz != sizeof(exp_digest) * 2 ) {
-    fprintf(stderr, "appstate_open_token_ex: invalid token name. Expected size %lu, got %lu\n",
+    fprintf(stderr, "appstate_open_token_ex: invalid token name. Expected size %zu, got %zu\n",
             sizeof(exp_digest) * 2, token_sz);
     return NULL;
   }

@@ -496,7 +496,7 @@ int main(int argc, char **argv) {
     }
 
     if ( n < sizeof(*pkt) ) {
-      dbg_printf("Packet is too small %d < %lu\n", n, sizeof(*pkt));
+      dbg_printf("Packet is too small %d < %zu\n", n, sizeof(*pkt));
       continue;
     }
 

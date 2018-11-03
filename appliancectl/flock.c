@@ -114,7 +114,7 @@ int list_flocks(int argc, char **argv) {
           break;
         case KLA_FLOCK_STATUS:
           if ( KLA_PAYLOAD_SIZE(attr) != sizeof(flock_status) ) {
-            fprintf(stderr, "list_flocks: Invalid payload length for KLA_FLOCK_STATUS: %ld\n", KLA_PAYLOAD_SIZE(attr));
+            fprintf(stderr, "list_flocks: Invalid payload length for KLA_FLOCK_STATUS: %zu\n", KLA_PAYLOAD_SIZE(attr));
           } else {
             flock_status = ntohl(*(KLA_DATA_AS(attr, buf, sz, uint32_t *)));
           }

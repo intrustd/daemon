@@ -639,7 +639,7 @@ static void candsrc_send_outgoing(struct candsrc *cs) {
     memcpy(&sz, out, 4);
 
     if ( (sz + 4) > pc->pc_outgoing_size ) {
-      fprintf(stderr, "candsrc_send_outgoing: invalid state %u %lu\n", sz + 4, pc->pc_outgoing_size);
+      fprintf(stderr, "candsrc_send_outgoing: invalid state %u %zu\n", sz + 4, pc->pc_outgoing_size);
       break;
     }
 
@@ -1684,7 +1684,7 @@ void pconn_recv_sendoffer(struct pconn *pc, int line,
   if ( answer_sz > 0 ) {
     uint16_t next_offset = answer_offs + answer_sz;
 
-    fprintf(stderr, "Got send offer request with answer %lu\n", answer_sz);
+    fprintf(stderr, "Got send offer request with answer %zu\n", answer_sz);
 
     if ( next_offset > pc->pc_answer_offset ) {
       if ( pc->pc_answer_offset < 0 ) {
@@ -1987,7 +1987,7 @@ static int pconn_form_candidate_pairs(struct pconn *pc, struct icecand *cand, in
       pairs[cur_pair]->icp_priority = icecand_pair_priority(pc, &pc->pc_local_ice_candidates[ pairs[cur_pair]->icp_local_ix ],
                                                             &pc->pc_remote_ice_candidates[ pairs[cur_pair]->icp_remote_ix ]);
 
-      fprintf(stderr, "Added pair %d with priority %lu:\n  Local:", cur_pair, pairs[cur_pair]->icp_priority);
+      fprintf(stderr, "Added pair %d with priority %"PRIu64":\n  Local:", cur_pair, pairs[cur_pair]->icp_priority);
       FORMAT_ICE_CANDIDATE(&pc->pc_local_ice_candidates[ pairs[cur_pair]->icp_local_ix ], dbgprintf);
       fprintf(stderr, "(cs ix: %d)\n  Remote:", pc->pc_local_ice_candidates[ pairs[cur_pair]->icp_local_ix ].ic_candsrc_ix);
       FORMAT_ICE_CANDIDATE(&pc->pc_remote_ice_candidates[ pairs[cur_pair]->icp_remote_ix ], dbgprintf);
@@ -2471,7 +2471,7 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
         pc->pc_answer_flags &= ~PCONN_ANSWER_IN_DATA_CHANNEL;
     } else if ( ATTR_IS("ice-ufrag") && vls && vle ) {
       if ( (vle - vls) >= sizeof(pc->pc_remote_ufrag) ) {
-        fprintf(stderr, "pconn_sdp_attr_fn: user fragment is too long (%ld)\n", vle - vls);
+        fprintf(stderr, "pconn_sdp_attr_fn: user fragment is too long (%"PRIuPTR")\n", vle - vls);
         return -1;
       } else {
         pc->pc_answer_flags |= PCONN_ANSWER_HAS_UFRAG;
@@ -2480,7 +2480,7 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
       }
     } else if ( ATTR_IS("ice-pwd") && vls && vle ) {
       if ( (vle - vls) >= sizeof(pc->pc_remote_pwd) ) {
-        fprintf(stderr, "pconn_sdp_attr_fn: password is too long (%ld)\n", vle - vls);
+        fprintf(stderr, "pconn_sdp_attr_fn: password is too long (%"PRIuPTR")\n", vle - vls);
         return -1;
       } else {
         pc->pc_answer_flags |= PCONN_ANSWER_HAS_PASSWORD;
@@ -2974,10 +2974,10 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
 
   case CONTAINER_CTL_GET_HOSTNAME:
     cp = argp;
-    err = snprintf(NULL, 0, "pconn-%lu", pc->pc_conn_id);
+    err = snprintf(NULL, 0, "pconn-%"PRIu64, pc->pc_conn_id);
 
     *cp = hostname = malloc(err + 1);
-    snprintf(hostname, err + 1, "pconn-%lu", pc->pc_conn_id);
+    snprintf(hostname, err + 1, "pconn-%"PRIu64, pc->pc_conn_id);
 
     return 0;
 

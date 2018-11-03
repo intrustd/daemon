@@ -59,7 +59,7 @@ int stun_validate(const char *buf, int buf_sz, struct stunvalidation *v) {
   v->sv_flags &= ~(STUN_HAD_FINGERPRINT | STUN_HAD_MESSAGE_INTEGRITY | STUN_FINGERPRINT_VALID);
 
   if ( buf_sz < STUN_MSG_HDR_SZ ) {
-    SVDBG("stun_validate: message too small (%d < %ld)\n", buf_sz, sizeof(struct stunmsg));
+    SVDBG("stun_validate: message too small (%d < %zu)\n", buf_sz, sizeof(struct stunmsg));
     return STUN_BAD_REQUEST;
   }
 
@@ -386,7 +386,7 @@ int stun_process_binding_response(struct stunmsg *msg, struct sockaddr *sa, sock
     switch ( STUN_ATTR_NAME(attr) ) {
     case STUN_ATTR_MAPPED_ADDRESS:
     case STUN_ATTR_XOR_MAPPED_ADDRESS:
-      fprintf(stderr, "Got payload size %d %lu\n", STUN_ATTR_PAYLOAD_SZ(attr), sizeof(*stun_addr));
+      fprintf(stderr, "Got payload size %d %zu\n", STUN_ATTR_PAYLOAD_SZ(attr), sizeof(*stun_addr));
       if ( STUN_ATTR_PAYLOAD_SZ(attr) > sizeof(*stun_addr) ) {
         stun_addr = (struct stunmappedaddress *) STUN_ATTR_DATA(attr);
 

@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <inttypes.h>
 
 #if !defined(OPENSSL_THREADS)
 # error OpenSSL built without threads support
@@ -163,7 +164,7 @@ static inline int shared_lock_imm(struct shared *s) {
 #define SHARED_DEBUG(shared, str)                                       \
   do {                                                                  \
     uint64_t __cnt_ ## __LINE__ = __sync_fetch_and_or(&(shared)->sh_refcnt, 0); \
-    fprintf(stderr, "SHARED_DEBUG: " str " (weak 0x%08lx, strong 0x%08lx)\n",     \
+    fprintf(stderr, "SHARED_DEBUG: " str " (weak 0x%08"PRIu64", strong 0x%08"PRIu64")\n", \
             (__cnt_ ## __LINE__ >> 32) & 0xFFFFFFFF, __cnt_ ## __LINE__ & 0xFFFFFFFF); \
   } while (0)
 

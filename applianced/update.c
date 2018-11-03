@@ -11,7 +11,7 @@
 #define OP_APPUPDATER_BUILD_PROCESS_EVENT (EVT_CTL_CUSTOM + 2)
 #define OP_APPUPDATER_DL_SIGN_PROGRESS (EVT_CTL_CUSTOM + 3)
 
-#define MF_TMPFILE_TEMPLATE "%s/manifests/.%08lx-download.tmp"
+#define MF_TMPFILE_TEMPLATE "%s/manifests/.%08"PRIuPTR"-download.tmp"
 #define MF_FINAL_TEMPLATE "%s/manifests/%s"
 #define SIGN_SUFFIX ".sign"
 
@@ -77,7 +77,7 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
         appupdater_error(au,AU_STATUS_ERROR);
       }
     } else {
-      fprintf(stderr, "appupdater: %p: downloaded %lu/%lu bytes of signature\n",
+      fprintf(stderr, "appupdater: %p: downloaded %zu/%zu bytes of signature\n",
               au, dle->dle_dl->dl_complete, dle->dle_dl->dl_total);
       if ( fwrite(dle->dle_dl->dl_buf, 1, dle->dle_dl->dl_bufsz, au->au_sign_output) !=
            dle->dle_dl->dl_bufsz ) {
@@ -153,7 +153,7 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
         }
       }
     } else {
-      fprintf(stderr, "appupdater: %p: downloaded %lu/%lu bytes\n", au,
+      fprintf(stderr, "appupdater: %p: downloaded %zu/%zu bytes\n", au,
               dle->dle_dl->dl_complete, dle->dle_dl->dl_total);
       if ( fwrite(dle->dle_dl->dl_buf, 1, dle->dle_dl->dl_bufsz, au->au_output) != dle->dle_dl->dl_bufsz ) {
         perror("fwrite");
