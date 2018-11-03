@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/wait.h>
+#include <limit.h>
 
 #include "util.h"
 #include "event.h"
