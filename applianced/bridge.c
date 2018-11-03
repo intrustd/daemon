@@ -18,7 +18,6 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 
-#include <net/ethernet.h>
 #include <net/if_arp.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
@@ -242,12 +241,12 @@ static void bridge_process_arp(struct brstate *br, int size) {
   struct arphdr hdr;
   uint16_t ether_type;
 
-  if ( size < (sizeof(struct ether_header) + sizeof(struct arphdr)) ) {
+  if ( size < (sizeof(struct ethhdr) + sizeof(struct arphdr)) ) {
     fprintf(stderr, "bridge_process_arp: not enough space in packet\n");
     return;
   }
 
-  memcpy(&hdr, br->br_tap_pkt + sizeof(struct ether_header), sizeof(hdr));
+  memcpy(&hdr, br->br_tap_pkt + sizeof(struct ethhdr), sizeof(hdr));
 
   if ( ntohs(hdr.ar_hrd) != ARPHRD_ETHER ) {
     fprintf(stderr, "bridge_process_arp: dropping ARP of type %04x\n", htons(hdr.ar_hrd));
@@ -256,43 +255,43 @@ static void bridge_process_arp(struct brstate *br, int size) {
 
   ether_type = ntohs(hdr.ar_pro);
   if ( hdr.ar_hln != ETH_ALEN ||
-       (ether_type == ETHERTYPE_IP && hdr.ar_pln != 4) ||
-       (ether_type == ETHERTYPE_IPV6 && hdr.ar_pln != 16) ) {
+       (ether_type == ETH_P_IP && hdr.ar_pln != 4) ||
+       (ether_type == ETH_P_IPV6 && hdr.ar_pln != 16) ) {
     fprintf(stderr, "bridge_process_arp: drop packet due to addr length mismatch\n");
     return;
   }
 
   switch ( ntohs(hdr.ar_op) ) {
   case ARPOP_REQUEST:
-    if ( ether_type == ETHERTYPE_IP ) {
+    if ( ether_type == ETH_P_IP ) {
       struct in_addr which_ip;
-      struct ether_header rsp_eth;
+      struct ethhdr rsp_eth;
       struct arphdr rsp_arp;
       uint32_t src_hw_ip;
       mac_addr src_hw_addr;
       int was_found = 0;
 
-      memset(rsp_eth.ether_dhost, 0xFF, ETH_ALEN);
-      rsp_eth.ether_type = htons(ETHERTYPE_ARP);
+      memset(rsp_eth.h_dest, 0xFF, ETH_ALEN);
+      rsp_eth.h_proto = htons(ETH_P_ARP);
 
       rsp_arp.ar_hrd = htons(ARPHRD_ETHER);
-      rsp_arp.ar_pro = htons(ETHERTYPE_IP);
+      rsp_arp.ar_pro = htons(ETH_P_IP);
       rsp_arp.ar_hln = ETH_ALEN;
       rsp_arp.ar_pln = 4;
       rsp_arp.ar_op = htons(ARPOP_REPLY);
 
-      if ( size < (sizeof(struct ether_header) + sizeof(struct arphdr) +
+      if ( size < (sizeof(struct ethhdr) + sizeof(struct arphdr) +
                    (2 * hdr.ar_hln) + hdr.ar_pln) ) {
         fprintf(stderr, "bridge_process_arp: packet is too small\n");
         return;
       }
 
-      memcpy(&which_ip.s_addr, br->br_tap_pkt + sizeof(struct ether_header) +
+      memcpy(&which_ip.s_addr, br->br_tap_pkt + sizeof(struct ethhdr) +
              sizeof(struct arphdr) + (2 * hdr.ar_hln) + hdr.ar_pln, sizeof(which_ip.s_addr));
 
       if ( memcmp(&which_ip, &br->br_bridge_addr, sizeof(which_ip)) == 0 ) {
         was_found = 1;
-        memcpy(rsp_eth.ether_shost, br->br_bridge_mac, ETH_ALEN);
+        memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
         memcpy(src_hw_addr, br->br_bridge_mac, ETH_ALEN);
         src_hw_ip = br->br_bridge_addr.s_addr;
       } else {
@@ -301,7 +300,7 @@ static void bridge_process_arp(struct brstate *br, int size) {
           HASH_FIND(ae_hh, br->br_arp_table, &which_ip, sizeof(which_ip), found);
           if ( found ) {
             was_found = 1;
-            memcpy(rsp_eth.ether_shost, br->br_bridge_mac, ETH_ALEN);
+            memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
             memcpy(src_hw_addr, found->ae_mac, ETH_ALEN);
             src_hw_ip = found->ae_ip.s_addr;
           }
@@ -318,7 +317,7 @@ static void bridge_process_arp(struct brstate *br, int size) {
           { .iov_base = src_hw_addr, .iov_len = sizeof(src_hw_addr) },
           { .iov_base = &src_hw_ip, .iov_len = sizeof(src_hw_ip) },
           { .iov_base = tgt_hw_addr, .iov_len = sizeof(tgt_hw_addr) },
-          { .iov_base = br->br_tap_pkt + sizeof(struct ether_header) + sizeof(struct arphdr) + hdr.ar_pln,
+          { .iov_base = br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct arphdr) + hdr.ar_pln,
             .iov_len = sizeof(uint32_t) }
         };
 
@@ -340,20 +339,20 @@ static void bridge_process_arp(struct brstate *br, int size) {
 }
 
 static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
-                               struct ether_header *hdr_eth,
+                               struct ethhdr *hdr_eth,
                                struct iphdr *hdr_ip) {
   struct udphdr hdr_udp;
   unsigned char *buf = br->br_tap_pkt;
   if ( hdr_ip->daddr == br->br_bridge_addr.s_addr &&
-       memcmp(hdr_eth->ether_dhost, br->br_bridge_mac, ETH_ALEN) == 0 ) {
+       memcmp(hdr_eth->h_dest, br->br_bridge_mac, ETH_ALEN) == 0 ) {
 
-    sz -= sizeof(struct ether_header) + sizeof(struct iphdr);
+    sz -= sizeof(struct ethhdr) + sizeof(struct iphdr);
     if ( sz < sizeof(hdr_udp) ) {
       fprintf(stderr, "bridge_process_udp: not enough data in udp packet\n");
       return;
     }
 
-    buf += sizeof(struct ether_header) + sizeof(struct iphdr);
+    buf += sizeof(struct ethhdr) + sizeof(struct iphdr);
     memcpy(&hdr_udp, buf, sizeof(hdr_udp));
 
     sz -= sizeof(hdr_udp);
@@ -398,7 +397,7 @@ static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
             bpr->bpr_bridge = br;
             bpr->bpr_user_data = NULL;
             bpr->bpr_persona = NULL;
-            memcpy(bpr->bpr_srchost, hdr_eth->ether_shost, sizeof(bpr->bpr_srchost));
+            memcpy(bpr->bpr_srchost, hdr_eth->h_source, sizeof(bpr->bpr_srchost));
             bpr->bpr_srcaddr.sin_addr.s_addr = hdr_ip->saddr;
             bpr->bpr_srcaddr.sin_port = hdr_udp.uh_sport;
             bpr->bpr_sts = BPR_ERR_INTERNAL;
@@ -420,7 +419,7 @@ static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
   }
 }
 
-static int bridge_validate_ip(struct brstate *br, struct ether_header *hdr_eth,
+static int bridge_validate_ip(struct brstate *br, struct ethhdr *hdr_eth,
                               struct iphdr *hdr_ip) {
   struct arpentry *arp;
   // Verify that this IP packet was not injected
@@ -434,7 +433,7 @@ static int bridge_validate_ip(struct brstate *br, struct ether_header *hdr_eth,
     return -1;
   }
 
-  if ( memcmp(hdr_eth->ether_shost, arp->ae_mac, ETH_ALEN) != 0 ) {
+  if ( memcmp(hdr_eth->h_source, arp->ae_mac, ETH_ALEN) != 0 ) {
     fprintf(stderr, "bridge_validate_ip: IP/MAC mismatch\n");
     return -1;
   }
@@ -444,17 +443,17 @@ static int bridge_validate_ip(struct brstate *br, struct ether_header *hdr_eth,
 
 static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) {
   struct iphdr hdr_ip;
-  struct ether_header hdr_eth;
+  struct ethhdr hdr_eth;
 
-  if ( sz < (sizeof(struct ether_header) + sizeof(struct iphdr)) ) {
+  if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr)) ) {
     fprintf(stderr, "bridge_process_ip: packet too small\n");
     return;
   }
 
-  memcpy(&hdr_eth, br->br_tap_pkt, sizeof(struct ether_header));
-  memcpy(&hdr_ip, br->br_tap_pkt + sizeof(struct ether_header), sizeof(struct iphdr));
+  memcpy(&hdr_eth, br->br_tap_pkt, sizeof(struct ethhdr));
+  memcpy(&hdr_ip, br->br_tap_pkt + sizeof(struct ethhdr), sizeof(struct iphdr));
 
-  if ( memcmp(hdr_eth.ether_dhost, br->br_bridge_mac, ETH_ALEN) == 0 &&
+  if ( memcmp(hdr_eth.h_dest, br->br_bridge_mac, ETH_ALEN) == 0 &&
        hdr_ip.daddr == br->br_bridge_addr.s_addr ) {
     if ( bridge_validate_ip(br, &hdr_eth, &hdr_ip) < 0 ) {
       fprintf(stderr, "bridge_process_ip: invalid source MAC/IP pair\n");
@@ -464,21 +463,21 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
     switch ( hdr_ip.protocol ) {
     case IPPROTO_ICMP: {
       struct icmphdr icmp;
-      struct ether_header rsp_eth;
+      struct ethhdr rsp_eth;
       struct iphdr rsp_ip;
       struct icmphdr rsp_icmp;
 
 
-      if ( sz < (sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr)) ) {
+      if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr)) ) {
         fprintf(stderr, "bridge_process_ip: not enough bytes (ICMP)\n");
         return;
       }
 
-      memcpy(&icmp, br->br_tap_pkt + sizeof(struct ether_header) + sizeof(struct iphdr),
+      memcpy(&icmp, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
              sizeof(icmp));
-      memcpy(rsp_eth.ether_dhost, hdr_eth.ether_shost, ETH_ALEN);
-      memcpy(rsp_eth.ether_shost, br->br_bridge_mac, ETH_ALEN);
-      rsp_eth.ether_type = htons(ETHERTYPE_IP);
+      memcpy(rsp_eth.h_dest, hdr_eth.h_source, ETH_ALEN);
+      memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
+      rsp_eth.h_proto = htons(ETH_P_IP);
 
       rsp_ip.version = 4;
       rsp_ip.ihl = 5;
@@ -508,8 +507,8 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
           { .iov_base = &rsp_eth, .iov_len = sizeof(rsp_eth) },
           { .iov_base = &rsp_ip, .iov_len = sizeof(rsp_ip) },
           { .iov_base = &rsp_icmp, .iov_len = sizeof(rsp_icmp) },
-          { .iov_base = br->br_tap_pkt + sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr),
-            .iov_len = sz - sizeof(struct ether_header) - sizeof(struct iphdr) - sizeof(struct icmphdr) }
+          { .iov_base = br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr),
+            .iov_len = sz - sizeof(struct ethhdr) - sizeof(struct iphdr) - sizeof(struct icmphdr) }
         };
         bridge_write_tap_pktv(br, iov, sizeof(iov) / sizeof(iov[0]));
         break;
@@ -529,7 +528,7 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
 
     case IPPROTO_SCTP:
       //      fprintf(stderr, "bridge_process_ip: got SCTP message\n");
-      if ( sz < (sizeof(struct ether_header) + sizeof(struct iphdr) + 2) ) {
+      if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + 2) ) {
         fprintf(stderr, "bridge_process_ip: SCTP packet is too short\n");
       } else {
         if ( pthread_rwlock_rdlock(&br->br_sctp_mutex) == 0 ) {
@@ -539,13 +538,13 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
           memset(&source, 0, sizeof(source));
           source.sin_addr.s_addr = hdr_ip.saddr;
           memcpy(&source.sin_port,
-                 br->br_tap_pkt + sizeof(struct ether_header) + sizeof(struct iphdr),
+                 br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
                  2);
 
           HASH_FIND(se_hh, br->br_sctp_table, &source, sizeof(source), se);
           if ( se ) {
-            se->se_on_packet(se, br->br_tap_pkt + sizeof(struct ether_header) + sizeof(struct iphdr),
-                             sz - sizeof(struct ether_header) - sizeof(struct iphdr));
+            se->se_on_packet(se, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
+                             sz - sizeof(struct ethhdr) - sizeof(struct iphdr));
           } else
             fprintf(stderr, "bridge_process_ip: warning: received SCTP to nowhere\n");
           pthread_rwlock_unlock(&br->br_sctp_mutex);
@@ -569,17 +568,17 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
 
  static void bridge_process_tap_packet(struct brstate *br, struct eventloop *el, int size) {
   // Check the contained protocol type
-  struct ether_header *pkt = (struct ether_header *)br->br_tap_pkt;
-  uint16_t ether_type = ntohs(pkt->ether_type);
+  struct ethhdr *pkt = (struct ethhdr *)br->br_tap_pkt;
+  uint16_t ether_type = ntohs(pkt->h_proto);
 
   switch ( ether_type ) {
-  case ETHERTYPE_ARP:
+  case ETH_P_ARP:
     bridge_process_arp(br, size);
     break;
-  case ETHERTYPE_IP:
+  case ETH_P_IP:
     bridge_process_ip(br, el, size);
     break;
-  case ETHERTYPE_IPV6:
+  case ETH_P_IPV6:
     break;
   default:
     fprintf(stderr, "Dropping ethernet packet with type %d", ether_type);
@@ -694,7 +693,7 @@ int bridge_write_from_foreign_pkt(struct brstate *br, struct container *dst,
                                   const struct sockaddr *sa, socklen_t sa_sz,
                                   const unsigned char *tap_pkt, uint16_t tap_sz) {
   struct arpentry *arp;
-  struct ether_header mac;
+  struct ethhdr mac;
   struct iphdr ip;
 
   struct sockaddr_in *sin;
@@ -715,9 +714,9 @@ int bridge_write_from_foreign_pkt(struct brstate *br, struct container *dst,
     return -1;
   }
 
-  memcpy(mac.ether_dhost, arp->ae_mac, ETH_ALEN);
-  memcpy(mac.ether_shost, br->br_bridge_mac, ETH_ALEN);
-  mac.ether_type = htons(ETHERTYPE_IP);
+  memcpy(mac.h_dest, arp->ae_mac, ETH_ALEN);
+  memcpy(mac.h_source, br->br_bridge_mac, ETH_ALEN);
+  mac.h_proto = htons(ETH_P_IP);
 
   switch ( sa->sa_family ) {
   case AF_INET:
@@ -1856,7 +1855,7 @@ static void bpr_release(struct brpermrequest *bpr) {
 
 static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
                            struct stkdmsg *rsp, size_t rspsz) {
-  struct ether_header rsp_eth;
+  struct ethhdr rsp_eth;
   struct iphdr rsp_ip;
   struct udphdr rsp_udp;
 
@@ -1867,9 +1866,9 @@ static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
     { .iov_base = rsp, .iov_len = rspsz }
   };
 
-  memcpy(rsp_eth.ether_shost, br->br_bridge_mac, ETH_ALEN);
-  memcpy(rsp_eth.ether_dhost, bpr->bpr_srchost, ETH_ALEN);
-  rsp_eth.ether_type = htons(ETHERTYPE_IP);
+  memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
+  memcpy(rsp_eth.h_dest, bpr->bpr_srchost, ETH_ALEN);
+  rsp_eth.h_proto = htons(ETH_P_IP);
 
   rsp_ip.version = 4;
   rsp_ip.ihl = 5;
