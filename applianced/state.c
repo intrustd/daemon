@@ -738,8 +738,12 @@ static int appstate_open_personas(struct appstate *as, struct appconf *ac) {
 
   personas_d = opendir(personas_dir);
   if ( !personas_d ) {
-    perror("appstate_open_personas: could not read personas directory");
-    return -1;
+    if ( errno == ENOENT ) {
+      return 0;
+    } else {
+      perror("appstate_open_personas: could not read personas directory");
+      return -1;
+    }
   }
 
   for ( errno = 0, ent = readdir(personas_d); ent; errno = 0, ent = readdir(personas_d) ) {
