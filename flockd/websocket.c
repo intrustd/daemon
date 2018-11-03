@@ -429,13 +429,13 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
 
         if ( (wsc->wsc_pkt_buf[1] & WS_MASK) == 0 ) {
           fprintf(stderr, "wsconnection_onread: masking bit must be set in client-to-server communication: %02x %02x\n", wsc->wsc_pkt_buf[0], wsc->wsc_pkt_buf[1]);
-          connection_complete(&wsc->wsc_conn);
+          connection_complete_unlocked(&wsc->wsc_conn);
           return -1;
         }
 
         if ( (wsc->wsc_pkt_buf[0] & WS_FIN) == 0 ) {
           fprintf(stderr, "wsconnection_onread: TODO fragmented websocket packet\n");
-          connection_complete(&wsc->wsc_conn);
+          connection_complete_unlocked(&wsc->wsc_conn);
           return -1;
         }
 
@@ -449,13 +449,13 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
 
           if ( (wsc_len + 8) > sizeof(wsc->wsc_pkt_buf) ) {
             fprintf(stderr, "wsconnection_onread: not enough space in packet buffer for this packet\n");
-            connection_complete(&wsc->wsc_conn);
+            connection_complete_unlocked(&wsc->wsc_conn);
             return -1;
           }
         } else if ( wsc_len == 127 ) {
           mask_offs = 2;
           fprintf(stderr, "wsconnection_onread: Incredibly large packet in websocket. Closing connection\n");
-          connection_complete(&wsc->wsc_conn);
+          connection_complete_unlocked(&wsc->wsc_conn);
           return -1;
         }
 
@@ -479,7 +479,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
 
         // Now interpret packet
         if ( wsconnection_onprotoline(wsc, el, &wsc->wsc_pkt_buf[mask_offs + 4], wsc_len) < 0 ) {
-          connection_complete(&wsc->wsc_conn);
+          connection_complete_unlocked(&wsc->wsc_conn);
           return -1;
         } else {
           wsc->wsc_pkt_sz -= mask_offs + 4 + wsc_len;
@@ -500,7 +500,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
 
         if ( next_newline >= 0 ) {
           if ( wsconnection_onprotoline(wsc, el, wsc->wsc_pkt_buf, next_newline) < 0 ) {
-            connection_complete(&wsc->wsc_conn);
+            connection_complete_unlocked(&wsc->wsc_conn);
             return -1;
           } else {
             wsc->wsc_pkt_sz -= next_newline + nl_length;
@@ -512,12 +512,12 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
       break;
     default:
       fprintf(stderr, "wsconnection_onread: unknown mode %d\n", wsc->wsc_mode);
-      connection_complete(&wsc->wsc_conn);
+      connection_complete_unlocked(&wsc->wsc_conn);
       return -1;
     }
   } else {
     fprintf(stderr, "wsconnection_onread: buffer overflow\n");
-    connection_complete(&wsc->wsc_conn);
+    connection_complete_unlocked(&wsc->wsc_conn);
     return -1;
   }
 
