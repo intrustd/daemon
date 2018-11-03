@@ -9,6 +9,7 @@
 #include <sys/epoll.h>
 #include <sys/wait.h>
 #include <limits.h>
+#include <inttypes.h>
 
 #include "util.h"
 #include "event.h"
@@ -1085,19 +1086,19 @@ void eventloop_dbg_print_heap_(struct timersub *timer, FILE *f, int depth) {
   if ( depth >= 32 ) return;
   if ( !timer ) return;
 
-  fprintf(f, "n%08lx[label=<<B>%08lx</B><BR/>%d<BR/>(%ld.%012ld)>];\n",
+  fprintf(f, "n%08"PRIuPTR"[label=<<B>%08"PRIuPTR"</B><BR/>%d<BR/>(%ld.%012ld)>];\n",
           (uintptr_t) timer, (uintptr_t) timer, timer->ts_op,
           timer->ts_when.tv_sec, timer->ts_when.tv_nsec);
   if ( timer->ts_left ) {
     eventloop_dbg_print_heap_(timer->ts_left, f, depth + 1);
-    fprintf(f, "n%08lx -> n%08lx [ label=\"L\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_left);
+    fprintf(f, "n%08"PRIuPTR" -> n%08"PRIuPTR" [ label=\"L\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_left);
   }
   if ( timer->ts_right ) {
     eventloop_dbg_print_heap_(timer->ts_right, f, depth + 1);
-    fprintf(f, "n%08lx -> n%08lx [ label=\"R\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_right);
+    fprintf(f, "n%08"PRIuPTR" -> n%08"PRIuPTR" [ label=\"R\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_right);
   }
   if ( timer->ts_parent )
-    fprintf(f, "n%08lx -> n%08lx [ label = \"P\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_parent);
+    fprintf(f, "n%08"PRIuPTR" -> n%08"PRIuPTR" [ label = \"P\" ];\n", (uintptr_t) timer, (uintptr_t) timer->ts_parent);
 }
 
 void eventloop_dbg_print_heap(struct timersub *timer, int iter) {
