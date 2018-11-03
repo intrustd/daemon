@@ -21,7 +21,13 @@ pkg_check_modules(CHECK check REQUIRED)
 
 find_package(Uthash)
 
-SET(KITE_CFLAGS "${OPENSSL_CFLAGS} ${ZLIB_CFLAGS} ${UTHASH_CFLAGS} ${CMAKE_THREAD_LIBS_INIT} ${URIPARSER_CFLAGS} ${CURL_CFLAGS} -DJSMN_STRICT=1")
+include(CheckTypeSize)
+
+SET(CMAKE_EXTRA_INCLUDE_FILES "sys/socket.h")
+CHECK_TYPE_SIZE("((struct cmsghdr *) 0)->cmsg_len" CMSGLEN_SIZE)
+SET(CMAKE_EXTRA_INCLUDE_FILES)
+
+SET(KITE_CFLAGS ${OPENSSL_CFLAGS} ${ZLIB_CFLAGS} ${UTHASH_CFLAGS} ${CMAKE_THREAD_LIBS_INIT} ${URIPARSER_CFLAGS} ${CURL_CFLAGS} -DJSMN_STRICT=1 -DCMSGLEN_SIZE=${CMSGLEN_SIZE})
 
 include_directories(common)
 add_library(kite-common STATIC common/event.c common/static_bio.c

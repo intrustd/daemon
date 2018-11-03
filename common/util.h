@@ -365,4 +365,10 @@ int fread_base64(FILE *sig, void **buf, size_t *buf_len);
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
+#if CMSGLEN_SIZE == 4
+#define CMSGLEN_LD "%d"
+#else
+#define CMSGLEN_LD "%ld"
+#endif
+
 #endif

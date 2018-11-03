@@ -1271,7 +1271,7 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
   struct cmsghdr *cmsg;
   int fds[10], nfds = 0, i;
 
-  fprintf(stderr, "Received local message of size %d (control %ld)\n", buf_sz, skmsg->msg_controllen);
+  fprintf(stderr, "Received local message of size %d (control " CMSGLEN_LD ")\n", buf_sz, skmsg->msg_controllen);
 
   if ( buf_sz < sizeof(*msg) ) {
     // Ignore message
@@ -1292,7 +1292,7 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
       memcpy(fds, CMSG_DATA(cmsg), nfds * sizeof(*fds));
 
     } else {
-      fprintf(stderr, "Received unknown local control message (level=%d, type=%d, length=%ld)\n",
+      fprintf(stderr, "Received unknown local control message (level=%d, type=%d, length=" CMSGLEN_LD ")\n",
               cmsg->cmsg_level, cmsg->cmsg_type, cmsg->cmsg_len);
     }
   }
