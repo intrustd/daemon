@@ -376,6 +376,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
         // Success, write out response
         if( handshake.ws_loc_start == real_end ||
             *handshake.ws_loc_start != '/' ) {
+	  fprintf(stderr, "Invalid location '%.*s'\n", (int) (real_end - handshake.ws_loc_start), handshake.ws_loc_start);
           handshake.ws_error = 400;
           send_http_error(wsc, &handshake);
         } else {
@@ -405,6 +406,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
               AI_UNREF(appliance);
             }
           } else {
+	    fprintf(stderr, "Invalid URI encoding '%.*s'\n", (int) (real_end - handshake.ws_loc_start), handshake.ws_loc_start);
             handshake.ws_error = 400;
             send_http_error(wsc, &handshake);
           }
@@ -1051,6 +1053,7 @@ static int parse_http_header(struct wshs *hs, const char *nms, const char *nme,
     const char *cur = vls;
     hs->ws_version = 0;
     if ( vle == vls ) {
+      fprintf(stderr, "parse_http_header: empty sec-websocket-version\n");
       hs->ws_error = 400;
       return -1;
     } else {
@@ -1059,6 +1062,7 @@ static int parse_http_header(struct wshs *hs, const char *nms, const char *nme,
           hs->ws_version *= 10;
           hs->ws_version += (*cur - '0');
         } else {
+	  fprintf(stderr, "parse_http_header: non-digit in sec-websocket-version\n");
           hs->ws_error = 400;
           return -1;
         }
@@ -1167,6 +1171,7 @@ static int parse_ws_handshake(struct wsconnection *wsc, struct wshs *hs, int *re
           version_start = buf;
           break;
         case HTTP_PS_VERSION:
+	  fprintf(stderr, "parse_ws_handshake: trailing junk after HTTP version\n");
           hs->ws_error = 400;
           return -1;
         default:
@@ -1192,6 +1197,7 @@ static int parse_ws_handshake(struct wsconnection *wsc, struct wshs *hs, int *re
       if ( *buf == ':' ) {
         hdrnm_end = buf;
         if ( hdrnm_end == hdrnm_start ) {
+	  fprintf(stderr, "parse_ws_handshake: empty header name\n");
           hs->ws_error = 400;
           return -1;
         }
@@ -1208,6 +1214,7 @@ static int parse_ws_handshake(struct wsconnection *wsc, struct wshs *hs, int *re
         hdrval_start = buf;
         hdrval_end = NULL;
       } else {
+	fprintf(stderr, "parse_ws_handshake: no space after colon\n");
         hs->ws_error = 400;
         return -1;
       }

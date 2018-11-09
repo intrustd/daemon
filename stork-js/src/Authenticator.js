@@ -17,7 +17,8 @@ function loginToAppliance(flocks, appliance) {
 
             var onError = (e) => {
                 removeEventListeners()
-                if ( flockIndex == flocks.length ) {
+                if ( (flockIndex + 1) == flocks.length ) {
+		    console.log("Could not find flock. Looked in ", flocks);
                     reject()
                 } else {
                     resolve(attempts[flockIndex + 1]())
