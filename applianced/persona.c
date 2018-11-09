@@ -319,7 +319,7 @@ int persona_save_fp(struct persona *p, FILE *fp) {
       fprintf(fp, "auth sha256 %s\n", hex_digest_str((unsigned char *)a->pa_data, sha256buf, SHA256_DIGEST_LENGTH));
       break;
     case PAUTH_TYPE_TOKEN:
-      fprintf(fp, "token\n");
+      fprintf(fp, "auth token\n");
       break;
     default:
       fprintf(stderr, "WARNING: persona_save_fp: unknown type %d\n", a->pa_type);
