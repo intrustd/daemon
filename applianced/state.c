@@ -345,7 +345,8 @@ static int appstate_open_keys(struct appstate *as, struct appconf *ac) {
   if ( !fp ) {
     perror("appstate_open_keys: fopen");
     fprintf(stderr, "Could not open the key file %s. Run the command\n\n", app_key_nm);
-    fprintf(stderr, "   openssl ecparam -name secp256k1 -genkey -noout -out %s\n\n", app_key_nm);
+    fprintf(stderr, "   openssl ecparam -out %s.ecparam.pem -name prime256v1\n", app_key_nm);
+    fprintf(stderr, "   openssl genpkey -paramfile %s.ecparam.pem -out %s.pem\n", app_key_nm, app_key_nm);
     fprintf(stderr, "to generate a private key\n");
     exit(1);
   }

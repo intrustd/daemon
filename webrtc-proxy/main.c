@@ -2447,7 +2447,11 @@ int main(int argc, char **argv) {
   reseto.assoc_value = 1;
   if ( setsockopt(sock, IPPROTO_SCTP, SCTP_INTERLEAVING_SUPPORTED, &reseto, sizeof(reseto)) < 0 ) {
     perror("setsockopt SCTP_INTERLEAVING_SUPPORTED");
-    return 1;
+    
+    if ( errno != ENOPROTOOPT )
+      return 1;
+    else
+      fprintf(stderr, "webrtc-proxy: running without SCTP interleaving\n");
   }
 
   memset(&addr, 0, sizeof(addr));

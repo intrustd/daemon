@@ -669,8 +669,8 @@ int bridge_write_tap_pktv(struct brstate *br, const struct iovec *iov, int iovcn
       pthread_mutex_unlock(&br->br_debug_mutex);
     } else
       fprintf(stderr, "bridge_write_tap_pkt: Skipping debug packet because the mutex could not be locked\n");
-  } else
-    fprintf(stderr, "bridge_write_tap_pkt: Skipping packet because there was en error writing\n");
+  } else if ( err <= 0 )
+    fprintf(stderr, "bridge_write_tap_pkt: Skipping packet because there was an error writing\n");
 
   pthread_mutex_unlock(&br->br_tap_write_mutex);
 

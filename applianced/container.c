@@ -195,15 +195,18 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
   }
 }
 
-static int container_enable_sctp_intl(struct container *c) {
+static int container_setup_sctp(struct container *c) {
   int ret = -1;
   FILE *en;
 
   en = fopen("/proc/sys/net/sctp/intl_enable", "wt");
   if ( !en ) {
     perror("fopen /proc/sys/net/sctp/intl_enable");
-    ret = -1;
-    goto error;
+    if ( errno != ENOENT ) {
+      ret = -1;
+      goto error;
+    } else
+      fprintf(stderr, "This kernel does not support SCTP interleaving\n");
   } else {
     fprintf(en, "1");
     fclose(en);
@@ -573,10 +576,10 @@ static int container_start_child(void *c_) {
   if ( c->c_flags & CONTAINER_FLAG_ENABLE_SCTP ) {
     fprintf(stderr, "Enable SCTP interleaving\n");
 
-    // Set SCTP interleaving
-    err = container_enable_sctp_intl(c);
+    // Set up various SCTP options
+    err = container_setup_sctp(c);
     if ( err < 0 ) {
-      fprintf(stderr, "container_enable_sctp_intl returned error\n");
+      fprintf(stderr, "container_setup_sctp: returned error\n");
       return EXIT_FAILURE;
     }
   }
