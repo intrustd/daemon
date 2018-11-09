@@ -10,14 +10,14 @@
 * DONE Album gallery view in photo app                               :photos:
 
 * DONE auth tokens
-* IN-PROGRESS Use ebtables to direct traffic
+* DONE Use ebtables to direct traffic
+* TODO when a container exits, the corresponding ebtables should be deleted
 * TODO show a chooser box when there are multiple auth tokens available
 * TODO multiple flocks
 * DONE save login information
-* TODO have admin app request permissions to display applications
 * TODO log in in the middle of admin app
 * TODO reuse admin app if available?
-* TODO share individual photos via e-mail
+* IN-PROGRESS share individual photos via e-mail
 * TODO E-mail app
 * TODO Music App
 * TODO Video App

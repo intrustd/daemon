@@ -76,7 +76,8 @@ int register_app(int argc, char **argv) {
     return 2;
   }
 
-  display_stork_response(buf, err, "Successfully registered application\n");
+  if ( display_stork_response(buf, err, "Successfully registered application\n") < 0 )
+    return EXIT_FAILURE;
 
   return EXIT_SUCCESS;
 }

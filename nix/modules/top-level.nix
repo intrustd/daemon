@@ -116,7 +116,8 @@
     kite.systemPackages = with pkgs; [
       utillinux
       coreutils
-      glibc
+      getconf
+      getent
       bash
       iproute
     ];
@@ -169,8 +170,8 @@
           cmpPrio = a: b: a.priority < b.priority;
           mkPermission = perm: with perm;
              let base = { inherit description; } //
-                        if !(builtins.isNull perm.verifyCmd)
-                        then { verify = verifyCmd; } else {};
+                        (if verifyCmd != null
+                         then { verify = verifyCmd; } else {});
              in if !(builtins.isNull perm.name)
                 then base // { inherit name; }
                 else if !(builtins.isNull perm.regex)

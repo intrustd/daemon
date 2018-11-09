@@ -1,4 +1,4 @@
-{ kite-app-module, system ? builtins.currentSystem }:
+{ kite-app-module, system ? builtins.currentSystem, pkgs ? (import <nixpkgs> {}) }:
 
 let kite-config = { config, pkgs, lib, ... }: {
       imports = [ ./kite.nix (builtins.toPath kite-app-module) ];
@@ -23,13 +23,11 @@ let kite-config = { config, pkgs, lib, ... }: {
     };
 
     eval = import <nixpkgs/nixos/lib/eval-config.nix> {
-      inherit system;
+      inherit system pkgs;
       modules = [ ./modules/top-level.nix (builtins.toPath kite-app-module) ];
       extraArgs = { kite-lib = (import ./lib/kite.nix) pkgs;  };
     };
 
     root = eval.config.kite.toplevel;
-
-    pkgs = import <nixpkgs> {};
 in eval.config.kite.manifest
 

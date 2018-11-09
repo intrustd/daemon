@@ -33,9 +33,6 @@ let permissionsType = with lib; types.submodule {
       };
     };
 in {
-  assertions = [
-  ];
-
   options = with lib; {
     kite.permissions = mkOption {
       type = types.listOf permissionsType;
