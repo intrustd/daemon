@@ -1148,6 +1148,7 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
     bytes_written = sctp_send(srv, (void *)chan->wrc_proxy_buf, chan->wrc_proxy_buf_sz, &sri, MSG_DONTWAIT);
     if ( bytes_written < 0 ) {
       if ( errno == EAGAIN || errno == EWOULDBLOCK ) {
+	log_printf("Writing this packet would block, so we're requesting time\n");
         chan->wrc_flags |= WRC_HAS_OUTGOING;
         assert(chan->wrc_proxy_buf_sz >= 0);
         return chan->wrc_proxy_buf_sz;
@@ -1155,6 +1156,12 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
         perror("proxy_stream_socket: sctp_send");
         return -1;
       }
+    } else if ( bytes_written < chan->wrc_proxy_buf_sz ) {
+      log_printf("Only able to write %d of %d bytes. Waiting\n", bytes_written, chan->wrc_proxy_buf_sz);
+      chan->wrc_flags |= WRC_HAS_OUTGOING;
+      chan->wrc_proxy_buf_sz -= bytes_written;
+      memmove(chan->wrc_proxy_buf, chan->wrc_proxy_buf + bytes_written, chan->wrc_proxy_buf_sz - bytes_written);
+      return chan->wrc_proxy_buf_sz;
     } else {
       chan->wrc_proxy_buf_sz = 0;
       chan->wrc_flags &= ~WRC_HAS_OUTGOING;
