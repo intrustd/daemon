@@ -1136,8 +1136,10 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
         return 0;
       }
     }
-  } else
+  } else {
     chan->wrc_proxy_buf_sz += bytes_read;
+    log_printf("Received %ld bytes. Buffer is now %ld\n", bytes_read, chan->wrc_proxy_buf_sz);
+  }
 
   if ( chan->wrc_proxy_buf_sz > 0 ) {
     struct sctp_sndrcvinfo sri;
