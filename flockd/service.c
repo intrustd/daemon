@@ -1380,6 +1380,7 @@ static int flockservice_handle_startconn_response(struct flockservice *svc,
   if ( conn_id == 0 ) return -1;
 
   if ( flockservice_lookup_connection(svc, conn_id, &c) < 0 ) {
+    fprintf(stderr, "flockservice_handle_startconn_response: Connection does not exist %08"PRIu64"\n", conn_id);
     return -1;
   }
 
