@@ -72,3 +72,11 @@ add_executable(shared-test common/tests/shared-test.c)
 
 add_executable(appliance-tests applianced/tests/main.c applianced/tests/token.c)
 target_link_libraries(appliance-tests PUBLIC kite-common kite-applianced ${CHECK_LIBRARIES})
+
+OPTION(WEBRTC_DEBUG
+  "Build the webrtc-proxy for debugging"
+  OFF)
+IF(WEBRTC_DEBUG)
+  ADD_DEFINITIONS(-DWEBRTC_PROXY_DEBUG)
+  MESSAGE("Building webrtc-proxy for debugging")
+ENDIF(WEBRTC_DEBUG)

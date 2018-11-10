@@ -27,7 +27,9 @@
 #define SCTP_INTERLEAVING_SUPPORTED 125
 #endif
 
+#ifndef WEBRTC_PROXY_DEBUG
 #define WEBRTC_PROXY_DEBUG 0
+#endif
 
 #define COMM 3
 
@@ -1126,7 +1128,7 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
       return -1;
     }
   } else if ( bytes_read == 0 ) {
-    log_printf("1`11`Did not read anything\n");
+    log_printf("Did not read anything\n");
     if ( chan->wrc_flags & WRC_READ_CLOSED ) {
       if ( !chan_has_more_proxying(chan) ) {
         mark_channel_closed(chan);
