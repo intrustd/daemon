@@ -652,7 +652,7 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
 
   log_printf("process_strreset_ack: got stream reset\n");
 
-  log_printf(stderr, "process_strreset_ack: received stream reset ack for %d channels: %08x\n",
+  log_printf("process_strreset_ack: received stream reset ack for %d channels: %08x\n",
              stream_cnt, rse->strreset_flags);
 
   if ( rse->strreset_flags & SCTP_STREAM_RESET_DENIED ) {
