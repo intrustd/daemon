@@ -1138,7 +1138,7 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
     }
   } else {
     chan->wrc_proxy_buf_sz += bytes_read;
-    log_printf("Received %ld bytes. Buffer is now %ld\n", bytes_read, chan->wrc_proxy_buf_sz);
+    log_printf("Received %d bytes. Buffer is now %d\n", bytes_read, chan->wrc_proxy_buf_sz);
   }
 
   if ( chan->wrc_proxy_buf_sz > 0 ) {
