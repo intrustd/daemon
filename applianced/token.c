@@ -365,6 +365,9 @@ struct token *token_new_from_file(FILE *fl) {
                   &expiration.tm_year, &expiration.tm_mon, &expiration.tm_mday,
                   &expiration.tm_hour, &expiration.tm_min, &expiration.tm_sec,
                   microsecs) == 7 ) {
+	fprintf(stderr, "Token expiration = %04d-%02d-%02d %02d:%02d:%02d",
+		expiration.tm_year, expiration.tm_mon, expiration.tm_mday,
+		expiration.tm_hour, expiration.tm_min, expiration.tm_sec);
         new_token->tok_expiration = mktime(&expiration);
         if ( new_token->tok_expiration < 0 ) {
           fprintf(stderr, "token_new_from_file: invalid time for 'expiration'\n");
