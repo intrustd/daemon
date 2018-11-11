@@ -9,6 +9,8 @@
 static pthread_mutex_t g_perms_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct perm * g_perms = NULL;
 
+#define TM_YEAR_EPOCH 1900
+
 static void permfreefn(const struct shared *sh, int lvl) {
   struct perm *p = STRUCT_FROM_BASE(struct perm, perm_shared, sh);
 
@@ -185,7 +187,7 @@ struct token *token_new_from_file(FILE *fl) {
 
   SHARED_INIT(&new_token->tok_shared, tokfreefn);
   SHA256((const unsigned char *)buf, buf_sz, (unsigned char *) new_token->tok_token_id);
-  new_token->tok_flags = 0;
+  new_token->tok_flags = TOKEN_FLAG_NEVER_EXPIRES;
   memset((unsigned char *)new_token->tok_persona_id, 0, PERSONA_ID_LENGTH);
   memset((unsigned char *)new_token->tok_site_id, 0, SITE_ID_MAX_LENGTH);
   new_token->tok_expiration = 0;
@@ -365,15 +367,16 @@ struct token *token_new_from_file(FILE *fl) {
                   &expiration.tm_year, &expiration.tm_mon, &expiration.tm_mday,
                   &expiration.tm_hour, &expiration.tm_min, &expiration.tm_sec,
                   microsecs) == 7 ) {
-	fprintf(stderr, "Token expiration = %04d-%02d-%02d %02d:%02d:%02d",
+	fprintf(stderr, "Token expiration = %04d-%02d-%02d %02d:%02d:%02d\n",
 		expiration.tm_year, expiration.tm_mon, expiration.tm_mday,
 		expiration.tm_hour, expiration.tm_min, expiration.tm_sec);
+	expiration.tm_year -= TM_YEAR_EPOCH;
         new_token->tok_expiration = mktime(&expiration);
         if ( new_token->tok_expiration < 0 ) {
           fprintf(stderr, "token_new_from_file: invalid time for 'expiration'\n");
           goto error;
         } else {
-            new_token->tok_flags |= TOKEN_FLAG_NEVER_EXPIRES;
+            new_token->tok_flags &= ~TOKEN_FLAG_NEVER_EXPIRES;
         }
       } else {
         fprintf(stderr, "token_new_from_file: invalid ISO8601 format string for 'expiration'\n");
