@@ -934,7 +934,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
 
 static void flock_successful_registration(struct flock *f, struct appstate *as) {
 
-  fprintf(stderr, "The flock has been successfully registered\n");
+  dbgprintf("The flock has been successfully registered\n");
 
   if ( f->f_flags & FLOCK_FLAG_PENDING )
     eventloop_queue(&as->as_eventloop, &f->f_on_should_save);
