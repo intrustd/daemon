@@ -533,6 +533,8 @@ static int candsrc_handle_response(struct candsrc *cs) {
       if ( icp_ix != cs->cs_pconn->pc_active_candidate_pair ) {
         fprintf(stderr, "Received DTLS packet on candidate pair %d (active is %d)\n", icp_ix,
                 cs->cs_pconn->pc_active_candidate_pair);
+	fprintf(stderr, "candidate pair %d is %s\n", icp_ix,
+		ICECANDPAIR_SUCCESS(cs->cs_pconn->pc_candidate_pairs_sorted[icp_ix]) ? "succeeded" : "pending" );
 
       } else {
         if ( pconn_ensure_dtls(cs->cs_pconn) < 0 ) {
@@ -1042,6 +1044,10 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
         remote = &pc->pc_remote_ice_candidates[p->icp_remote_ix];
 
         (void) remote; // Ignore unused for now
+
+	fprintf(stderr, "Schedule connectivity check on %d (active is %d)\n",
+		pc->pc_active_candidate_pair < 0 ? pc->pc_candidate_pair_pending_ix : pc->pc_active_candidate_pair,
+		pc->pc_active_candidate_pair);
 
         if ( pc->pc_active_candidate_pair < 0 ) {
           pc->pc_candidate_pair_pending_ix ++;
@@ -1876,6 +1882,7 @@ static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix
 
     stun_random_tx_id(&pair->icp_tx_id); // Generate new TX id
 
+    fprintf(stderr, "Connectivity check succeeds on candidate pair %d: %08x\n", cand_pair_ix, flag);
     pair->icp_flags |= flag;
 
     if ( ICECANDPAIR_SUCCESS(pair) ) {
@@ -2130,11 +2137,11 @@ static struct icecandpair *pconn_find_candidate_pair(struct pconn *pc, struct ca
     struct icecand *local = &pc->pc_local_ice_candidates[ pc->pc_candidate_pairs_sorted[i]->icp_local_ix ];
     if ( local->ic_candsrc_ix == cs_idx ) {
       struct icecand *remote = &pc->pc_remote_ice_candidates[ pc->pc_candidate_pairs_sorted[i]->icp_remote_ix ];
-//      fprintf(stderr, "Check remote equal ");
-//      dump_address(stderr, peer_addr, peer_addr_sz);
-//      fprintf(stderr, " == ");
-//      dump_address(stderr, &remote->ic_addr, sizeof(remote->ic_addr));
-//      fprintf(stderr, "\n");
+      fprintf(stderr, "Check remote equal (local ix is %d) ", cs_idx);
+      dump_address(stderr, peer_addr, peer_addr_sz);
+      fprintf(stderr, " == ");
+      dump_address(stderr, &remote->ic_addr, sizeof(remote->ic_addr));
+      fprintf(stderr, "\n");
       // Check if the remote candidate matches this one
       if ( kite_sock_addr_equal(&remote->ic_addr, peer_addr, peer_addr_sz) ) {
         if ( icp_ix ) *icp_ix = i;
