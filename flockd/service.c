@@ -12,7 +12,7 @@
 #include "client.h"
 #include "personas.h"
 
-#define DEFAULT_CLIENT_TIMEOUT 60000 // Keep DTLS contexts around for 30 seconds
+#define DEFAULT_CLIENT_TIMEOUT (10 * 60000) // Keep DTLS contexts around for ten minutes
 
 #define FLOCK_DTLS_COOKIE_LENGTH 32
 

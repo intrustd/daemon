@@ -23,7 +23,7 @@
 #define FLOCK_INITIAL_REGISTRATION_RTO 150 // 150 milliseconds
 #define FLOCK_SEND_FAIL_INTERVAL       500 // After a socket failure, wait a half second
 #define FLOCK_FLAG_TRY_AGAIN_INTERVAL  1000
-#define FLOCK_SEND_REGISTRATION_INTERVAL 10000 // Send a new registration every 10 seconds
+#define FLOCK_SEND_REGISTRATION_INTERVAL (2 * 60000) // Send a new registration every two minutes
 #define FLOCK_MAX_RETRIES              7
 
 #define FLOCK_TIMEOUT(f, initial) (initial << (f)->f_retries)
