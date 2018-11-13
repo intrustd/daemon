@@ -432,9 +432,14 @@ export class FlockClient extends EventTarget {
                         }
 
                         this.rtc_connection = new RTCPeerConnection({ iceServers: iceServers });
+                        this.rtc_connection.addEventListener('icecandidate', (c) => {
+                            this.addIceCandidate(c)
+                        })
                         this.rtc_control_channel = this.rtc_connection.createDataChannel('control', {protocol: 'control'})
                         this.rtc_control_channel.binaryType = 'arraybuffer'
                         this.rtc_control_channel.onopen = () => {
+			    console.log('channel opens')
+			    this.signalRemoteComplete()
                             this.dispatchEvent(new KiteChannelOpens(this));
                             this.rtc_control_channel.close()
                             delete this.rtc_control_channel
@@ -443,9 +448,6 @@ export class FlockClient extends EventTarget {
 
                         this.answer_sent = false;
                         this.candidates = [];
-                        this.rtc_connection.addEventListener('icecandidate', (c) => {
-                            this.addIceCandidate(c)
-                        })
 
                         console.log("Set remote description", this.offer);
                         this.rtc_connection.setRemoteDescription({ type: 'offer',

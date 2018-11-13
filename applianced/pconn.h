@@ -75,12 +75,12 @@ uint64_t icecand_pair_priority(struct pconn *pc, struct icecand *local, struct i
 int icecand_equivalent(struct icecand *a, struct icecand *b);
 
 #define ICECANDPAIR_FLAG_NOMINATED   0x1 // We've performed a successful connectivity check
-#define ICECANDPAIR_FLAG_RECEIVED    0x2 // We've received a successful STUN ping
+// #define ICECANDPAIR_FLAG_RECEIVED    0x2 // We've received a successful STUN ping
 #define ICECANDPAIR_FLAG_ERROR       0x4 // Both nominated and received (or them together)
 
 #define ICECANDPAIR_SUCCESS(icp)                                        \
-  (((icp)->icp_flags & (ICECANDPAIR_FLAG_RECEIVED | ICECANDPAIR_FLAG_NOMINATED)) == \
-   (ICECANDPAIR_FLAG_RECEIVED | ICECANDPAIR_FLAG_NOMINATED))
+  (((icp)->icp_flags & ICECANDPAIR_FLAG_NOMINATED) ==			\
+   ICECANDPAIR_FLAG_NOMINATED)
 
 struct icecandpair {
   unsigned int    icp_local_ix, icp_remote_ix;

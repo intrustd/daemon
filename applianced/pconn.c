@@ -476,17 +476,33 @@ static void candsrc_send_binding_response(struct candsrc *cs, const struct stunm
   if ( err < 0 )
     perror("candsrc_send_binding_response: sendto");
   else {
-    struct pconn *pc = cs->cs_pconn;
-    int icp_ix = -1;
+    if ( !pconn_find_candidate_pair(cs->cs_pconn, cs, peer_addr, peer_addr_sz, NULL) ) {
+      struct icecand candidate;
+      // Add peer reflexive remote candidate
+      candidate.ic_component = 1;
+      candidate.ic_transport = IPPROTO_UDP;
+      candidate.ic_type = ICE_TYPE_PRFLX;
+      memcpy(&candidate.ic_addr, peer_addr, peer_addr_sz);
+      memcpy(&candidate.ic_raddr, peer_addr, peer_addr_sz);
 
-    if ( pconn_find_candidate_pair(cs->cs_pconn, cs, peer_addr, peer_addr_sz, &icp_ix) ) {
-      pconn_connectivity_check_succeeds(pc, icp_ix, ICECANDPAIR_FLAG_RECEIVED);
-    } else {
-      fprintf(stderr, "Could not match this binding request with any candidate pair\n");
+      random_printable_string(candidate.ic_foundation, ICE_FOUNDATION_LEN);
+      candidate.ic_foundation[ICE_FOUNDATION_LEN] = '\0';
 
-      // TODO add peer reflexive candidate?
+      pconn_add_ice_candidate(cs->cs_pconn, PCONN_REMOTE_CANDIDATE, &candidate);
     }
   }
+//  else {
+//    struct pconn *pc = cs->cs_pconn;
+//    int icp_ix = -1;
+//
+//    if ( pconn_find_candidate_pair(cs->cs_pconn, cs, peer_addr, peer_addr_sz, &icp_ix) ) {
+//      pconn_connectivity_check_succeeds(pc, icp_ix, ICECANDPAIR_FLAG_RECEIVED);
+//    } else {
+//      fprintf(stderr, "Could not match this binding request with any candidate pair\n");
+//
+//      // TODO add peer reflexive candidate?
+//    }
+//  }
 }
 
 static void candsrc_send_error_response(struct candsrc *cs, const struct stunmsg *msg,
@@ -527,45 +543,32 @@ static int candsrc_handle_response(struct candsrc *cs) {
 
   // Check if this is DTLS media
   if ( pkt_sz > 0 && IS_DTLS_PACKET(cs->cs_pconn->pc_incoming_pkt[0]) ) {
-    int icp_ix;
-    //    fprintf(stderr, "Received DTLS packet\n");
-    if ( pconn_find_candidate_pair(cs->cs_pconn, cs, &peer_addr.ksa, peer_addr_sz, &icp_ix) ) {
-      if ( icp_ix != cs->cs_pconn->pc_active_candidate_pair ) {
-        fprintf(stderr, "Received DTLS packet on candidate pair %d (active is %d)\n", icp_ix,
-                cs->cs_pconn->pc_active_candidate_pair);
-	fprintf(stderr, "candidate pair %d is %s\n", icp_ix,
-		ICECANDPAIR_SUCCESS(cs->cs_pconn->pc_candidate_pairs_sorted[icp_ix]) ? "succeeded" : "pending" );
-
+    if ( pconn_ensure_dtls(cs->cs_pconn) < 0 ) {
+      fprintf(stderr, "Ignoring DTLS packet, because we could not create DTLS context\n");
+    } else {
+      BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
+      BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, pkt_sz);
+      //fprintf(stderr, "Accepting DTLS packet of size %d\n", pkt_sz);
+      if ( cs->cs_pconn->pc_state == PCONN_STATE_ESTABLISHED ) {
+	unsigned char my_buf[sizeof(cs->cs_pconn->pc_incoming_pkt)];
+	pkt_sz = SSL_read(cs->cs_pconn->pc_dtls, my_buf, sizeof(my_buf));
+	if ( pkt_sz <= 0 ) {
+	  fprintf(stderr, "error while trying to read packet: %d\n", pkt_sz);
+	} else {
+	  //              fprintf(stderr, "Got DTLS packet while established of size: %d\n", pkt_sz);
+	  //              print_hex_dump_fp(stderr, (const unsigned char *) my_buf, pkt_sz);
+	  
+	  // Only write the packet if the webrtc-proxy is up
+	  //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
+	  bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
+					&cs->cs_pconn->pc_container,
+					&peer_addr.ksa, peer_addr_sz,
+					my_buf, pkt_sz);
+	}
       } else {
-        if ( pconn_ensure_dtls(cs->cs_pconn) < 0 ) {
-          fprintf(stderr, "Ignoring DTLS packet, because we could not create DTLS context\n");
-        } else {
-          BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
-          BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, pkt_sz);
-          //fprintf(stderr, "Accepting DTLS packet of size %d\n", pkt_sz);
-          if ( cs->cs_pconn->pc_state == PCONN_STATE_ESTABLISHED ) {
-            unsigned char my_buf[sizeof(cs->cs_pconn->pc_incoming_pkt)];
-            pkt_sz = SSL_read(cs->cs_pconn->pc_dtls, my_buf, sizeof(my_buf));
-            if ( pkt_sz <= 0 ) {
-              fprintf(stderr, "error while trying to read packet: %d\n", pkt_sz);
-            } else {
-              //              fprintf(stderr, "Got DTLS packet while established of size: %d\n", pkt_sz);
-              //              print_hex_dump_fp(stderr, (const unsigned char *) my_buf, pkt_sz);
-
-              // Only write the packet if the webrtc-proxy is up
-              //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
-              bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
-                                            &cs->cs_pconn->pc_container,
-                                            &peer_addr.ksa, peer_addr_sz,
-                                            my_buf, pkt_sz);
-            }
-          } else {
-            pconn_dtls_handshake(cs->cs_pconn);
-          }
-        }
+	pconn_dtls_handshake(cs->cs_pconn);
       }
-    } else
-      fprintf(stderr, "Could not determine peer this packet came from\n");
+    }
   } else {
     struct stunvalidation sv;
 
@@ -588,6 +591,12 @@ static int candsrc_handle_response(struct candsrc *cs) {
       } else {
         // This could be a connectivity check. Check to see if the transaction ID matches any candidate pair
         for ( i = 0; i < cs->cs_pconn->pc_candidate_pairs_count; ++i ) {
+//	  fprintf(stderr, "Check binding response(cand %d): Got txid %08x%08x%08x. Cand txid is %08x%08x%08x\n",
+//		  i, msg->sm_tx_id.a, msg->sm_tx_id.b, msg->sm_tx_id.c,
+//		  cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id.a,
+//		  
+//		  cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id.b,
+//		  cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id.c);
           if ( memcmp(&cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id,
                       &msg->sm_tx_id, sizeof(msg->sm_tx_id)) == 0 ) {
             pconn_connectivity_check_succeeds(cs->cs_pconn, i, ICECANDPAIR_FLAG_NOMINATED);
@@ -1045,9 +1054,9 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
 
         (void) remote; // Ignore unused for now
 
-	fprintf(stderr, "Schedule connectivity check on %d (active is %d)\n",
-		pc->pc_active_candidate_pair < 0 ? pc->pc_candidate_pair_pending_ix : pc->pc_active_candidate_pair,
-		pc->pc_active_candidate_pair);
+//	fprintf(stderr, "Schedule connectivity check on %d (active is %d)\n",
+//		pc->pc_active_candidate_pair < 0 ? pc->pc_candidate_pair_pending_ix : pc->pc_active_candidate_pair,
+//		pc->pc_active_candidate_pair);
 
         if ( pc->pc_active_candidate_pair < 0 ) {
           pc->pc_candidate_pair_pending_ix ++;
@@ -2137,11 +2146,11 @@ static struct icecandpair *pconn_find_candidate_pair(struct pconn *pc, struct ca
     struct icecand *local = &pc->pc_local_ice_candidates[ pc->pc_candidate_pairs_sorted[i]->icp_local_ix ];
     if ( local->ic_candsrc_ix == cs_idx ) {
       struct icecand *remote = &pc->pc_remote_ice_candidates[ pc->pc_candidate_pairs_sorted[i]->icp_remote_ix ];
-      fprintf(stderr, "Check remote equal (local ix is %d) ", cs_idx);
-      dump_address(stderr, peer_addr, peer_addr_sz);
-      fprintf(stderr, " == ");
-      dump_address(stderr, &remote->ic_addr, sizeof(remote->ic_addr));
-      fprintf(stderr, "\n");
+//      fprintf(stderr, "Check remote equal (local ix is %d) ", cs_idx);
+//      dump_address(stderr, peer_addr, peer_addr_sz);
+//      fprintf(stderr, " == ");
+//      dump_address(stderr, &remote->ic_addr, sizeof(remote->ic_addr));
+//      fprintf(stderr, "\n");
       // Check if the remote candidate matches this one
       if ( kite_sock_addr_equal(&remote->ic_addr, peer_addr, peer_addr_sz) ) {
         if ( icp_ix ) *icp_ix = i;
@@ -2586,7 +2595,10 @@ static int pconn_ensure_dtls(struct pconn *pc) {
 
   if ( pc->pc_dtls ) return 0;
 
-  if ( pc->pc_active_candidate_pair < 0 ) return -1;
+  if ( pc->pc_active_candidate_pair < 0 ) {
+    fprintf(stderr, "Cannot create DTLS context, because there is no active candidate pair\n");
+    return -1;
+  }
 
   pair = pc->pc_candidate_pairs_sorted[pc->pc_active_candidate_pair];
   if ( !pair || pair->icp_local_ix >= pc->pc_local_ice_candidates_count ||

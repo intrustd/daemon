@@ -206,9 +206,9 @@ void sigalrm(int sig) {
 }
 
 void sigchld(int sig) {
-  int err = write(STDERR_FILENO, "SIGCHLD\n", 8);
+  //  int err = write(STDERR_FILENO, "SIGCHLD\n", 8);
   __sync_fetch_and_add(&g_cur_sigchld, 1);
-  (void) err;
+  //(void) err;
 }
 
 void eventloop_prepare(struct eventloop *el) {

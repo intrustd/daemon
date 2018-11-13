@@ -568,10 +568,11 @@ static int container_start_child(void *c_) {
 
   memcpy(&c->c_arp_entry, &arp_entry, sizeof(c->c_arp_entry));
 
-  fprintf(stderr, "Done setting up container. Listing devices...\n");
-  err = system("ifconfig -a");
-  fprintf(stderr, "Listing routes\n");
-  err = system("route");
+  fprintf(stderr, "Done setting up container\n");
+//  fprintf(stderr, "Listing devices...\n");
+//  err = system("ifconfig -a");
+//  fprintf(stderr, "Listing routes\n");
+//  err = system("route");
 
   if ( c->c_flags & CONTAINER_FLAG_ENABLE_SCTP ) {
     fprintf(stderr, "Enable SCTP interleaving\n");

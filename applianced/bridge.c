@@ -996,10 +996,10 @@ static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
-  if ( err >= sizeof(cmd_buf) ) goto nospc;
-  err = system(cmd_buf);
-  if ( err != 0 ) goto cmdfailed;
+//  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
+//  if ( err >= sizeof(cmd_buf) ) goto nospc;
+//  err = system(cmd_buf);
+//  if ( err != 0 ) goto cmdfailed;
 
   return;
 
@@ -1251,10 +1251,10 @@ static int bridge_setup_container_ebtable(struct brstate *br, int port_ix,
   err = system(cmd_buf);
   if ( err != 0 ) goto cmd_error;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
-  if ( err >= sizeof(cmd_buf) ) goto overflow;
-  err = system(cmd_buf);
-  if ( err != 0 ) goto cmd_error;
+//  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
+//  if ( err >= sizeof(cmd_buf) ) goto overflow;
+//  err = system(cmd_buf);
+//  if ( err != 0 ) goto cmd_error;
 
   return 0;
 
@@ -1504,7 +1504,7 @@ static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int net
   }
 
   fprintf(stderr, "bridge_move_if_to_ns: moved %s to %d\n", if_name, netns);
-  err = system("ifconfig -a");
+  //  err = system("ifconfig -a");
 
   return 0;
 }
@@ -1667,11 +1667,11 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *m
     err = system(cmd_buf);
     if ( err != 0 ) goto cmd_error;
 
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
+//    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
+//    if ( err >= sizeof(cmd_buf) ) goto overflow;
+//
+//    err = system(cmd_buf);
+//    if ( err != 0 ) goto cmd_error;
 
     exit(EXIT_SUCCESS);
 
@@ -1735,10 +1735,10 @@ static void brtunnel_init(struct brtunnel *tun) {
     err = system(cmd_buf);
     if ( err != 0 ) goto cmd_error;
 
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", tun->brtun_br->br_ebroute_path);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
+//    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", tun->brtun_br->br_ebroute_path);
+//    if ( err >= sizeof(cmd_buf) ) goto overflow;
+//    err = system(cmd_buf);
+//    if ( err != 0 ) goto cmd_error;
 
     exit(0);
 
