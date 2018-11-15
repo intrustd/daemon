@@ -32,10 +32,11 @@ void applianceinfo_clear(struct applianceinfo *info) {
   info->ai_appliance_fn = dummy_appliance_fn;
   info->ai_flags = 0;
   info->ai_connections = 0;
+  info->ai_fcs = NULL;
   memset(info->ai_personas, 0, sizeof(info->ai_personas));
 }
 
-int applianceinfo_init(struct applianceinfo *info, shfreefn do_free) {
+int applianceinfo_init(struct applianceinfo *info, struct flockclientstate *fcs, shfreefn do_free) {
   applianceinfo_clear(info);
 
   assert(do_free);
@@ -47,6 +48,9 @@ int applianceinfo_init(struct applianceinfo *info, shfreefn do_free) {
     return -1;
   }
   info->ai_flags |= AI_FLAG_INITIALIZED;
+
+  FLOCKCLIENT_REF(fcs);
+  info->ai_fcs = fcs;
 
   return 0;
 }
@@ -63,6 +67,11 @@ void applianceinfo_release(struct applianceinfo *info) {
   if ( info->ai_flags & AI_FLAG_INITIALIZED ) {
     pthread_mutex_destroy(&info->ai_mutex);
     info->ai_flags &= ~AI_FLAG_INITIALIZED;
+  }
+
+  if ( info->ai_fcs ) {
+    FLOCKCLIENT_UNREF(info->ai_fcs);
+    info->ai_fcs = NULL;
   }
 }
 
@@ -471,4 +480,21 @@ X509 *applianceinfo_get_peer_certificate(struct applianceinfo *info) {
     ret = NULL;
   }
   return ret;
+}
+
+void applianceinfo_update_client(struct applianceinfo *info, struct flockclientstate *fcs) {
+  struct flockclientstate *old_fcs;
+  FLOCKCLIENT_REF(fcs);
+
+  SAFE_MUTEX_LOCK(&info->ai_mutex);
+  old_fcs = info->ai_fcs;
+  if ( old_fcs )
+    FLOCKCLIENT_REF(old_fcs);
+  info->ai_fcs = fcs;
+  pthread_mutex_unlock(&info->ai_mutex);
+
+  if ( old_fcs )
+    FLOCKCLIENT_UNREF(old_fcs);
+  if ( old_fcs == fcs )
+    FLOCKCLIENT_UNREF(fcs);
 }

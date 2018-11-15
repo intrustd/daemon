@@ -32,7 +32,10 @@ typedef int (*appliancefn)(struct applianceinfo *, int, void *);
 #define applianceinfo_get_peer_addr(ai, app_addr) applianceinfo_ctl(ai, AI_OP_GET_PEER_ADDR, app_addr)
 
 struct aireconcile {
-  struct applianceinfo *air_old, *air_new;
+  struct applianceinfo *air_old;
+
+  char air_new_name[KITE_APPLIANCE_NAME_MAX];
+  X509 *air_new_cert;
 };
 
 struct aipersonasfetcher {
@@ -85,6 +88,8 @@ struct applianceinfo {
   // A hash table (by connection id) of all connections currently
   // being established with this device
   struct connection *ai_connections;
+
+  struct flockclientstate *ai_fcs;
 };
 
 #define AI_FLAG_SECURE      0x1
@@ -97,9 +102,11 @@ struct applianceinfo {
 #define AI_WUNREF(ai) SHARED_WUNREF(&(ai)->ai_shared)
 #define APPLIANCEINFO_FROM_SHARED(sh) STRUCT_FROM_BASE(struct applianceinfo, ai_shared, sh)
 
-int applianceinfo_init(struct applianceinfo *info, shfreefn free);
+int applianceinfo_init(struct applianceinfo *info, struct flockclientstate *fcs, shfreefn free);
 void applianceinfo_clear(struct applianceinfo *info);
 void applianceinfo_release(struct applianceinfo *info);
+
+void applianceinfo_update_client(struct applianceinfo *info, struct flockclientstate *fcs);
 
 X509 *applianceinfo_get_peer_certificate(struct applianceinfo *info);
 

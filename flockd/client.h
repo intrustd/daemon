@@ -46,6 +46,8 @@ void fcspw_queue_fn(struct eventloop *el, int op, void *ev);
 
 #define FLOCKCLIENT_REF(cli) SHARED_REF(&(cli)->fcs_shared)
 #define FLOCKCLIENT_UNREF(cli) SHARED_UNREF(&(cli)->fcs_shared)
+#define FLOCKCLIENT_WREF(cli) SHARED_WREF(&(cli)->fcs_shared)
+#define FLOCKCLIENT_WUNREF(cli) SHARED_WUNREF(&(cli)->fcs_shared)
 
 #define FSC_RECEIVE_PKT 0x1
 

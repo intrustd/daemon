@@ -46,10 +46,9 @@ struct flocksvcclientstate {
   DLIST_HEAD(struct fcspktwriter) fscs_outgoing_packets;
 
   // A client may be an appliance
-  struct applianceinfo fscs_appliance;
+  struct applianceinfo *fscs_appliance_ptr;
 };
 
-#define FSCS_IS_APPLIANCE               0x00000001
 #define FSCS_OUTGOING_MUTEX_INITIALIZED 0x80000000
 #define FSCS_STATE_MUTEX_INITIALIZED    0x40000000
 
@@ -59,14 +58,35 @@ struct flocksvcclientstate {
 
 #define FSCS_REF(fscs) FLOCKCLIENT_REF(&(fscs)->fscs_base_st)
 #define FSCS_UNREF(fscs) FLOCKCLIENT_UNREF(&(fscs)->fscs_base_st)
+#define FSCS_WREF(fscs) FLOCKCLIENT_WREF(&(fscs)->fscs_base_st)
+#define FSCS_WUNREF(fscs) FLOCKCLIENT_WUNREF(&(fscs)->fscs_base_st)
 
 #define FSCS_FROM_APPINFO(info) STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_appliance, info)
+#define FSCS_FROM_APPINFO_PTR(info) STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_base_st, info->ai_fcs)
 
 static void flockservice_fn(struct eventloop *el, int op, void *arg);
 static int flockservice_handle_startconn_response(struct flockservice *svc,
                                                   const struct stunmsg *msg, int buf_sz);
 static int flockservice_handle_offer_response(struct flockservice *svc,
                                               const struct stunmsg *msg, int buf_sz);
+
+// Attempts to register the appliance provided in the message.
+//
+// app is assumed to be a pointer to an appliance info struct that
+// will be included in the hash table.
+//
+// Returns 0 if a response should be sent. rsp_sz is set to the total
+// size of the response.
+//
+// Returns a positive number if no response should be sent, but there is no error.
+//
+// If the return value is >= 0 and app is not NULL, appliance should be kept around
+//
+// If the return value is less than 0, appliance was not added to the appliances hash table.
+int flockservice_handle_appliance_registration(struct flockservice *svc,
+                                               struct flocksvcclientstate *fcs,
+                                               const struct stunmsg *msg, int msg_sz,
+                                               char *rsp_buf, size_t *rsp_sz);
 
 // client state functions
 // Ensure that the client is in the outgoing queue. fscs_outgoing_mutex must not be held
@@ -81,7 +101,7 @@ static void fscs_free_appliance(const struct shared *sh, int level);
 
 void ai_do_queue(struct fcspktwriter *pw) {
   struct applianceinfo *ai = (struct applianceinfo *) pw->fcspw_queue_info;
-  struct flocksvcclientstate *st = FSCS_FROM_APPINFO(ai);
+  struct flocksvcclientstate *st = FSCS_FROM_APPINFO_PTR(ai);
 
   SAFE_MUTEX_LOCK(&st->fscs_outgoing_mutex);
   fprintf(stderr, "fscs_appliancefn: adding packet to queue\n");
@@ -109,7 +129,7 @@ static int fscs_appliancefn(struct applianceinfo *info, int op, void *arg) {
   struct aireconcile *air;
   X509 **certp;
 
-  st = FSCS_FROM_APPINFO(info);
+  st = FSCS_FROM_APPINFO_PTR(info);
 
   switch ( op ) {
   case AI_OP_GET_PEER_ADDR:
@@ -117,12 +137,13 @@ static int fscs_appliancefn(struct applianceinfo *info, int op, void *arg) {
     return 0;
   case AI_OP_RECONCILE: // TODO reconciliation
     air = (struct aireconcile *) arg;
-    if ( strcmp(air->air_old->ai_name,
-                air->air_new->ai_name) == 0 ) {
+    if ( strncmp(air->air_old->ai_name,
+		 air->air_new_name,
+		 sizeof(air->air_new_name)) == 0 ) {
       int ret = -1;
 
       X509 *old_cert = applianceinfo_get_peer_certificate(air->air_old);
-      X509 *new_cert = applianceinfo_get_peer_certificate(air->air_new);
+      X509 *new_cert = air->air_new_cert;
 
       if ( old_cert && new_cert ) {
         // Check public keys the same
@@ -179,24 +200,19 @@ static int fscs_appliancefn(struct applianceinfo *info, int op, void *arg) {
 static void fscs_free_appliance(const struct shared *sh, int level) {
   // The appliance is no longer being used by the run-time
   struct applianceinfo *ai = APPLIANCEINFO_FROM_SHARED(sh);
-  struct flocksvcclientstate *st = STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_appliance, ai);
+  struct flocksvcclientstate *st = FSCS_FROM_APPINFO_PTR(ai);
 
   if ( level != SHFREE_NO_MORE_REFS ) return;
 
-  if( pthread_mutex_lock(&st->fscs_state_mutex) == 0 ) {
-    st->fscs_flags &= ~FSCS_IS_APPLIANCE;
-    pthread_mutex_unlock(&st->fscs_state_mutex);
-
-    // This is in response to the state acquisition in fscs_handle_stun_request
-    FSCS_UNREF(st);
-  } else
-    fprintf(stderr, "fscs_free_appliance: could not free\n");
-
+  fprintf(stderr, "free appliance %p\n", ai);
+  
   if ( pthread_mutex_lock(&ai->ai_mutex) == 0 ) {
     if ( ai->ai_flags & AI_FLAG_ACTIVE )
       flockservice_remove_appliance(st->fscs_svc, ai, FLOCKSERVICE_REMOVE_REASON_APPLIANCE_EXPIRED);
     ai->ai_flags &= ~AI_FLAG_ACTIVE;
     pthread_mutex_unlock(&ai->ai_mutex);
+
+    applianceinfo_release(ai);
   } else
     fprintf(stderr, "fscs_free_appliance: could not lock appliance\n");
 }
@@ -204,25 +220,19 @@ static void fscs_free_appliance(const struct shared *sh, int level) {
 static void fscs_fn(struct eventloop *el, int op, void *arg) {
   struct qdevent *tmr_evt = (struct qdevent *)arg;
   struct flocksvcclientstate *st = STRUCT_FROM_BASE(struct flocksvcclientstate, fscs_client_timeout, tmr_evt->qde_timersub);
-  int is_appliance;
 
   switch ( op ) {
   case OP_FSCS_EXPIRE:
     FSCS_REF(st);
-    fprintf(stderr, "The client state is expiring\n");
-
-    if ( pthread_mutex_lock(&st->fscs_state_mutex) == 0 ) {
-      is_appliance = st->fscs_flags & FSCS_IS_APPLIANCE;
-      pthread_mutex_unlock(&st->fscs_state_mutex);
-    } else
-      is_appliance = 0;
-
-    if ( is_appliance ) {
-      AI_UNREF(&st->fscs_appliance);
-    }
+    fprintf(stderr, "The client state (%s, %p) is expiring\n", st->fscs_appliance_ptr ? st->fscs_appliance_ptr->ai_name : "not an appliance", st);
 
     FSCS_UNREF(st);
-    FSCS_UNREF(st);
+
+    SAFE_RWLOCK_WRLOCK(&st->fscs_svc->fs_clients_mutex);
+    HASH_DELETE(fscs_hash_ent, st->fscs_svc->fs_clients_hash, st);
+    pthread_rwlock_unlock(&st->fscs_svc->fs_clients_mutex);
+    
+    FSCS_UNREF(st); // TODO  remove from hash table before releasing
     break;
   default:
     break;
@@ -308,13 +318,7 @@ static int fscs_init(struct flocksvcclientstate *st, struct flockservice *svc, S
 
   timersub_init_from_now(&st->fscs_client_timeout, DEFAULT_CLIENT_TIMEOUT, OP_FSCS_EXPIRE, fscs_fn);
 
-  if ( applianceinfo_init(&st->fscs_appliance, fscs_free_appliance) < 0 )
-    goto error;
-
-  st->fscs_appliance.ai_shared.sh_refcnt = 0;
-
-  st->fscs_appliance.ai_appliance_fn = fscs_appliancefn;
-  st->fscs_appliance.ai_flags |= AI_FLAG_SECURE;
+  st->fscs_appliance_ptr = NULL;
 
   return 0;
 
@@ -342,7 +346,10 @@ static int fscs_release(struct flocksvcclientstate *st) {
       SHARED_UNREF(pkt->fcspw_sh);
   }
 
-  applianceinfo_release(&st->fscs_appliance);
+  if ( st->fscs_appliance_ptr ) {
+    AI_UNREF(st->fscs_appliance_ptr);
+    st->fscs_appliance_ptr = NULL;
+  }
 
   if ( st->fscs_dtls )
     SSL_free(st->fscs_dtls);
@@ -357,13 +364,6 @@ static void free_fscs(const struct shared *s, int level) {
   if ( level != SHFREE_NO_MORE_REFS ) return;
 
   fprintf(stderr, "Freeing flock client state\n");
-
-  // Also attempt to remove ourselves from the hash table
-  SAFE_RWLOCK_WRLOCK(&st->fscs_svc->fs_clients_mutex);
-  HASH_DELETE(fscs_hash_ent, st->fscs_svc->fs_clients_hash, st);
-  pthread_rwlock_unlock(&st->fscs_svc->fs_clients_mutex);
-
-  AI_UNREF(&st->fscs_appliance);
 
   fscs_release(st);
   free(st);
@@ -386,11 +386,17 @@ static struct flocksvcclientstate *fscs_alloc(struct flockservice *svc, SSL *dtl
 }
 
 static void fscs_subscribe(struct flocksvcclientstate *st, struct eventloop *el) {
+  FSCS_WREF(st);
   eventloop_subscribe_timer(el, &st->fscs_client_timeout);
 }
 
 static void fscs_touch_timeout(struct flocksvcclientstate *st, struct eventloop *el) {
-  eventloop_cancel_timer(el, &st->fscs_client_timeout);
+  FSCS_WREF(st);
+  
+  if ( eventloop_cancel_timer(el, &st->fscs_client_timeout) ) {
+    FSCS_WUNREF(st);
+  }
+
   timersub_set_from_now(&st->fscs_client_timeout, DEFAULT_CLIENT_TIMEOUT);
   eventloop_subscribe_timer(el, &st->fscs_client_timeout);
 }
@@ -467,9 +473,10 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
       if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
         err = 0;
         SAFE_MUTEX_LOCK(&st->fscs_state_mutex);
-        if ( st->fscs_flags & FSCS_IS_APPLIANCE ) {
-          AI_REF(&st->fscs_appliance);
-          app = &st->fscs_appliance;
+        if ( st->fscs_appliance_ptr ) {
+          app = st->fscs_appliance_ptr;
+          AI_REF(st->fscs_appliance_ptr);
+	  
           pthread_mutex_unlock(&st->fscs_state_mutex);
           // If we are an appliance, sen
           reg_err = applianceinfo_receive_persona_response(app, msg, buf_sz);
@@ -490,16 +497,9 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
       // succeeded, but the state was already an appliance
       if ( err != STUN_SUCCESS ) break;
       FSCS_REF(st);
-      reg_err = flockservice_handle_appliance_registration(svc, &st->fscs_appliance, msg, buf_sz,
+      reg_err = flockservice_handle_appliance_registration(svc, st, msg, buf_sz,
                                                            response_buf, &response_sz);
-      if ( reg_err >= 0 ) {
-        SAFE_MUTEX_LOCK(&st->fscs_state_mutex);
-        if ( (st->fscs_flags & FSCS_IS_APPLIANCE) != 0 ) {
-          FSCS_UNREF(st);
-        }
-        st->fscs_flags |= FSCS_IS_APPLIANCE;
-        pthread_mutex_unlock(&st->fscs_state_mutex);
-      } else
+      if ( reg_err < 0)
         FSCS_UNREF(st);
 
       if ( reg_err == 0 ) {
@@ -1407,12 +1407,12 @@ static int flockservice_handle_startconn_response(struct flockservice *svc,
 }
 
 int flockservice_handle_appliance_registration(struct flockservice *svc,
-                                               struct applianceinfo *app,
+                                               struct flocksvcclientstate *st,
                                                const struct stunmsg *msg, int msg_sz,
                                                char *rsp_buf, size_t *rsp_sz) {
   int err, max_rsp_sz = *rsp_sz;
   const struct stunattr *attr = STUN_FIRSTATTR(msg);
-  struct applianceinfo *old_app;
+  struct applianceinfo *old_app, *cur_app;
   struct stunmsg *rsp_msg = (struct stunmsg *) rsp_buf;
   struct stunattr *rsp_attr;
 
@@ -1454,75 +1454,101 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
   if ( !app_name_found )
     return -STUN_BAD_REQUEST;
 
-  err = applianceinfo_get_peer_addr(app, &app_addr);
-  if ( err < 0 ) {
-    fprintf(stderr, "Could not get peer address from appliance\n");
-    return -1;
-  }
-
   SAFE_RWLOCK_WRLOCK(&svc->fs_appliances_mutex);
 
   fprintf(stderr, "Got registration for %s\n", app_name);
   // TODO sharding
 
-  // Copy name
-  strncpy(app->ai_name, app_name, sizeof(app->ai_name));
-
   old_app = NULL;
   err = flockservice_lookup_appliance(svc, app_name, &old_app);
-  if ( err < 0 ) {
+  if ( err < 0 || !old_app ) {
+    struct applianceinfo *new_app;
     fprintf(stderr, "This is a new appliance\n");
 
-    assert( (app->ai_flags & AI_FLAG_ACTIVE) == 0 );
-    app->ai_flags |= AI_FLAG_ACTIVE;
+    new_app = malloc(sizeof(*new_app));
+    if ( !new_app ) {
+      fprintf(stderr, "Could not allocate new_app\n");
+      return -1;
+    }
 
-    // No need to lock app because it is not active, hence not shared
-    app->ai_shared.sh_refcnt = 1;
-    HASH_ADD(ai_hash_ent, svc->fs_appliances, ai_name, strlen(app->ai_name), app);
+    if ( applianceinfo_init(new_app, &st->fscs_base_st, fscs_free_appliance) < 0 ) {
+      fprintf(stderr, "Could not initialize appliance info\n");
+      free(new_app);
+      return -1;
+    }
+
+    // Copy name
+    strncpy(new_app->ai_name, app_name, sizeof(new_app->ai_name));
+    new_app->ai_appliance_fn = fscs_appliancefn;
+
+    new_app->ai_flags |= AI_FLAG_ACTIVE;
+    
+    SAFE_MUTEX_LOCK(&st->fscs_state_mutex);
+    st->fscs_appliance_ptr = new_app;
+    pthread_mutex_unlock(&st->fscs_state_mutex);
+
+    cur_app = new_app;
+    AI_REF(cur_app);
+
+    HASH_ADD(ai_hash_ent, svc->fs_appliances, ai_name, strlen(new_app->ai_name), new_app);
     pthread_rwlock_unlock(&svc->fs_appliances_mutex);
   } else {
-    fprintf(stderr, "Found old appliance %p for appliance %p\n", old_app, app);
     pthread_rwlock_unlock(&svc->fs_appliances_mutex);
 
-    if ( old_app != app ) {
+    SAFE_MUTEX_LOCK(&st->fscs_state_mutex);
+    fprintf(stderr, "Found old appliance %p for appliance %p\n", old_app, st->fscs_appliance_ptr);
+    if ( old_app == st->fscs_appliance_ptr ) {
+      cur_app = st->fscs_appliance_ptr;
+      AI_REF(cur_app);
+      pthread_mutex_unlock(&st->fscs_state_mutex);
+      AI_UNREF(old_app);
+    } else {
       struct aireconcile reconciliation;
       uint16_t err_code;
 
-      reconciliation.air_old = old_app;
-      reconciliation.air_new = app;
+      AI_REF(old_app);
 
-      // This appliance is old. Check to see if we need to do any reconciliation
+      reconciliation.air_old = old_app;
+      strncpy(reconciliation.air_new_name, app_name, sizeof(reconciliation.air_new_name));
+      reconciliation.air_new_cert = SSL_get_peer_certificate(st->fscs_dtls);
+      
       err = old_app->ai_appliance_fn(old_app, AI_OP_RECONCILE, &reconciliation);
       if ( err < 0 ) {
-        STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
-        memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
-        rsp_attr = STUN_FIRSTATTR(rsp_msg);
-        STUN_INIT_ATTR(rsp_attr, STUN_ATTR_ERROR_CODE, sizeof(uint16_t));
-        switch ( err ) {
-        default:
-        case -2: err_code = STUN_SERVER_ERROR; break;
-        case -1: err_code = STUN_CONFLICT; break;
-        }
-        err_code = htons(err_code);
-        memcpy(STUN_ATTR_DATA(rsp_attr), &err_code, sizeof(err_code));
-        STUN_FINISH_WITH_FINGERPRINT(rsp_attr, rsp_msg, *rsp_sz, err);
-        *rsp_sz = STUN_MSG_LENGTH(rsp_msg);
+	pthread_mutex_unlock(&st->fscs_state_mutex);
+	STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
+	memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
+	rsp_attr = STUN_FIRSTATTR(rsp_msg);
+	STUN_INIT_ATTR(rsp_attr, STUN_ATTR_ERROR_CODE, sizeof(uint16_t));
+	switch ( err ) {
+	default:
+	case -2: err_code = STUN_SERVER_ERROR; break;
+	case -1: err_code = STUN_CONFLICT; break;
+	}
+	err_code = htons(err_code);
+	memcpy(STUN_ATTR_DATA(rsp_attr), &err_code, sizeof(err_code));
+	STUN_FINISH_WITH_FINGERPRINT(rsp_attr, rsp_msg, *rsp_sz, err);
+	*rsp_sz = STUN_MSG_LENGTH(rsp_msg);
 
-        AI_UNREF(old_app);
-
-        return err;
+	AI_UNREF(old_app);
+	
+	return err;
       } else {
-        AI_UNREF(old_app); // Remove the reference that we have as part of holding this appliance
-        AI_UNREF(old_app);
-
-        SAFE_RWLOCK_WRLOCK(&svc->fs_appliances_mutex);
-        app->ai_shared.sh_refcnt = 1;
-        HASH_ADD(ai_hash_ent, svc->fs_appliances, ai_name, strlen(app->ai_name), app);
-        pthread_rwlock_unlock(&svc->fs_appliances_mutex);
+	st->fscs_appliance_ptr = old_app;
+	AI_REF(st->fscs_appliance_ptr);
+	pthread_mutex_unlock(&st->fscs_state_mutex);
+	applianceinfo_update_client(old_app, &st->fscs_base_st);
       }
-    } else {
+      cur_app = old_app;
+      AI_REF(cur_app);
       AI_UNREF(old_app);
     }
+  }
+  
+  err = applianceinfo_get_peer_addr(cur_app, &app_addr);
+  AI_UNREF(cur_app);
+  if ( err < 0 ) {
+    fprintf(stderr, "Could not get peer address from appliance\n");
+    return -1;
   }
 
   STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);

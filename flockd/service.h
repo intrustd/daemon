@@ -59,24 +59,6 @@ void flockservice_start(struct flockservice *svc, struct eventloop *el);
 int flockservice_new_connection(struct flockservice *svc, struct connection *conn);
 int flockservice_finish_connection(struct flockservice *svc, struct connection *conn);
 
-// Attempts to register the appliance provided in the message.
-//
-// app is assumed to be a pointer to an appliance info struct that
-// will be included in the hash table.
-//
-// Returns 0 if a response should be sent. rsp_sz is set to the total
-// size of the response.
-//
-// Returns a positive number if no response should be sent, but there is no error.
-//
-// If the return value is >= 0 and app is not NULL, appliance should be kept around
-//
-// If the return value is less than 0, appliance was not added to the appliances hash table.
-int flockservice_handle_appliance_registration(struct flockservice *svc,
-                                               struct applianceinfo *app,
-                                               const struct stunmsg *msg, int msg_sz,
-                                               char *rsp_buf, size_t *rsp_sz);
-
 void flock_service_fn(int op, void *arg);
 
 // Lookup the appliance with the given name. The fs_appliances_mutex
