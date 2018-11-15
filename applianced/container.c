@@ -28,12 +28,11 @@ struct containerinit {
 struct containerwaiter {
   struct pssub cw_process;
   int          cw_init_comm;
+  struct qdevtsub *cw_completion_evt;
 };
 
 static void containerevtfn(struct eventloop *el, int op, void *arg);
 static int containerpermfn(struct arpentry *ae, int op, void *arg, ssize_t sz);
-static int container_start(struct container *c);
-static int container_stop(struct container *c, struct eventloop *el);
 
 static int container_start_child(void *c_);
 
@@ -151,7 +150,12 @@ static void ctrwaiterevtfn(struct eventloop *el, int op, void *arg) {
 
     fprintf(stderr, "Container exited with status %d\n", pe->pse_sts);
     close(cw->cw_init_comm);
+
+    if ( cw->cw_completion_evt )
+      eventloop_queue(el, cw->cw_completion_evt);
+
     free(cw);
+
     break;
 
   default:
@@ -171,7 +175,7 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
     if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
       if ( c->c_running_refs == 0 ) {
         pthread_mutex_unlock(&c->c_mutex);
-        container_stop(c, el);
+        container_stop(c, el, NULL);
       } else
         pthread_mutex_unlock(&c->c_mutex);
     }
@@ -229,7 +233,7 @@ static int container_setup_sctp(struct container *c) {
   return ret;
 }
 
-static int container_start(struct container *c) {
+int container_start(struct container *c) {
   int err, ipc_sockets[2] = { -1, -1 };
   uint8_t sts;
   pid_t child = -1, real_child = -1;
@@ -388,7 +392,20 @@ static int container_start(struct container *c) {
   return -1;
 }
 
-static int container_stop(struct container *c, struct eventloop *el) {
+int container_force_stop(struct container *c) {
+  int err = 0;
+  SAFE_MUTEX_LOCK(&c->c_mutex);
+  if ( c->c_init_process > 0 ) {
+    err = kill(c->c_init_process, SIGKILL);
+    if ( err < 0 ) {
+      perror("container_force_stop: kill SIGKILL");
+    }
+  }
+  pthread_mutex_unlock(&c->c_mutex);
+  return err;
+}
+
+int container_stop(struct container *c, struct eventloop *el, struct qdevtsub *comp_event) {
   // Send SIGTERM message to init process, and create a new timer to
   // ensure the end of this process.
   //
@@ -402,10 +419,10 @@ static int container_stop(struct container *c, struct eventloop *el) {
 
   SAFE_MUTEX_LOCK(&c->c_mutex);
   // Refresh the IP address for the container
-  bridge_allocate(c->c_bridge, &c->c_ip, &c->c_bridge_port);
+  //bridge_allocate(c->c_bridge, &c->c_ip, &c->c_bridge_port);
 
   // Disconnects a port from the bridge
-  err = bridge_disconnect_port(c->c_bridge, port);
+  err = bridge_disconnect_port(c->c_bridge, port, &c->c_arp_entry);
   if ( err < 0 )
     fprintf(stderr, "container_stop: could not disconnect bridge\n");
 
@@ -430,6 +447,7 @@ static int container_stop(struct container *c, struct eventloop *el) {
     close(c->c_init_comm);
   } else {
     waiter->cw_init_comm = c->c_init_comm;
+    waiter->cw_completion_evt = comp_event;
 
     pssub_init(&waiter->cw_process, OP_CONTAINER_WAITER_COMPLETE, ctrwaiterevtfn);
     err = pssub_attach(el, &waiter->cw_process, c->c_init_process);

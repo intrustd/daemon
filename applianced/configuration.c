@@ -5,6 +5,9 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <libgen.h>
+#include <pwd.h>
+#include <grp.h>
+#include <ctype.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 
@@ -15,6 +18,8 @@
 #define WEBRTC_PROXY_OPTION 0x202
 #define PERSONA_INIT_OPTION 0x203
 #define APP_INSTANCE_INIT_OPTION 0x204
+#define KITE_USER_OPTION 0x205
+#define KITE_USER_GROUP_OPTION 0x206
 
 static void usage(const char *msg) {
   if ( msg ) fprintf(stderr, "Error: %s\n", msg);
@@ -36,6 +41,10 @@ static void usage(const char *msg) {
           "  --persona-init <INIT>         Path to 'persona-init' executable\n");
   fprintf(stderr,
           "  --app-instance-init <INIT>    Path to 'app-instance-init' executable\n");
+  fprintf(stderr,
+          "  --kite-user <UID>/<USERNAME>  Uid or username of kite user (for user-mode privileges in namespace) (Default: kiteuser)\n");
+  fprintf(stderr,
+          "  --kite-group <GID>/<GROUP>    Uid or group name of kite user group (Default: kiteuser)\n");
   fprintf(stderr,
           "  --valgrind                    Make things valgrind compatible\n");
 }
@@ -113,6 +122,8 @@ void appconf_init(struct appconf *ac) {
   ac->ac_app_instance_init_path = NULL;
   ac->ac_kitepath = NULL;
   ac->ac_flags = 0;
+  ac->ac_kite_user = -1;
+  ac->ac_kite_user_group = -1;
 }
 
 static void appconf_attempt_kitepath(struct appconf *ac) {
@@ -154,6 +165,8 @@ static void appconf_attempt_kitepath(struct appconf *ac) {
 
 int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
   int help_flag = 0, option_index = 0, err;
+  struct passwd *kite_user;
+  struct group *kite_user_group;
   struct option long_options[] = {
     { "help", no_argument, &help_flag, 1 },
     { "conf-dir", required_argument, 0, 'c' },
@@ -163,6 +176,8 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "webrtc-proxy", required_argument, 0, WEBRTC_PROXY_OPTION },
     { "persona-init", required_argument, 0, PERSONA_INIT_OPTION },
     { "app-instance-init", required_argument, 0, APP_INSTANCE_INIT_OPTION },
+    { "kite-user", required_argument, 0, KITE_USER_OPTION },
+    { "kite-group", required_argument, 0, KITE_USER_GROUP_OPTION },
     { 0, 0, 0, 0 }
   };
 
@@ -190,6 +205,36 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
 
     case APP_INSTANCE_INIT_OPTION:
       ac->ac_app_instance_init_path = optarg;
+      break;
+
+    case KITE_USER_OPTION:
+      kite_user = getpwnam(optarg);
+      if ( !kite_user && isdigit(optarg[0]) ) {
+        if ( sscanf(optarg, "%d", &ac->ac_kite_user) != 1 ) {
+          fprintf(stderr, "No such user: %s\n", optarg);
+          return -1;
+        }
+      } else if ( !kite_user ) {
+        fprintf(stderr, "No such user: %s\n", optarg);
+        return -1;
+      } else {
+        ac->ac_kite_user = kite_user->pw_uid;
+        ac->ac_kite_user_group = kite_user->pw_gid;
+      }
+      break;
+
+    case KITE_USER_GROUP_OPTION:
+      kite_user_group = getgrnam(optarg);
+      if ( !kite_user_group && isdigit(optarg[0]) ) {
+        if ( sscanf(optarg, "%d", &ac->ac_kite_user_group) != 1 ) {
+          fprintf(stderr, "No such group: %s\n", optarg);
+          return -1;
+        }
+      } else if ( !kite_user_group ) {
+        fprintf(stderr, "No such group: %s\n", optarg);
+        return -1;
+      } else
+        ac->ac_kite_user_group = kite_user_group->gr_gid;
       break;
 
     case 'h':
@@ -265,6 +310,23 @@ const char *appconf_get_default_executable(struct appconf *ac, const char *nm) {
 int appconf_validate(struct appconf *ac, int do_debug) {
   if ( !ac->ac_conf_dir ) {
     usage("No configuration directory provided");
+    return -1;
+  }
+
+  if ( ac->ac_kite_user < 0 ) {
+    struct passwd *user;
+    user = getpwnam("kiteuser");
+    if ( !user ) {
+      fprintf(stderr, "No valid kite-user provided\n");
+      return -1;
+    }
+
+    ac->ac_kite_user = user->pw_uid;
+    ac->ac_kite_user_group = user->pw_gid;
+  }
+
+  if ( ac->ac_kite_user_group < 0 ) {
+    fprintf(stderr, "No valid kite-user group\n");
     return -1;
   }
 

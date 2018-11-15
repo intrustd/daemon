@@ -1145,7 +1145,7 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   }
 
   if ( !(AC_VALGRIND(ac)) ) {
-    err = bridge_init(&as->as_bridge, as, ac->ac_iproute_bin, ac->ac_ebroute_bin);
+    err = bridge_init(&as->as_bridge, as, ac->ac_kite_user, ac->ac_kite_user_group, ac->ac_iproute_bin, ac->ac_ebroute_bin);
     if ( err < 0 ) {
       fprintf(stderr, "appstate_setup: bridge_init failed\n");
       goto error;
@@ -1704,15 +1704,20 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
       APPLICATION_REF(existing);
     }
 
+    fprintf(stderr, "Updating app %s to %s (manifest %p)\n", mf->am_canonical, mf->am_nix_closure, mf);
+
     pthread_rwlock_unlock(&as->as_applications_mutex);
 
     if ( ret == 0 ) {
       if ( pthread_mutex_lock(&existing->app_mutex) == 0 ) {
         old = existing->app_current_manifest;
         existing->app_current_manifest = mf;
+        APPMANIFEST_REF(mf);
+
+	fprintf(stderr, "Reset instances\n");
 
         // Requests that the instances reset themselves
-        application_request_instance_resets(existing);
+        application_request_instance_resets(&as->as_eventloop, existing);
 
         pthread_mutex_unlock(&existing->app_mutex);
 

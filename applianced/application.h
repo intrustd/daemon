@@ -10,6 +10,8 @@
 #define APP_SCHEME   "kite+app"
 #define APP_MANIFEST_MAX_SIZE (64 * 1024)
 
+#define APP_FORCE_RESET_TIMEOUT (2 * 60 * 1000) // Allow two minutes before force restarting an app
+
 struct appstate;
 struct appinstance {
   struct shared   inst_shared;
@@ -29,10 +31,21 @@ struct appinstance {
   UT_hash_handle inst_app_hh;
   // Entry in (struct persona -> p_instances)
   UT_hash_handle inst_persona_hh;
+
+  uint32_t        inst_flags;
+  struct qdevtsub inst_reset, inst_reset_complete;
+  struct timersub inst_force_reset_timeout;
 };
 
-#define APPINSTANCE_REF(ai) SHARED_REF(&(ai)->inst_shared)
-#define APPINSTANCE_UNREF(ai) SHARED_UNREF(&(ai)->inst_shared)
+#define APPINSTANCE_REF(ai)    SHARED_REF(&(ai)->inst_shared)
+#define APPINSTANCE_UNREF(ai)  SHARED_UNREF(&(ai)->inst_shared)
+#define APPINSTANCE_WREF(ai)   SHARED_WREF(&(ai)->inst_shared)
+#define APPINSTANCE_WUNREF(ai) SHARED_WUNREF(&(ai)->inst_shared)
+#define APPINSTANCE_LOCK(ai)   SHARED_LOCK(&(ai)->inst_shared)
+
+#define APPINSTANCE_FLAG_RESETTING 0x00000001
+
+void appinstance_request_reset(struct eventloop *el, struct appinstance *ai);
 
 struct appmanifest {
   struct shared am_shared;
@@ -50,6 +63,9 @@ struct appmanifest {
 
   size_t am_bin_caches_count;
   const char **am_bin_caches;
+
+  size_t am_bind_mount_count;
+  const char **am_bind_mounts;
 };
 
 #define APPMANIFEST_FLAG_RUN_AS_ADMIN 0x1
@@ -100,10 +116,12 @@ struct app {
 struct app *application_from_manifest(struct appmanifest *mf);
 void application_unset_flags(struct app *a, uint32_t fs);
 void application_set_flags(struct app *a, uint32_t fs);
-void application_request_instance_resets(struct app *a); // app_mutex must be locked
+void application_request_instance_resets(struct eventloop *el, struct app *a); // app_mutex must be locked
 int validate_canonical_url(const char *url, char *app_name, size_t app_name_sz,
                            char *app_domain, size_t app_domain_sz);
 
 struct appmanifest *application_get_manifest(struct app *a);
+
+struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, struct app *a);
 
 #endif

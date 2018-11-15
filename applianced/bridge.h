@@ -131,8 +131,8 @@ struct brstate {
   const char *br_iproute_path;
   const char *br_ebroute_path;
 
-  uid_t br_uid;
-  gid_t br_gid;
+  uid_t br_uid, br_user_uid;
+  gid_t br_gid, br_user_gid;
   int   br_comm_fd[2];
 
   char br_capability[BR_CAPABILITY_SIZE];
@@ -171,7 +171,7 @@ struct brstate {
 #define BR_TUNNEL_MUTEX_INITIALIZED 0x10
 
 void bridge_clear(struct brstate *br);
-int bridge_init(struct brstate *br, struct appstate *as, const char *iproute_path, const char *ebroute_path);
+int bridge_init(struct brstate *br, struct appstate *as, uid_t user_uid, gid_t user_gid, const char *iproute_path, const char *ebroute_path);
 void bridge_release(struct brstate *br);
 
 void bridge_start(struct brstate *br, struct eventloop *el);
@@ -201,13 +201,13 @@ int bridge_set_up_networking(struct brstate *br);
 int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
                              struct in_addr *this_ip, const char *if_name,
                              struct arpentry *arp);
-int bridge_disconnect_port(struct brstate *br, int port);
+int bridge_disconnect_port(struct brstate *br, int port, struct arpentry *arp);
 
 int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *desc, size_t desc_sz);
 
 struct brtunnel *bridge_create_tunnel(struct brstate *br, int port1, int port2);
 
-int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *mac);
+int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp);
 
 // Ask to write out the routes for the given site. If the site
 // permissions do not exist, this will create the site permissions

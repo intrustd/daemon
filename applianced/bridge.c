@@ -42,6 +42,7 @@ static int bridge_setup_ns(struct brstate *br);
 static int bridge_setup_main(void *br_ptr);
 
 static int bridge_enter_network_namespace(struct brstate *br);
+static int bridge_enter_user_namespace(struct brstate *br);
 static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int netns);
 static int bridge_create_veth(struct brstate *br, const char *in_if_name, const char *out_if_name);
 static int bridge_delete_veth(struct brstate *br, const char *if_name);
@@ -80,8 +81,8 @@ void bridge_clear(struct brstate *br) {
   br->br_appstate = NULL;
   br->br_iproute_path = NULL;
   br->br_ebroute_path = NULL;
-  br->br_uid = 0;
-  br->br_gid = 0;
+  br->br_uid = br->br_user_uid = 0;
+  br->br_gid = br->br_user_gid = 0;
   br->br_comm_fd[0] = br->br_comm_fd[1] = 0;
   br->br_debug_out = NULL;
   br->br_netns = br->br_userns = br->br_tapfd = 0;
@@ -96,6 +97,7 @@ void bridge_clear(struct brstate *br) {
 }
 
 int bridge_init(struct brstate *br, struct appstate *as,
+                uid_t user_uid, gid_t user_gid,
                 const char *iproute, const char *ebroute) {
   char ip_dbg[INET_ADDRSTRLEN], mac_dbg[32];
   int err;
@@ -105,6 +107,8 @@ int bridge_init(struct brstate *br, struct appstate *as,
   br->br_appstate = as;
   br->br_uid = getuid();
   br->br_gid = getgid();
+  br->br_user_uid = user_uid;
+  br->br_user_gid = user_gid;
 
   bridge_allocate_ip(br, &br->br_bridge_addr);
   random_mac(br->br_bridge_mac);
@@ -839,7 +843,7 @@ int bridge_unregister_sctp(struct brstate *br, struct sctpentry *se) {
   } else return -1;
 }
 
-static void setup_namespace_users(uid_t uid, gid_t gid) {
+static void setup_namespace_users(uid_t uid, gid_t gid, uid_t user_uid, gid_t user_gid) {
   char buf[4096];
   int deny_setgroups, gid_map, uid_map;
   int err;
@@ -863,7 +867,7 @@ static void setup_namespace_users(uid_t uid, gid_t gid) {
     exit(1);
   }
 
-  SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n", gid) < sizeof(buf) );
+  SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1", gid) < sizeof(buf) ); // 0 %d 1\n100 %d 1", gid, user_gid) < sizeof(buf) );
   fprintf(stderr, "Writing %s\n", buf);
   err = write(gid_map, buf, strlen(buf));
   if ( err < 0 ) {
@@ -889,8 +893,6 @@ static void setup_namespace_users(uid_t uid, gid_t gid) {
     close(uid_map);
 
   fprintf(stderr, "uid is %d\n", getuid());
-
-  err = system("cat /proc/self/uid_map");
 
   err = setreuid(0, 0);
   if ( err < 0 ) {
@@ -1019,7 +1021,7 @@ static int bridge_setup_main(void *br_ptr) {
 
   close(br->br_comm_fd[1]);
 
-  setup_namespace_users(br->br_uid, br->br_gid);
+  setup_namespace_users(br->br_uid, br->br_gid, br->br_user_uid, br->br_user_gid);
   fprintf(stderr, "Setup namespace users\n");
 
   tap = bridge_setup_tap(br, tap_nm);
@@ -1166,7 +1168,65 @@ int bridge_set_up_networking(struct brstate *br) {
   return 0;
 }
 
-int bridge_disconnect_port(struct brstate *br, int port) {
+static int bridge_remove_ebtable_spoof(struct brstate *br, int port, struct arpentry *arp) {
+  char cmd_buf[512], ip_addr_str[INET6_ADDRSTRLEN];
+  int err;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf),
+                 "%s -Ln", br->br_ebroute_path);
+  err = system(cmd_buf);
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf),
+                 "%s -D TABLE%d -p IPv4 --ip-source ! %s -j DROP",
+                 br->br_ebroute_path, port,
+                 inet_ntop(AF_INET, &arp->ae_ip.s_addr, ip_addr_str, sizeof(ip_addr_str)));
+  if ( err >= sizeof(cmd_buf) ) {
+    fprintf(stderr, "bridge_remove_ebtable_spoof: command overflow\n");
+    return -1;
+  }
+
+  err = system(cmd_buf);
+  if ( err != 0 ) {
+    fprintf(stderr, "bridge_remove_ebtable_spoof: '%s' returned %d\n",
+            cmd_buf, err);
+    return -1;
+  }
+
+  return 0;
+}
+
+static int bridge_remove_ebtable_sub(struct brstate *br, int port) {
+  char cmd_buf[512];
+  int err;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf),
+                 "%s -D FORWARD --in-if in%d -j TABLE%d",
+                 br->br_ebroute_path, port, port);
+  if ( err >= sizeof(cmd_buf) ) goto cmd_overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_failed;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf),
+                 "%s -X TABLE%d", br->br_ebroute_path, port);
+  if ( err >= sizeof(cmd_buf) ) goto cmd_overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_failed;
+
+  return 0;
+
+ cmd_overflow:
+    fprintf(stderr, "bridge_remove_ebtable_sub: command overflow\n");
+    return -1;
+
+ cmd_failed:
+    fprintf(stderr, "bridge_remove_ebtable_sub: '%s' returned %d\n",
+            cmd_buf, err);
+    return -1;
+}
+
+int bridge_disconnect_port(struct brstate *br, int port, struct arpentry *arp) {
   pid_t new_proc;
   int err;
   char in_if_name[IFNAMSIZ];
@@ -1186,6 +1246,12 @@ int bridge_disconnect_port(struct brstate *br, int port) {
   }
 
   if ( new_proc == 0 ) {
+    err = bridge_enter_user_namespace(br);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: could not enter user namespace\n");
+      exit(1);
+    }
+
     err = bridge_enter_network_namespace(br);
     if ( err < 0 ) {
       fprintf(stderr, "bridge_disconnect_port: could not enter bridge network namespace\n");
@@ -1204,9 +1270,28 @@ int bridge_disconnect_port(struct brstate *br, int port) {
       exit(1);
     }
 
+    // TODO delete ebtable
+    err = bridge_remove_ebtable_spoof(br, port, arp);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: unable to delete anti-spoof ebtable rule\n");
+      exit(1);
+    }
+
+    err = bridge_remove_ebtable_sub(br, port);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: unable to remove ebtable\n");
+      exit(1);
+    }
+
     exit(EXIT_SUCCESS);
   } else {
     int sts = 0;
+
+    err = bridge_del_arp(br, arp);
+    if ( err < 0 ) {
+      fprintf(stderr, "bridge_disconnect_port: could not delete arp\n");
+      // DO not return, because we need to wait for new_proc
+    }
 
     err = waitpid(new_proc, &sts, 0);
     if ( err < 0 ) {
@@ -1625,7 +1710,8 @@ static int find_hw_addr(const char *if_name, unsigned char *mac_addr) {
 }
 
 // Ask the bridge to accept all traffic going in and out of this port
-int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *mac) {
+int bridge_mark_as_admin(struct brstate *br, int port_ix,
+                         struct arpentry *arp) {
   pid_t new_proc;
   int err;
 
@@ -1636,7 +1722,7 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *m
   }
 
   if ( new_proc == 0 ) {
-    char cmd_buf[512], mac_dbg[32];
+    char cmd_buf[512], mac_dbg[64];
 
     err = bridge_enter_network_namespace(br);
     if ( err < 0 ) {
@@ -1651,6 +1737,14 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *m
     err = system(cmd_buf);
     if ( err != 0 ) goto cmd_error;
 
+    // Add the anti-spoofing rule
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A TABLE%d -p IPv4 --ip-source ! %s -j DROP",
+                   br->br_ebroute_path, port_ix, inet_ntop(AF_INET, &arp->ae_ip.s_addr, mac_dbg, sizeof(mac_dbg)));
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
     err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -P TABLE%d ACCEPT", br->br_ebroute_path, port_ix);
     if ( err >= sizeof(cmd_buf) ) goto overflow;
 
@@ -1659,7 +1753,7 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix, const unsigned char *m
 
     err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I KITE -1 --destination %s -j ACCEPT",
                    br->br_ebroute_path,
-                   mac_ntop(mac, mac_dbg, sizeof(mac_dbg)));
+                   mac_ntop(arp->ae_mac, mac_dbg, sizeof(mac_dbg)));
     if ( err >= sizeof(cmd_buf) ) goto overflow;
 
     fprintf(stderr, "Going to run %s\n", cmd_buf);

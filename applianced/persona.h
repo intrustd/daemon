@@ -95,8 +95,6 @@ void persona_kill(struct persona *p, pid_t which, int sig);
 // Wait for the given process to end
 int persona_wait(struct persona *p, pid_t which, int *sts);
 
-struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, struct app *a);
-
 // A personaset is a set of personas that have been serialized to a
 // buffer. The buffer is managed via a shared pointer, so that its
 // lifetime is managed separately from any personas.

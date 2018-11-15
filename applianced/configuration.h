@@ -13,6 +13,9 @@ struct appconf {
   const char *ac_app_instance_init_path;
 
   uint32_t ac_flags;
+
+  uid_t ac_kite_user;
+  gid_t ac_kite_user_group;
 };
 
 // If set to 1, we do not use containers, as best we can

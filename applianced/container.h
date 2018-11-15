@@ -70,6 +70,9 @@ struct container {
 void container_clear(struct container *c);
 int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags);
 void container_release(struct container *c);
+int container_start(struct container *c);
+int container_force_stop(struct container *c);
+int container_stop(struct container *c, struct eventloop *el, struct qdevtsub *comp_evt);
 
 // Negative on error, 0 on succes, and 1 on success, if the container was launched
 int container_ensure_running(struct container *c, struct eventloop *el);
