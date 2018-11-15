@@ -21,6 +21,14 @@
       description = "Script to run when kite wants to run a health check on this application";
     };
 
+    kite.bindMounts = mkOption {
+      type = types.listOf types.string;
+      default = [];
+      description = ''
+        Directories to identity mount (only available for administrative apps)
+      '';
+    };
+
     kite.runAsAdmin = mkOption {
       type = types.bool;
       default = false;
@@ -155,6 +163,8 @@
         nix-closure = config.kite.toplevel;
         runAsAdmin = config.kite.runAsAdmin;
         singleton = config.kite.singleton;
+
+        bind-mounts = config.kite.bindMounts;
       });
 
     kite.toplevel =
