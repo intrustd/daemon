@@ -16,6 +16,8 @@ struct appconf {
 
   uid_t ac_kite_user;
   gid_t ac_kite_user_group;
+
+  const char *ac_kite_packet_file;
 };
 
 // If set to 1, we do not use containers, as best we can

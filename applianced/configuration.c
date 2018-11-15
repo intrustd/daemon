@@ -20,6 +20,7 @@
 #define APP_INSTANCE_INIT_OPTION 0x204
 #define KITE_USER_OPTION 0x205
 #define KITE_USER_GROUP_OPTION 0x206
+#define KITE_PACKETS_FILE_OPTION 0x207
 
 static void usage(const char *msg) {
   if ( msg ) fprintf(stderr, "Error: %s\n", msg);
@@ -45,6 +46,8 @@ static void usage(const char *msg) {
           "  --kite-user <UID>/<USERNAME>  Uid or username of kite user (for user-mode privileges in namespace) (Default: kiteuser)\n");
   fprintf(stderr,
           "  --kite-group <GID>/<GROUP>    Uid or group name of kite user group (Default: kiteuser)\n");
+  fprintf(stderr,
+          "  --dump-pkts <PACKET FILE>     Dump all ethernet frames received at the bridge to a file\n");
   fprintf(stderr,
           "  --valgrind                    Make things valgrind compatible\n");
 }
@@ -124,6 +127,7 @@ void appconf_init(struct appconf *ac) {
   ac->ac_flags = 0;
   ac->ac_kite_user = -1;
   ac->ac_kite_user_group = -1;
+  ac->ac_kite_packet_file = NULL;
 }
 
 static void appconf_attempt_kitepath(struct appconf *ac) {
@@ -178,6 +182,7 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "app-instance-init", required_argument, 0, APP_INSTANCE_INIT_OPTION },
     { "kite-user", required_argument, 0, KITE_USER_OPTION },
     { "kite-group", required_argument, 0, KITE_USER_GROUP_OPTION },
+    { "dump-pkts", required_argument, 0, KITE_PACKETS_FILE_OPTION },
     { 0, 0, 0, 0 }
   };
 
@@ -235,6 +240,10 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
         return -1;
       } else
         ac->ac_kite_user_group = kite_user_group->gr_gid;
+      break;
+
+    case KITE_PACKETS_FILE_OPTION:
+      ac->ac_kite_packet_file = optarg;
       break;
 
     case 'h':
