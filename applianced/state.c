@@ -1474,6 +1474,7 @@ int appstate_save_persona(struct appstate *as, struct persona *p) {
 int appstate_create_persona(struct appstate *as,
                             const char *display_name, int display_name_sz,
                             const char *password, int password_sz,
+                            uint32_t p_flags,
                             struct persona **ret_ptr) {
   struct persona *p, *already_existing;
   EC_KEY *curve;
@@ -1528,6 +1529,8 @@ int appstate_create_persona(struct appstate *as,
     pthread_rwlock_unlock(&as->as_personas_mutex);
     return -1;
   }
+
+  p->p_flags = p_flags;
 
   if ( persona_add_password(p, password, password_sz) < 0 ) {
     PERSONA_UNREF(p);

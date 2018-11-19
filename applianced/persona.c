@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <unistd.h>
 
+#include "local_proto.h"
 #include "util.h"
 #include "persona.h"
 #include "state.h"
@@ -36,6 +37,7 @@ static int persona_init_default(struct persona *p, struct appstate *as) {
   // p->p_ports = NULL;
   p->p_appstate = as;
   //  p->p_last_port = SCTP_LOWEST_PRIVATE_PORT;
+  p->p_flags = 0;
   p->p_instances = NULL;
 
   if ( pthread_mutex_init(&p->p_mutex, NULL) != 0 )
@@ -143,6 +145,9 @@ int persona_init_fp(struct persona *p, struct appstate *as, FILE *fp) {
       if ( (line[i] == '\n' || line[i] == '\r') ) {
         if ( st == PERSONA_PS_VAL ) {
           vle = &line[i];
+        } else if ( st == PERSONA_PS_ATTRNM ) {
+          attre = &line[i];
+          vls = vle = NULL;
         } else {
           vls = vle = NULL;
         }
@@ -204,6 +209,8 @@ int persona_init_fp(struct persona *p, struct appstate *as, FILE *fp) {
         memcpy(p->p_display_name, vls, vle - vls);
         p->p_display_name[vle - vls] = '\0';
       }
+    } else if ( strncmp(attrs, "superuser", attre - attrs) == 0 ) {
+      p->p_flags |= PERSONA_FLAG_SUPERUSER;
     } else if ( strncmp(attrs, "auth", attre - attrs) == 0 ) {
       if ( persona_parse_auth(p, vls, vle) < 0 ) goto error;
     } else {
@@ -308,6 +315,9 @@ int persona_save_fp(struct persona *p, FILE *fp) {
   fprintf(fp, "persona 1\n"); // Versioning information
   if ( p->p_display_name )
     fprintf(fp, "displayname %s\n", p->p_display_name);
+
+  if ( p->p_flags & PERSONA_FLAG_SUPERUSER )
+    fprintf(fp, "superuser\n");
 
   // Auth methods
   for ( a = p->p_auths; a; a = a->pa_next ) {

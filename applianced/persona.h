@@ -54,6 +54,8 @@ struct persona {
 //  uint16_t p_last_port;
 //  struct personaport *p_ports;
 
+  uint32_t p_flags;
+
   struct appinstance *p_instances;
 };
 

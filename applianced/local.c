@@ -15,10 +15,12 @@
 #define OP_LOCALAPI_UPDATE_COMPLETE (EVT_CTL_CUSTOM + 1)
 #define OP_LOCALAPI_CONTAINER_CMD_COMPLETE (EVT_CTL_CUSTOM + 2)
 
+#define MAX_PERSONA_LIMIT 10
+
 #define LOCALAPI_SUBSCRIBE(el, api)                                     \
   eventloop_subscribe_fd((el), (api)->la_socket,                        \
                          ((api)->la_busy ? 0 : FD_SUB_READ) |           \
-                         ((api)->la_outgoing_sz >= 4 ? FD_SUB_WRITE : 0), \
+                         (((api)->la_outgoing_sz >= 4 || api->la_is_listing) ? FD_SUB_WRITE : 0), \
                          &(api)->la_socket_sub);
 
 struct localapi {
@@ -32,6 +34,10 @@ struct localapi {
   int la_container_sts_fd;
 
   int la_busy : 1;
+  int la_is_listing : 1;
+  struct shared **la_listing;
+  unsigned int la_listing_offs, la_listing_count;
+  uint16_t la_listing_ent;
 
   struct appupdater *la_current_updater;
   struct fdsub la_container_waiter;
@@ -49,6 +55,9 @@ static void localsock_update_completes(struct localapi *api);
 static void localsock_cmd_completes(struct localapi *api, int sts);
 static int localsock_respond_simple(struct localapi *api, struct eventloop *el,
                                     uint16_t req, uint16_t code);
+static void localsock_free_listing(struct localapi *api);
+static int localsock_start_list(struct localapi *api, uint16_t ent, unsigned int count);
+static void localsock_do_list(struct localapi *api, struct eventloop *el);
 
 static void localsockfn(struct eventloop *el, int op, void *arg) {
   struct localapi *api;
@@ -101,11 +110,16 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
     api = STRUCT_FROM_BASE(struct localapi, la_socket_sub, fde->fde_sub);
 
     if ( FD_WRITE_AVAILABLE(fde) ) {
+      fprintf(stderr, "write available\n");
       err = localsock_flush(api, el);
       if ( err < 0 ) {
         fprintf(stderr, "localapi_flush: failed\n");
         localsock_hup(api, el);
         return;
+      }
+
+      if ( api->la_outgoing_sz < 4 ) {
+        localsock_do_list(api, el);
       }
     }
 
@@ -164,6 +178,11 @@ struct localapi *localapi_alloc(struct appstate *as, int sk) {
   ret->la_app_state = as;
   ret->la_socket = sk;
   ret->la_busy = 0;
+  ret->la_is_listing = 0;
+  ret->la_listing = NULL;
+  ret->la_listing_offs = 0;
+  ret->la_listing_count = 0;
+  ret->la_listing_ent = 0;
   ret->la_outgoing_sz = 0;
   ret->la_container_sts_fd = -1;
   fdsub_init(&ret->la_socket_sub, &as->as_eventloop, ret->la_socket, OP_LOCALAPI_RECV_MSG, localsockfn);
@@ -177,6 +196,46 @@ struct localapi *localapi_alloc(struct appstate *as, int sk) {
  error:
   free(ret);
   return NULL;
+}
+
+static int localsock_start_list(struct localapi *api, uint16_t ent, unsigned int count) {
+  struct shared **new_buf;
+
+  localsock_free_listing(api);
+
+  if ( count > 0 ) {
+    fprintf(stderr, "Starting list\n");
+
+    new_buf = malloc(sizeof(*api->la_listing) * count);
+    if ( !new_buf ) return -1;
+
+    api->la_listing = new_buf;
+    memset(new_buf, 0, sizeof(*api->la_listing) * count);
+
+    api->la_is_listing = 1;
+    api->la_busy = 1;
+    api->la_listing_ent = ent;
+    api->la_listing_offs = 0;
+    api->la_listing_count = count;
+  }
+
+  return 0;
+}
+
+static void localsock_free_listing(struct localapi *api) {
+  if ( api->la_is_listing ) {
+    unsigned int i;
+    for ( i = api->la_listing_offs; i < api->la_listing_count; ++i ) {
+      if ( api->la_listing[i] )
+        SHARED_UNREF(api->la_listing[i]);
+    }
+
+    free(api->la_listing);
+  }
+  api->la_is_listing = 0;
+  api->la_listing_ent = 0;
+  api->la_listing = NULL;
+  api->la_listing_offs = api->la_listing_count = 0;
 }
 
 static void localsock_hup(struct localapi *api, struct eventloop *el) {
@@ -194,6 +253,8 @@ static void localsock_hup(struct localapi *api, struct eventloop *el) {
     close(api->la_container_sts_fd);
     api->la_container_sts_fd = -1;
   }
+
+  localsock_free_listing(api);
 
   free(api);
 }
@@ -384,10 +445,10 @@ static int localsock_return_not_allowed(struct localapi *api, struct eventloop *
   return localsock_return_simple(api, el, in_response_to, KLE_NOT_ALLOWED);
 }
 
-static int localsock_return_not_implemented(struct localapi *api, struct eventloop *el,
-                                            struct kitelocalmsg *in_response_to) {
-  return localsock_return_simple(api, el, in_response_to, KLE_NOT_IMPLEMENTED);
-}
+// static int localsock_return_not_implemented(struct localapi *api, struct eventloop *el,
+//                                             struct kitelocalmsg *in_response_to) {
+//   return localsock_return_simple(api, el, in_response_to, KLE_NOT_IMPLEMENTED);
+// }
 
 static int localsock_return_internal_error(struct localapi *api, struct eventloop *el,
                                            struct kitelocalmsg *in_response_to) {
@@ -396,7 +457,8 @@ static int localsock_return_internal_error(struct localapi *api, struct eventloo
 
 static void localsock_respond_persona(struct localapi *api, struct eventloop *el,
                                       struct kitelocalmsg *in_response_to,
-                                      const char *display_name) {
+                                      const char *display_name,
+                                      uint32_t p_flags) {
   char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
   struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
   struct kitelocalattr *attr;
@@ -420,6 +482,18 @@ static void localsock_respond_persona(struct localapi *api, struct eventloop *el
   memcpy(KLA_DATA_UNSAFE(attr, char *), display_name, strlen(display_name));
   KLM_SIZE_ADD_ATTR(rspsz, attr);
 
+  if ( p_flags ) {
+    uint32_t flags[2] = { ntohl(p_flags), 0 };
+
+    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+    assert(attr);
+    attr->kla_name = htons(KLA_PERSONA_FLAGS);
+    attr->kla_length = htons(KLA_SIZE(sizeof(flags)));
+
+    memcpy(KLA_DATA_UNSAFE(attr, void *), flags, sizeof(flags));
+    KLM_SIZE_ADD_ATTR(rspsz, attr);
+  }
+
   localsock_respond(api, el, ret_buf, rspsz);
   return;
 }
@@ -440,6 +514,7 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
         memcpy(persona_id, KLA_DATA_UNSAFE(attr, void *), PERSONA_ID_LENGTH);
       } else {
         localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+        return;
       }
       break;
     default:
@@ -449,8 +524,22 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
   }
 
   if ( !has_persona_id ) {
-    // Should list
-    localsock_return_not_implemented(api, el, msg);
+    unsigned int p_count;
+    struct persona *cur, *tmp;
+
+    SAFE_RWLOCK_RDLOCK(&api->la_app_state->as_personas_mutex);
+    p_count = HASH_CNT(p_hh, api->la_app_state->as_personas);
+    if ( localsock_start_list(api, KLM_REQ_ENTITY_PERSONA, p_count) == 0 ) {
+      unsigned int i = 0;
+      HASH_ITER(p_hh, api->la_app_state->as_personas, cur, tmp) {
+        PERSONA_REF(cur);
+        api->la_listing[i] = &cur->p_shared;
+        i++;
+      }
+    } else
+      localsock_return_internal_error(api, el, msg);
+    pthread_rwlock_unlock(&api->la_app_state->as_personas_mutex);
+
     return;
   }
 
@@ -466,7 +555,8 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
 
   if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
     localsock_respond_persona(api, el, msg,
-                              p->p_display_name);
+                              p->p_display_name,
+                              p->p_flags);
     pthread_mutex_unlock(&p->p_mutex);
     PERSONA_UNREF(p);
   } else
@@ -484,6 +574,7 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
 
   char *display_name = NULL, *password = NULL;
   int display_name_sz = 0, password_sz = 0;
+  uint32_t p_flags = 0;
 
   int rspsz = KLM_SIZE_INIT;
 
@@ -506,6 +597,15 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
       password = KLA_DATA_AS(attr, msg, msgsz, char *);
       password_sz = KLA_PAYLOAD_SIZE(attr);
       break;
+    case KLA_PERSONA_FLAGS:
+      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(uint32_t) * 2 ) {
+        uint32_t flags[2];
+        memcpy(flags, KLA_DATA_UNSAFE(attr, uint64_t *), sizeof(flags));
+
+        p_flags |= ntohl(flags[0]);
+        p_flags &= ~ntohl(flags[1]);
+      }
+      break;
     default:
       goto bad_request;
     }
@@ -514,7 +614,7 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
     goto bad_request;
 
   if ( appstate_create_persona(api->la_app_state, display_name, display_name_sz,
-                               password, password_sz, &persona) < 0 ) {
+                               password, password_sz, p_flags, &persona) < 0 ) {
     goto bad_request;
   }
 
@@ -663,7 +763,6 @@ static void localsock_crud_flock(struct localapi *api, struct eventloop *el,
     flock_count = HASH_CNT(f_hh, api->la_app_state->as_flocks);
     i = 0;
     HASH_ITER(f_hh, api->la_app_state->as_flocks, current_flock, tmp_flock) {
-      fprintf(stderr, "returning flock\n");
       rspsz = KLM_SIZE_INIT;
 
       rsp->klm_req_flags = KLM_RETURN_MULTIPLE;
@@ -1319,6 +1418,70 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
 
   for ( i = 0; i < nfds; ++i )
     close(fds[i]);
+}
+
+static int localsock_list_current(struct localapi *api, struct eventloop *el) {
+  struct shared *cur = api->la_listing[api->la_listing_offs];
+  struct persona *p;
+
+  char buf[KITE_MAX_LOCAL_MSG_SZ];
+  struct kitelocalmsg *msg;
+  struct kitelocalattr *attr;
+  int sz = KLM_SIZE_INIT;
+  uint16_t return_code = htons(KLE_SUCCESS);
+
+  msg = (struct kitelocalmsg *)buf;
+  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+
+  assert (attr);
+
+  msg->klm_req = htons(KLM_RESPONSE | api->la_listing_ent | KLM_REQ_GET);
+  msg->klm_req_flags = KLM_RETURN_MULTIPLE;
+
+  if ( (api->la_listing_offs + 1) >= api->la_listing_count ||
+       !api->la_listing[api->la_listing_offs + 1] )
+    msg->klm_req_flags |= KLM_IS_LAST;
+
+  msg->klm_req_flags = htons(msg->klm_req_flags);
+
+  attr->kla_name = htons(KLA_RESPONSE_CODE);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  memcpy(KLA_DATA_UNSAFE(attr, void *), &return_code, sizeof(uint16_t));
+  KLM_SIZE_ADD_ATTR(sz, attr);
+
+  switch ( api->la_listing_ent ) {
+  case KLM_REQ_ENTITY_PERSONA:
+    p = STRUCT_FROM_BASE(struct persona, p_shared, cur);
+
+    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    attr->kla_name = htons(KLA_PERSONA_ID);
+    attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
+    memcpy(KLA_DATA_UNSAFE(attr, void*), p->p_persona_id, PERSONA_ID_LENGTH);
+    KLM_SIZE_ADD_ATTR(sz, attr);
+
+    return localsock_respond(api, el, buf, sz);
+
+  default:
+    fprintf(stderr, "localsock_list_current: unknown entity %d\n", api->la_listing_ent);
+    return 0;
+  }
+}
+
+static void localsock_do_list(struct localapi *api, struct eventloop *el) {
+  for ( ; api->la_listing_offs < api->la_listing_count; ++api->la_listing_offs ) {
+    struct shared *cur = api->la_listing[api->la_listing_offs];
+    if ( !cur ) break; // Done
+
+    if ( localsock_list_current(api, el) < 0 ) {
+      return;
+    } else {
+      SHARED_UNREF(cur);
+      api->la_listing[api->la_listing_offs] = NULL;
+    }
+  }
+
+  api->la_busy = 0;
+  localsock_free_listing(api);
 }
 
 static int localsock_flush(struct localapi *api, struct eventloop *el) {

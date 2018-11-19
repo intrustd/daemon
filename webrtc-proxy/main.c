@@ -711,7 +711,7 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
         fprintf(stderr, "process_strreset_ack: received new stream reset for unopened channel %d\n",
                 rse->strreset_stream_list[i]);
       } else {
-        log_printf("process_strreset_ack: received new stream reset for %d\n", rse->strreset_stream_list[i]);
+        fprintf(stderr, "process_strreset_ack: received new stream reset for %d\n", rse->strreset_stream_list[i]);
         force_close_channel(chan);
         mark_channel_closed(chan);
       }
@@ -1335,8 +1335,8 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
       chan->wrc_retries_left = 0;
       chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_ERROR_ON_RETRY);
 
-//      fprintf(stderr, "Sent buffer of size %ld\n%.*s", chan->wrc_msg_sz, (int)chan->wrc_msg_sz, chan->wrc_buffer);
-//      print_hex_dump_fp(stderr, (unsigned char *)chan->wrc_buffer, chan->wrc_msg_sz);
+      fprintf(stderr, "Sent buffer of size %ld\n%.*s", chan->wrc_msg_sz, (int)chan->wrc_msg_sz, chan->wrc_buffer);
+      print_hex_dump_fp(stderr, (unsigned char *)chan->wrc_buffer, chan->wrc_msg_sz);
       err = send(chan->wrc_sk, chan->wrc_buffer, chan->wrc_msg_sz, 0);
       if ( err < 0 ) {
         if ( errno == EAGAIN || errno == EWOULDBLOCK ) {

@@ -7,9 +7,10 @@
 
 #define DISPLAY_NAME_ARG 0x200
 #define PASSWORD_ARG     0x201
+#define SUPERUSER_ARG    0x202
 
 int create_persona_usage() {
-  fprintf(stderr, "Usage: appliancectl create-persona [--display-name <name>] [--password <pw>]\n");
+  fprintf(stderr, "Usage: appliancectl create-persona [--display-name <name>] [--password <pw>] [--superuser]\n");
   return 1;
 }
 
@@ -17,6 +18,7 @@ int create_persona(int argc, char **argv) {
   static const struct option options[] = {
     { "display-name", 1, NULL, DISPLAY_NAME_ARG },
     { "password", 1, NULL, PASSWORD_ARG },
+    { "superuser", 0, NULL, SUPERUSER_ARG },
     {0, 0, 0, 0}
   };
 
@@ -27,6 +29,7 @@ int create_persona(int argc, char **argv) {
 
   char *display_name = NULL;
   char *password = NULL;
+  uint32_t flags = 0;
 
   while ( (c = getopt_long(argc, argv, "h", options, &optind)) ) {
     if ( c == -1 ) break;
@@ -38,6 +41,9 @@ int create_persona(int argc, char **argv) {
     case PASSWORD_ARG:
       password = optarg;
       break;
+    case SUPERUSER_ARG:
+      flags |= PERSONA_FLAG_SUPERUSER;
+      break;
     case 'h':
     default:
       return create_persona_usage();
@@ -46,7 +52,7 @@ int create_persona(int argc, char **argv) {
 
   // Prompt for anything remaining (TODO)
   if ( !display_name || !password )
-    create_persona_usage();
+    return create_persona_usage();
 
   msg->klm_req = ntohs(KLM_REQ_CREATE | KLM_REQ_ENTITY_PERSONA);
   msg->klm_req_flags = 0;
@@ -62,6 +68,17 @@ int create_persona(int argc, char **argv) {
   attr->kla_length = ntohs(KLA_SIZE(strlen(password)));
   memcpy(KLA_DATA_UNSAFE(attr, char *), password, strlen(password));
   KLM_SIZE_ADD_ATTR(sz, attr);
+
+  if ( flags ) {
+    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    assert(attr);
+    attr->kla_name = ntohs(KLA_PERSONA_FLAGS);
+    attr->kla_length = ntohs(KLA_SIZE(sizeof(uint32_t) * 2));
+    memset(KLA_DATA_UNSAFE(attr, void *), 0, sizeof(uint32_t) * 2);
+    flags = ntohl(flags);
+    memcpy(KLA_DATA_UNSAFE(attr, void *), &flags, sizeof(flags));
+    KLM_SIZE_ADD_ATTR(sz, attr);
+  }
 
   sk = mk_api_socket();
   if ( sk < 0 ) {

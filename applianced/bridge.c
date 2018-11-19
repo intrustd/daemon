@@ -1271,6 +1271,7 @@ int bridge_disconnect_port(struct brstate *br, int port, struct arpentry *arp) {
     }
 
     // TODO delete ebtable
+
     err = bridge_remove_ebtable_spoof(br, port, arp);
     if ( err < 0 ) {
       fprintf(stderr, "bridge_disconnect_port: unable to delete anti-spoof ebtable rule\n");
@@ -1860,6 +1861,64 @@ static void brtunnel_init(struct brtunnel *tun) {
 }
 
 static void brtunnel_deinit(struct brtunnel *tun) {
+  int err;
+  pid_t new_proc;
+  char cmd_buf[512];
+
+  new_proc = fork();
+  if ( new_proc < 0 ) {
+    perror("brtunnel_init: fork");
+    return;
+  }
+
+  if ( new_proc == 0 ) {
+    // Undo everything in brtunnel_init
+    err = bridge_enter_user_namespace(tun->brtun_br);
+    if ( err < 0 ) {
+      fprintf(stderr, "brtunnel_deinit: could not enter bridge user namespace\n");
+      exit(1);
+    }
+
+    err = bridge_enter_network_namespace(tun->brtun_br);
+    if ( err < 0 ) {
+      fprintf(stderr, "brtunnel_init: could not enter bridge network namespace\n");
+      exit(1);
+    }
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -D TABLE%d --out-if in%d -j ACCEPT",
+                   tun->brtun_br->br_ebroute_path, tun->brtun_ports[0], tun->brtun_ports[1]);
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -D TABLE%d --out-if in%d -j ACCEPT",
+                   tun->brtun_br->br_ebroute_path, tun->brtun_ports[1], tun->brtun_ports[0]);
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error;
+
+    exit(0);
+
+  overflow:
+    fprintf(stderr, "brtunnel_deinit: no space for command '%s'\n", cmd_buf);
+    exit(2);
+
+  cmd_error:
+    fprintf(stderr, "brtunnel_deinit: '%s' failed: %d\n", cmd_buf, err);
+    exit(3);
+  } else {
+    int sts;
+
+    err = waitpid(new_proc, &sts, 0);
+    if ( err < 0 ) {
+      perror("brtunnel_deinit: waitpid");
+      return;
+    }
+
+    if ( sts != 0 ) {
+      fprintf(stderr, "brtunnel_deinit: child returned %d\n", sts);
+    }
+  }
 }
 
 static void brtunnel_evtfn(struct eventloop *el, int op, void *arg) {

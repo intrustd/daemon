@@ -69,6 +69,7 @@ struct kitelocalattr {
 #define KLA_STDIN              0x001A
 #define KLA_ATTRIBUTE          0x001B
 #define KLA_EXIT_CODE          0x001C
+#define KLA_PERSONA_FLAGS      0x001D /* Two uint32_ts. First are flags to add. second is flags to remove */
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001
@@ -79,6 +80,8 @@ struct kitelocalattr {
 #define KLE_SYSTEM_ERROR       0x0006
 #define KLE_NOT_FOUND          0x0007
 #define KLE_NOT_ALLOWED        0x0008
+
+#define PERSONA_FLAG_SUPERUSER 0x1
 
 #define KLM_SIZE_INIT sizeof(struct kitelocalmsg)
 #define KLA_PAYLOAD_SIZE(a) (ntohs((a)->kla_length) - sizeof(struct kitelocalattr))
