@@ -1335,7 +1335,7 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
       chan->wrc_retries_left = 0;
       chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_ERROR_ON_RETRY);
 
-      fprintf(stderr, "Sent buffer of size %ld\n%.*s", chan->wrc_msg_sz, (int)chan->wrc_msg_sz, chan->wrc_buffer);
+      log_printf("Sent buffer of size %ld\n%.*s", chan->wrc_msg_sz, (int)chan->wrc_msg_sz, chan->wrc_buffer);
       print_hex_dump_fp(stderr, (unsigned char *)chan->wrc_buffer, chan->wrc_msg_sz);
       err = send(chan->wrc_sk, chan->wrc_buffer, chan->wrc_msg_sz, 0);
       if ( err < 0 ) {
@@ -1352,7 +1352,7 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
           chan->wrc_flags &= ~WRC_HAS_OUTGOING;
         } else {
           // Not all bytes were written
-          fprintf(stderr, "Only %d bytes were sent\n", err);
+          log_printf("Only %d bytes were sent\n", err);
           memcpy(chan->wrc_buffer, chan->wrc_buffer + err, chan->wrc_msg_sz);
           *new_events |= EPOLLOUT;
         }
@@ -1544,7 +1544,6 @@ int main_loop(int srv) {
   // We'll want subscriptions on the main SCTP socket
   arm_sctp(srv);
 
-  fprintf(stderr, "Going to serve webrtc\n");
   while (1) {
     int ofs, needs_write_space = 0;
 
