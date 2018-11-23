@@ -2,6 +2,8 @@
 
 #+TODO: TODO IN-PROGRESS | DONE
 
+* Icons: https://icons8.github.io/flat-color-icons/
+
 * DONE Use UDP for flock <-> appliance communication
 * DONE Save recent appliances in javascript library
 * DONE Show profile data for personas
@@ -11,13 +13,22 @@
 
 * DONE auth tokens
 * DONE Use ebtables to direct traffic
-* TODO when a container exits, the corresponding ebtables should be deleted
+* IN-PROGRESS when a container exits, the corresponding ebtacbables should be deleted
+    - Almost done. Need to remove the interface-based rules (in0 -> TABLE0)
+* DONE restart an app cleanly after updaet
 * TODO show a chooser box when there are multiple auth tokens available
 * TODO multiple flocks
 * DONE save login information
-* TODO log in in the middle of admin app
-* TODO reuse admin app if available?
+* TODO log in in the middle of admin app, to escalate privileges
+* DONE reuse admin app if available?
 * IN-PROGRESS share individual photos via e-mail
+* TODO get rid of flock failure on multiple appliance creations
+* DONE flock admin should be accessible over local LAN, and should have a default password for setting up initial user accounts, etc
+* TODO flock admin should allow accounts to be set up (with appropriate privileges)
+* TODO flock admin should allow disk to be set up
+* TODO flock admin should allow application policies to be set
+* TODO flock admin should allow restart
+* TODO validate app domain
 * TODO E-mail app
 * TODO Music App
 * TODO Video App
@@ -35,3 +46,4 @@
 |      |             | [[Upload files in photo app][Upload files in photo app]]                     |
 |      |             | [[Album gallery view in photo app][Album gallery view in photo app]]               |
 #+END:
+
