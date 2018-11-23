@@ -205,7 +205,7 @@ static void fscs_free_appliance(const struct shared *sh, int level) {
   if ( level != SHFREE_NO_MORE_REFS ) return;
 
   fprintf(stderr, "free appliance %p\n", ai);
-  
+
   if ( pthread_mutex_lock(&ai->ai_mutex) == 0 ) {
     if ( ai->ai_flags & AI_FLAG_ACTIVE )
       flockservice_remove_appliance(st->fscs_svc, ai, FLOCKSERVICE_REMOVE_REASON_APPLIANCE_EXPIRED);
@@ -231,7 +231,7 @@ static void fscs_fn(struct eventloop *el, int op, void *arg) {
     SAFE_RWLOCK_WRLOCK(&st->fscs_svc->fs_clients_mutex);
     HASH_DELETE(fscs_hash_ent, st->fscs_svc->fs_clients_hash, st);
     pthread_rwlock_unlock(&st->fscs_svc->fs_clients_mutex);
-    
+
     FSCS_UNREF(st); // TODO  remove from hash table before releasing
     break;
   default:

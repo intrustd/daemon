@@ -289,6 +289,7 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
       fprintf(stderr, "Websocket: got credential... start uthentication\n");
       if ( connection_start_authentication(&wsc->wsc_conn) < 0 ) {
         wsconnection_respond_line(wsc, el, "500 Internal Server Error");
+        connection_complete_unlocked(&wsc->wsc_conn);
         return -1;
       } else {
         wsc->wsc_proto_mode = WSC_PROTO_NO_READS;
@@ -379,6 +380,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
 	  fprintf(stderr, "Invalid location '%.*s'\n", (int) (real_end - handshake.ws_loc_start), handshake.ws_loc_start);
           handshake.ws_error = 400;
           send_http_error(wsc, &handshake);
+          connection_complete_unlocked(&wsc->wsc_conn);
         } else {
           char appliance_name[KITE_APPLIANCE_NAME_MAX];
           struct applianceinfo *appliance;
@@ -388,11 +390,13 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
             if ( flockservice_lookup_appliance(wsc->wsc_conn.conn_svc, appliance_name, &appliance) < 0 ) {
               handshake.ws_error = 404;
               send_http_error(wsc, &handshake);
+              connection_complete_unlocked(&wsc->wsc_conn);
             } else {
 
               if ( connection_connect_appliance(&wsc->wsc_conn, appliance) < 0 ) {
                 handshake.ws_error = 500;
                 send_http_error(wsc, &handshake);
+                connection_complete_unlocked(&wsc->wsc_conn);
               } else {
                 fprintf(stderr, "wsconnection_onread: http_header_end = %d (total size %d)\n", http_header_end, wsc->wsc_pkt_sz);
                 wsc->wsc_pkt_sz -= http_header_end;
@@ -409,6 +413,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
 	    fprintf(stderr, "Invalid URI encoding '%.*s'\n", (int) (real_end - handshake.ws_loc_start), handshake.ws_loc_start);
             handshake.ws_error = 400;
             send_http_error(wsc, &handshake);
+            connection_complete_unlocked(&wsc->wsc_conn);
           }
         }
       } else if ( err > 0 ) {
@@ -418,6 +423,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
       } else {
         // Actual error
         send_http_error(wsc, &handshake);
+        connection_complete_unlocked(&wsc->wsc_conn);
       }
       break;
     case WSC_MODE_WEBSOCKET:
