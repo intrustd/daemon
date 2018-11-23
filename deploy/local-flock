@@ -1,0 +1,13 @@
+#!/bin/sh
+
+
+DEPLOYDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+# Start flockd along with nginx server serving portal
+valgrind ${DEPLOYDIR}/../bin/flockd -c ${DEPLOYDIR}/../certificate.pem -k ${DEPLOYDIR}/../key.pem &
+
+stopflock() {
+    kill -s TERM %1
+}
+trap stopflock EXIT
+
+cd ${DEPLOYDIR} && nginx -c `pwd`/local-nginx.conf -p `pwd`

@@ -1,0 +1,17 @@
+#!/bin/sh
+
+ZONE_ID=Z24OSVPJK407O6
+
+# echo "Building nix bundle"
+# nix-build build-bundle.nix --argstr kite-app-module `pwd`/kite.nix -o manifest.json
+
+cd js
+
+echo "Running NPM build..."
+npm run build
+
+echo "Syncing with S3"
+rm -f dist/index.js.gz
+gzip dist/index.js
+aws s3 sync --profile iammisc dist/ s3://$APP.flywithkite.com/ --acl public-read --exclude "*.gz" --delete
+aws s3 cp --profile iammisc dist/index.js.gz s3://$APP.flywithkite.com/index.js --content-type "text/javascript" --content-encoding gzip --acl public-read

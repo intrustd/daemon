@@ -1,0 +1,1 @@
+# Defines nixops machines 
