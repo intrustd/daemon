@@ -1,0 +1,10 @@
+wireshark\ captures
+*~
+CMakeCache.txt
+CMakeFiles
+cmake_install.cmake
+*.pyc
+*.so
+dist
+node_modules
+Makefile
