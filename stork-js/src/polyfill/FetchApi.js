@@ -129,7 +129,7 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
         this.socket.addEventListener('open', () => {
             console.log("Going to send headers", this.request.headers)
             var headers = new Headers(this.request.headers)
-            headers.append('Host', url.appId)
+            headers.append('Host', url.app)
             headers.append('Accept', '*/*')
             headers.append('Accept-Language', navigator.language)
             headers.append('Cache-Control', 'no-cache')
@@ -151,6 +151,7 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
                     this.socket.send(hdrLn)
                 }
                 this.socket.send('\r\n')
+                console.log("Sending body")
                 doSendBody()
             }
 
@@ -184,7 +185,7 @@ class HTTPRequester extends EventTarget('response', 'error', 'progress') {
         })
         this.socket.addEventListener('data', (e) => {
             var dataBuffer = Buffer.from(e.data)
-            //console.log("Got response", dataBuffer)
+            console.log("Got response", dataBuffer)
             this.responseParser.execute(dataBuffer)
         })
         this.socket.addEventListener('close', () => {
@@ -337,13 +338,8 @@ export default function kiteFetch (req, init) {
             throw new TypeError(kiteUrl.error)
         else {
             var flockUrls = kiteFetch.flockUrls;
-            var canonAppUrl = kiteAppCanonicalUrl(kiteUrl);
+            var canonAppUrl = kiteUrl.app;
             var clientPromise
-
-            if ( init.hasOwnProperty('kiteClient') )
-                clientPromise = Promise.resolve(init['kiteClient'])
-            else
-                clientPromise = getGlobalClient(flockUrls, getSite())
 
             if ( req instanceof Request )
                 req = new Request(req)
@@ -353,6 +349,27 @@ export default function kiteFetch (req, init) {
                 if ( init.hasOwnProperty('body') )
                     req.body = init.body
             }
+
+            if ( kiteFetch.rewrite.hasOwnProperty(canonAppUrl) ) {
+                var newUrl = kiteFetch.rewrite[canonAppUrl].replace(/\[path\]/g, kiteUrl.path)
+
+                console.log("Rewrite to ", newUrl)
+
+                req = new Request(newUrl, { method: req.method,
+                                            body: req.body,
+                                            mode: req.mode,
+                                            credentials: req.credentials,
+                                            cache: req.cache,
+                                            redirect: req.redirect,
+                                            referrer: req.referrer,
+                                            integrity: req.integrity })
+                return oldFetch.apply(this, [ req ])
+            }
+
+            if ( init.hasOwnProperty('kiteClient') )
+                clientPromise = Promise.resolve(init['kiteClient'])
+            else
+                clientPromise = getGlobalClient(flockUrls, getSite())
 
             console.log("Request is ", req, init)
 

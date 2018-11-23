@@ -99,7 +99,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
   enum {
     PARSING_ST_INITIAL,
     PARSING_ST_MAIN_OBJECT_KEY,
-    PARSING_ST_CANONICAL,
+    PARSING_ST_DOMAIN,
     PARSING_ST_NAME,
     PARSING_ST_NIX_CLOSURE,
     PARSING_ST_SINGLETON,
@@ -109,7 +109,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
   int main_obj_end = -1;
 
   struct appmanifest *ret;
-  char *name = NULL, *canonical = NULL, *nix_closure = NULL;
+  char *name = NULL, *domain = NULL, *nix_closure = NULL;
   char **bind_mounts = NULL;
 
   size_t bind_mount_count = 0;
@@ -136,8 +136,8 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
       } else {
         if ( strncmp(data + token->start, "name", token->end - token->start) == 0 ) {
           state = PARSING_ST_NAME;
-        } else if ( strncmp(data + token->start, "canonical", token->end - token->start) == 0 ) {
-          state = PARSING_ST_CANONICAL;
+        } else if ( strncmp(data + token->start, "domain", token->end - token->start) == 0 ) {
+          state = PARSING_ST_DOMAIN;
         } else if ( strncmp(data + token->start, "nix-closure", token->end - token->start) == 0 ) {
           state = PARSING_ST_NIX_CLOSURE;
         } else if ( strncmp(data + token->start, "singleton", token->end - token->start) == 0 ) {
@@ -180,15 +180,15 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
       }
       break;
 
-    case PARSING_ST_CANONICAL:
+    case PARSING_ST_DOMAIN:
     case PARSING_ST_NIX_CLOSURE:
     case PARSING_ST_NAME:
       if ( token->type != JSMN_STRING ) {
         EXPECT("string");
       } else {
-        char **old, *this_name = "canonical" ;
+        char **old, *this_name;
         switch ( state ) {
-        case PARSING_ST_CANONICAL: old = &canonical; this_name = "canonical"; break;
+        case PARSING_ST_DOMAIN: old = &domain; this_name = "domain"; break;
         case PARSING_ST_NAME: old = &name; this_name = "name"; break;
         case PARSING_ST_NIX_CLOSURE: old = &nix_closure; this_name = "nix-closure"; break;
         default: abort();
@@ -267,18 +267,13 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
     goto error;
   }
 
-  if ( !canonical ) {
-    fprintf(stderr, "No 'canonical' url given\n");
+  if ( !domain ) {
+    fprintf(stderr, "No 'domain' url given\n");
     goto error;
   }
 
   if ( !nix_closure ) {
     fprintf(stderr, "No 'nix-closure' given\n");
-    goto error;
-  }
-
-  if ( !validate_canonical_url(canonical, NULL, 0, NULL, 0) ) {
-    fprintf(stderr, "Invalid canonical url\n");
     goto error;
   }
 
@@ -292,7 +287,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
 
   SHARED_INIT(&ret->am_shared, freemanifest);
   ret->am_flags = flags;
-  ret->am_canonical = canonical;
+  ret->am_domain = domain;
   ret->am_name = name;
   ret->am_nix_closure = nix_closure;
 
@@ -306,7 +301,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
 
  error:
   if ( name ) free(name);
-  if ( canonical ) free(canonical);
+  if ( domain ) free(domain);
   if ( nix_closure ) free(nix_closure);
   if ( bind_mounts ) {
     size_t i = 0;
@@ -323,7 +318,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
 static void freemanifest(const struct shared *sh, int level) {
   struct appmanifest *mf = STRUCT_FROM_BASE(struct appmanifest, am_shared, sh);
   if ( level == SHFREE_NO_MORE_REFS ) {
-    if ( mf->am_canonical ) free((void *)mf->am_canonical);
+    if ( mf->am_domain ) free((void *)mf->am_domain);
     if ( mf->am_name ) free((void *)mf->am_name);
     if ( mf->am_nix_closure ) free((void *)mf->am_nix_closure);
     if ( mf->am_bin_caches ) free((void *)mf->am_bin_caches);
@@ -342,8 +337,8 @@ static void freemanifest(const struct shared *sh, int level) {
   }
 }
 
-int validate_canonical_url(const char *url, char *app_name, size_t app_name_sz,
-                           char *app_domain, size_t app_domain_sz) {
+int validate_perm_url(const char *url, char *app_name, size_t app_name_sz,
+                      char *app_domain, size_t app_domain_sz) {
   UriParserStateA uri_parser;
   UriUriA uri;
 
@@ -389,7 +384,7 @@ static void application_freefn(const struct shared *sh, int lvl) {
   if ( lvl == SHFREE_NO_MORE_REFS ) {
     struct app *a = STRUCT_FROM_BASE(struct app, app_shared, sh);
 
-    free(a->app_canonical_url);
+    free(a->app_domain);
     pthread_mutex_destroy(&a->app_mutex);
     APPMANIFEST_UNREF(a->app_current_manifest);
 
@@ -408,13 +403,13 @@ struct app *application_from_manifest(struct appmanifest *mf) {
     return NULL;
   }
 
-  ret->app_canonical_url = malloc(strlen(mf->am_canonical) + 1);
-  if ( !ret->app_canonical_url ) {
+  ret->app_domain = malloc(strlen(mf->am_domain) + 1);
+  if ( !ret->app_domain ) {
     pthread_mutex_destroy(&ret->app_mutex);
     free(ret);
     return NULL;
   }
-  strcpy(ret->app_canonical_url, mf->am_canonical);
+  strcpy(ret->app_domain, mf->am_domain);
 
   ret->app_flags = 0;
   APPMANIFEST_REF(mf);
@@ -461,7 +456,7 @@ struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, 
 
   if ( pthread_mutex_lock(&a->app_mutex) == 0 ) {
     if ( a->app_flags & APP_FLAG_SINGLETON ) {
-      fprintf(stderr, "Going to launch %s as singleton\n", a->app_canonical_url);
+      fprintf(stderr, "Going to launch %s as singleton\n", a->app_domain);
       if ( a->app_singleton ) {
         ret = a->app_singleton;
         APPINSTANCE_REF(ret);
@@ -485,8 +480,8 @@ struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, 
     // Check if there is an instance available
     if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
       HASH_FIND(inst_persona_hh, p->p_instances,
-                a->app_canonical_url,
-                strlen(a->app_canonical_url),
+                a->app_domain,
+                strlen(a->app_domain),
                 ret);
       if ( ret ) {
         APPINSTANCE_REF(ret);
@@ -527,7 +522,7 @@ struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, 
   if ( pthread_mutex_lock(&a->app_mutex) == 0 ) {
     if ( p )
       HASH_ADD_KEYPTR(inst_persona_hh, p->p_instances,
-                      a->app_canonical_url, strlen(a->app_canonical_url), ret);
+                      a->app_domain, strlen(a->app_domain), ret);
 
     if ( singleton ) {
       a->app_singleton = ret;
@@ -644,14 +639,14 @@ static void freeinstfn(const struct shared *sh, int level) {
 
     if ( ai->inst_persona ) {
       HASH_FIND(inst_persona_hh, ai->inst_persona->p_instances,
-                ai->inst_app->app_canonical_url, strlen(ai->inst_app->app_canonical_url), existing);
+                ai->inst_app->app_domain, strlen(ai->inst_app->app_domain), existing);
       if ( existing == ai ) {
         HASH_DELETE(inst_persona_hh, ai->inst_persona->p_instances, existing);
       }
 
 
       HASH_FIND(inst_app_hh, ai->inst_app->app_instances,
-                ai->inst_app->app_canonical_url, strlen(ai->inst_app->app_canonical_url), existing);
+                ai->inst_app->app_domain, strlen(ai->inst_app->app_domain), existing);
       if ( existing == ai ) {
         HASH_DELETE(inst_app_hh, ai->inst_app->app_instances, existing);
       }
@@ -696,7 +691,7 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
              sizeof(desc->ad_app_instance.ad_persona_id));
     } else
       memset(desc->ad_app_instance.ad_persona_id, 0, sizeof(desc->ad_app_instance.ad_persona_id));
-    strncpy(desc->ad_app_instance.ad_app_url, ai->inst_app->app_canonical_url,
+    strncpy(desc->ad_app_instance.ad_app_url, ai->inst_app->app_domain,
             sizeof(desc->ad_app_instance.ad_app_url));
     desc->ad_app_instance.ad_app_instance = ai;
     APPINSTANCE_REF(ai);
@@ -722,7 +717,7 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
     } else
       cp[0] = "0000000000000000000000000000000000000000000000000000000000000000";
 
-    cp[1] = ai->inst_app->app_canonical_url;
+    cp[1] = ai->inst_app->app_domain;
     cp[2] = ai->inst_app->app_current_manifest->am_nix_closure;
     return 3;
 
@@ -779,7 +774,7 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
 static int appinstance_setup(struct appinstance *ai) {
   const char *image_path;
   struct appmanifest *cur_mf;
-  char path[PATH_MAX], app_name_or_path[PATH_MAX], app_domain[PATH_MAX],
+  char path[PATH_MAX], app_data_path[PATH_MAX],
     persona_id_str[PERSONA_ID_X_LENGTH + 1];
   int err;
   uint32_t app_flags = 0;
@@ -831,40 +826,31 @@ static int appinstance_setup(struct appinstance *ai) {
     persona_id_str[PERSONA_ID_X_LENGTH] = '\0';
   }
 
-  SAFE_ASSERT(validate_canonical_url(ai->inst_app->app_canonical_url,
-                                     app_name_or_path, sizeof(app_name_or_path),
-                                     app_domain, sizeof(app_domain)));
-  FORMAT_PATH("%s/personas/%s/data/%s/%s", ai->inst_appstate->as_conf_dir,
-              persona_id_str, app_domain, app_name_or_path);
-  fprintf(stderr, "Made path %s\n", path);
+  FORMAT_PATH("%s/personas/%s/data/%s", ai->inst_appstate->as_conf_dir,
+              persona_id_str, ai->inst_app->app_domain);
   err = mkdir_recursive(path);
   if ( err < 0 ) {
     perror("appinstance_setup: mkdir_recursive");
     fprintf(stderr, "appinstance_setup: while making %s\n", path);
   }
-  strcpy(app_name_or_path, path);
+  strcpy(app_data_path, path);
 
   FORMAT_PATH("%s/kite", image_path);
-  DO_MOUNT(app_name_or_path, path, "bind", MS_BIND | MS_RDONLY | MS_REC, "");
+  DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_RDONLY | MS_REC, "");
 
-  SAFE_ASSERT(validate_canonical_url(ai->inst_app->app_canonical_url,
-                                     app_name_or_path, sizeof(app_name_or_path),
-                                     app_domain, sizeof(app_domain)));
-  FORMAT_PATH("%s/personas/%s/log/%s/%s", ai->inst_appstate->as_conf_dir,
-              persona_id_str, app_domain, app_name_or_path);
-  fprintf(stderr, "Making log path %s\n", path);
+  FORMAT_PATH("%s/personas/%s/log/%s", ai->inst_appstate->as_conf_dir,
+              persona_id_str, ai->inst_app->app_domain);
   err = mkdir_recursive(path);
   if ( err < 0 ) {
     perror("appinstance_setup: mkdir_recursive");
     fprintf(stderr, "appinstance_setup: while making %s\n", path);
   }
-  strcpy(app_name_or_path, path);
+  strcpy(app_data_path, path);
 
   FORMAT_PATH("%s/var/log", image_path);
-  DO_MOUNT(app_name_or_path, path, "bind", MS_BIND | MS_REC, "");
+  DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_REC, "");
 
   // If this app has the 'run_with_admin' permission, then run this application with administrator privileges
-  fprintf(stderr, "testing run as admin: %p %s %08x\n", ai->inst_app, ai->inst_app->app_canonical_url, app_flags);
   if ( app_flags & APP_FLAG_RUN_AS_ADMIN ) {
     size_t i;
 

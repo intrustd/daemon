@@ -8,19 +8,18 @@ export function parseKiteAppUrl(url) {
             var info = host.substr(2).split('/');
             if ( info.length >= 2 ) {
                 return { isKite: true,
-                         domain: info[0],
-                         appId: info[1],
-                         path: '/' + info.slice(2).join('/'),
+                         app: info[0],
+                         path: '/' + info.slice(1).join('/'),
                          port: 50051 // TODO
                        };
             }
         }
-        return { isKite: true, error: "Expected kite+app://app.domain/app-id" };
+        return { isKite: true, error: "Expected kite+app://app.domain/" };
     default:
         return { isKite: false };
     }
 }
 
 export function kiteAppCanonicalUrl( urlData ) {
-    return 'kite+app://' + urlData.domain + '/' + urlData.appId;
+    return 'kite+app://' + urlData.app;
 }

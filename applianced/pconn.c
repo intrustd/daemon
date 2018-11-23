@@ -3087,8 +3087,8 @@ static int pconn_launch_app(struct pconn *pc, const char *app_uri, struct pconna
       }
 
       HASH_ADD_KEYPTR(pca_hh, pc->pc_apps,
-                      existing->pca_app->inst_app->app_canonical_url,
-                      strlen(existing->pca_app->inst_app->app_canonical_url),
+                      existing->pca_app->inst_app->app_domain,
+                      strlen(existing->pca_app->inst_app->app_domain),
                       existing);
 
       *pca = existing;

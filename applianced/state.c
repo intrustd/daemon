@@ -30,7 +30,7 @@
 #define APPS_PATH_TEMPLATE "%s/apps"
 #define TMP_APPS_PATH_TEMPLATE "%s/.apps.tmp"
 
-#define KITE_ADMIN_URL "kite+app://flywithkite.com/admin"
+#define KITE_ADMIN_URL "admin.flywithkite.com"
 
 int g_openssl_appstate_ix;
 int g_openssl_flock_data_ix;
@@ -171,7 +171,7 @@ static int appstate_add_app(struct appstate *st, struct app *a) {
     fprintf(stderr, "appstate_add_app: could not open %s\n", apps_path);
     return -1;
   } else {
-    fprintf(apps, "%s %s\n", a->app_canonical_url,
+    fprintf(apps, "%s %s\n", a->app_domain,
             hex_digest_str(a->app_current_manifest->am_digest,
                            digest_str, sizeof(a->app_current_manifest->am_digest)));
     fclose(apps);
@@ -215,7 +215,7 @@ static int appstate_update_app(struct appstate *st, struct app *a, struct appman
   }
 
   fprintf(stderr, "upgrade %s from %s to %s\n",
-          a->app_canonical_url,
+          a->app_domain,
           hex_digest_str(a->app_current_manifest->am_digest, dbg_digest_str1, sizeof(a->app_current_manifest->am_digest)),
           hex_digest_str(mf->am_digest, dbg_digest_str2, sizeof(mf->am_digest)));
 
@@ -228,7 +228,7 @@ static int appstate_update_app(struct appstate *st, struct app *a, struct appman
       err = sscanf(apps_line, "%s %64s", apps_url, mf_digest_str);
       if ( err != 2 ) goto error;
 
-      if ( strcmp(apps_url, a->app_canonical_url) == 0 ) {
+      if ( strcmp(apps_url, a->app_domain) == 0 ) {
         if ( did_update ) {
           fprintf(stderr, "appstate_update_app: duplicate app entry\n");
           goto error;
@@ -345,8 +345,8 @@ static int appstate_open_keys(struct appstate *as, struct appconf *ac) {
   if ( !fp ) {
     perror("appstate_open_keys: fopen");
     fprintf(stderr, "Could not open the key file %s. Run the command\n\n", app_key_nm);
-    fprintf(stderr, "   openssl ecparam -out %s.ecparam.pem -name prime256v1\n", app_key_nm);
-    fprintf(stderr, "   openssl genpkey -paramfile %s.ecparam.pem -out %s.pem\n", app_key_nm, app_key_nm);
+    fprintf(stderr, "   openssl ecparam -out %s.ecparam -name prime256v1\n", app_key_nm);
+    fprintf(stderr, "   openssl genpkey -paramfile %s.ecparam -out %s\n", app_key_nm, app_key_nm);
     fprintf(stderr, "to generate a private key\n");
     exit(1);
   }
@@ -993,12 +993,6 @@ static int appstate_open_apps(struct appstate *as, struct appconf *ac) {
         return -1;
       }
 
-      if ( !validate_canonical_url(apps_url, NULL, 0, NULL, 0) ) {
-        fclose(apps);
-        fprintf(stderr, "appstate_open_apps: invalid app url: %s\n", apps_url);
-        return -1;
-      }
-
       if ( parse_hex_str(mf_digest_str, mf_digest, sizeof(mf_digest)) < 0 ) {
         fclose(apps);
         fprintf(stderr, "appstate_open_apps: invalid manifest digest %s\n", mf_digest_str);
@@ -1028,7 +1022,7 @@ static int appstate_open_apps(struct appstate *as, struct appconf *ac) {
 
       appstate_update_application_state(as, a);
 
-      HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_canonical_url, strlen(a->app_canonical_url), a);
+      HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_domain, strlen(a->app_domain), a);
     } else {
       fclose(apps);
       fprintf(stderr, "appstate_open_apps: could not add app to appliance: line overflow\n");
@@ -1254,7 +1248,7 @@ static void appstatefn(struct eventloop *el, int op, void *arg) {
       if ( pthread_mutex_lock(&app->app_mutex) == 0 ) {
         autostart = app->app_flags & APP_FLAG_AUTOSTART;
         if ( autostart )
-          fprintf(stderr, "Starting %s\n", app->app_canonical_url);
+          fprintf(stderr, "Starting %s\n", app->app_domain);
         pthread_mutex_unlock(&app->app_mutex);
       }
 
@@ -1647,14 +1641,14 @@ struct appupdater *appstate_queue_update_ex(struct appstate *as, const char *uri
     return NULL;
 }
 
-struct app *appstate_get_app_by_url(struct appstate *as, const char *canonical) {
-  return appstate_get_app_by_url_ex(as, canonical, strlen(canonical));
+struct app *appstate_get_app_by_url(struct appstate *as, const char *domain) {
+  return appstate_get_app_by_url_ex(as, domain, strlen(domain));
 }
 
-struct app *appstate_get_app_by_url_ex(struct appstate *as, const char *canonical, size_t cansz) {
+struct app *appstate_get_app_by_url_ex(struct appstate *as, const char *domain, size_t cansz) {
   if ( pthread_rwlock_rdlock(&as->as_applications_mutex) == 0 ) {
     struct app *a;
-    HASH_FIND(app_hh, as->as_apps, canonical, cansz, a);
+    HASH_FIND(app_hh, as->as_apps, domain, cansz, a);
     if ( a )
       APPLICATION_REF(a);
     pthread_rwlock_unlock(&as->as_applications_mutex);
@@ -1668,9 +1662,9 @@ int appstate_install_app_from_manifest(struct appstate *as, struct appmanifest *
 
   if ( pthread_rwlock_wrlock(&as->as_applications_mutex) == 0 ) {
     int ret = 0;
-    HASH_FIND(app_hh, as->as_apps, mf->am_canonical, strlen(mf->am_canonical), existing);
+    HASH_FIND(app_hh, as->as_apps, mf->am_domain, strlen(mf->am_domain), existing);
     if ( existing ) {
-      fprintf(stderr, "appstate_install_app_from_manifest: '%s' already exists\n", mf->am_canonical);
+      fprintf(stderr, "appstate_install_app_from_manifest: '%s' already exists\n", mf->am_domain);
       ret = -1;
     } else {
       struct app *a = application_from_manifest(mf);
@@ -1680,7 +1674,7 @@ int appstate_install_app_from_manifest(struct appstate *as, struct appmanifest *
       } else {
         ret = appstate_add_app(as, a);
         if ( ret == 0 ) {
-          HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_canonical_url, strlen(a->app_canonical_url), a);
+          HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_domain, strlen(a->app_domain), a);
         }
 
         appstate_update_application_state(as, a);
@@ -1698,16 +1692,16 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
     struct app *existing;
     struct appmanifest *old;
 
-    HASH_FIND(app_hh, as->as_apps, mf->am_canonical, strlen(mf->am_canonical), existing);
+    HASH_FIND(app_hh, as->as_apps, mf->am_domain, strlen(mf->am_domain), existing);
     if ( !existing ) {
-      fprintf(stderr, "appstate_update_from_manifest: '%s' does not exist\n", mf->am_canonical);
+      fprintf(stderr, "appstate_update_from_manifest: '%s' does not exist\n", mf->am_domain);
       ret = -1;
     } else {
       ret = appstate_update_app(as, existing, mf);
       APPLICATION_REF(existing);
     }
 
-    fprintf(stderr, "Updating app %s to %s (manifest %p)\n", mf->am_canonical, mf->am_nix_closure, mf);
+    fprintf(stderr, "Updating app %s to %s (manifest %p)\n", mf->am_domain, mf->am_nix_closure, mf);
 
     pthread_rwlock_unlock(&as->as_applications_mutex);
 
@@ -1716,8 +1710,6 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
         old = existing->app_current_manifest;
         existing->app_current_manifest = mf;
         APPMANIFEST_REF(mf);
-
-	fprintf(stderr, "Reset instances\n");
 
         // Requests that the instances reset themselves
         application_request_instance_resets(&as->as_eventloop, existing);
@@ -1872,8 +1864,9 @@ void appstate_update_application_state(struct appstate *as, struct app *a) {
       if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_SINGLETON )
         a->app_flags |= APP_FLAG_SINGLETON;
 
-      if ( strcmp(a->app_canonical_url, KITE_ADMIN_URL) == 0 ) {
-        fprintf(stderr, "Setting as autostart %s\n", a->app_canonical_url);
+      // TODO manual autostart
+      if ( strcmp(a->app_domain, KITE_ADMIN_URL) == 0 ) {
+        fprintf(stderr, "Setting as autostart %s\n", a->app_domain);
         a->app_flags |= APP_FLAG_AUTOSTART;
       }
     }

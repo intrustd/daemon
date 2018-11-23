@@ -167,8 +167,7 @@ export class KitePersonaButton extends React.Component {
     }
 
     componentDidMount() {
-        console.log("Fetching user information");
-        fetch("kite+app://flywithkite.com/admin/me",
+        fetch("kite+app://admin.flywithkite.com/me",
               { method: 'GET', cache: 'no-store' })
             .then((r) => r.json())
             .then((r) => this.setState({ ourInfo: r }))

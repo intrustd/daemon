@@ -424,21 +424,18 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
         return 0;
       }
 
-      fprintf(stderr, "Attempting to open token\n");
       tok = appstate_open_token_ex(persona->p_appstate,
                                    cred_start, sign_start - cred_start,
                                    sign_start + 1,
                                    cred + cred_sz - sign_start - 1);
       if ( !tok ) return 0;
 
-      fprintf(stderr, "Checking token permission\n");
       // Check that the token has the login permission
       if ( token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
            (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) &&
            memcmp(tok->tok_persona_id, persona->p_persona_id, PERSONA_ID_LENGTH) == 0 ) {
         // Save token and return
         if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
-          fprintf(stderr, "Token confirmed!\n");
           TOKEN_UNREF(tok);
           return 1;
         } else {

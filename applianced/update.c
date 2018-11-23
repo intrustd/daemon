@@ -407,7 +407,7 @@ static void appupdater_parse_manifest(struct appupdater *au) {
     return;
   }
 
-  cur_app = appstate_get_app_by_url(au->au_appstate, au->au_manifest->am_canonical);
+  cur_app = appstate_get_app_by_url(au->au_appstate, au->au_manifest->am_domain);
   if ( au->au_application && cur_app != au->au_application ) {
     fprintf(stderr, "appupdater_parse_manifest: manifest is for a different application\n");
     appupdater_error(au, AU_STATUS_ERROR);

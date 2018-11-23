@@ -2,10 +2,26 @@ import { EventTarget } from 'event-target-shim';
 import React from 'react';
 import ReactDom from 'react-dom';
 
-import { Login, lookupLogins, getSite, getLoginsDb } from './Logins.js';
+import { Login, lookupLogins, getSite, getLoginsDb, resetLogins } from './Logins.js';
 import { AuthenticatorModal } from './Authenticator.js';
 
 import './Portal.scss';
+
+function appManifestAddress(app) {
+    return `${app}/manifest.json`;
+}
+
+class KiteMissingApps {
+    constructor (missingApps) {
+        this.missingApps = missingApps
+    }
+}
+
+class KitePermissionsError {
+    constructor (msg) {
+        this.message = msg
+    }
+}
 
 function wrtcToKiteFingerprint({ algorithm, value }) {
     const AlgMapping = { 'sha-256': 'SHA256' }
@@ -110,6 +126,42 @@ class PortalAuthOpensEvent {
     }
 }
 
+class AppInstallItem extends React.Component {
+    constructor() {
+        super()
+        this.state = { }
+    }
+
+    componentDidMount() {
+        fetch(appManifestAddress(this.props.app))
+            .then((r) => {
+                if ( r.status == 200 )
+                    r.json().then((mf) => this.setState({ appInfo: mf }))
+                            .catch((e) => this.setState({ error: e }))
+            })
+            .catch((e) => this.setState({error: e}))
+    }
+
+    render() {
+        if ( this.state.appInfo ) {
+            return E('div', { className: 'kite-app' })
+        } else {
+            var error
+
+            if ( this.state.error ) {
+                error = E('i', { className: 'kite-app-error-indicator fa fa-fw fa-alert',
+                                 'uk-tooltip': `${this.state.error}`})
+            }
+
+            return E('div', { className: 'kite-app kite-app--loading' },
+                     error,
+                     E('i', { className: 'fa fa-fw fa-spin fa-circle-o-notch kite-app-indicator' }),
+                     E('span', { className: 'kite-app-loading-message' },
+                       `Loading ${this.props.app}`))
+        }
+    }
+}
+
 export class PortalAuthenticator extends EventTarget('open', 'error') {
     constructor(flocks, site, oldFetch, permissions) {
         super()
@@ -192,6 +244,7 @@ export class PortalAuthenticator extends EventTarget('open', 'error') {
         ReactDom.render(React.createElement(PortalModal,
                                             { state: this.state,
                                               error: this.error,
+                                              missingApps: this.missingApps,
                                               doPopup: this.doPopup,
                                               requestNewLogin: this.requestNewLogin.bind(this) }),
                         this.modalContainer)
@@ -283,6 +336,7 @@ export class PortalAuthenticator extends EventTarget('open', 'error') {
         this.login.createClient()
             .then((client) => {
                 // Connected client
+
                 this.dispatchEvent(new PortalAuthOpensEvent(client))
                 this.hide()
             })
@@ -310,7 +364,18 @@ class PermissionsModal extends React.Component {
         var body
         var loading = false
 
+        console.log("Render for ", this.props.state)
+
         switch ( this.props.state ) {
+        case PortalServerState.Error:
+            body = [ E('p', {className: 'kite-auth-explainer'},
+                       'Error: ', this.error),
+
+                     E('button', { type: 'button',
+                                   className: 'uk-button uk-button-primary',
+                                   onClick: this.props.onResetLogins },
+                       'Try again') ]
+            break;
         case PortalServerState.DisplayLogins:
             body = E('p', {className: 'kite-auth-explainer'},
                      'You are currently logged in to multiple Kites. Select which login you\'d like to use')
@@ -326,6 +391,19 @@ class PermissionsModal extends React.Component {
                                     disabled: loading,
                                     onClick: () => this.acceptPermissions()},
                          'Accept')) ]
+            break;
+
+        case PortalServerState.InstallAppsRequest:
+            body = [ E('p', { className: 'kite-auth-explainer' },
+                       'The following applications are not installed on your appliance. Would you like to install them now?'),
+                     E('div', { className: 'kite-form-row' },
+                       E('ul', { className: 'kite-list kite-app-list' },
+                         this.props.missingApps.map(
+                             (a) =>
+                                 E('li', { key: a },
+                                   E(AppInstallItem, { app: a })))))
+                   ]
+
             break;
         }
 
@@ -347,7 +425,8 @@ export const PortalServerState = {
     LoginOne: Symbol('LoginOne'),
     DisplayLogins: Symbol('DisplayLogins'),
     MintingToken: Symbol('MintingToken'),
-    Error: Symbol('Error')
+    Error: Symbol('Error'),
+    InstallAppsRequest: Symbol('InstallAppsRequest')
 }
 
 export class PortalServer {
@@ -397,8 +476,10 @@ export class PortalServer {
                                         this.showDisplay()
                                     })
                                     .catch((e) => {
+                                        console.log("Got server error state")
                                         this.state = PortalServerState.Error;
                                         this.error = e;
+                                        this.showDisplay()
                                     })
                             }
                         } else {
@@ -470,9 +551,9 @@ export class PortalServer {
             'for_site': site
         }
 
-        console.log("Request token", tokenRequest)
+        fetch('kite+app://admin.flywithkite.com/me', { method: 'GET', kiteClient: this.flockClient }).then((r) => r.json()).then((r) => console.log("Got admin", r))
 
-        return fetch('kite+app://flywithkite.com/admin/tokens',
+        return fetch('kite+app://admin.flywithkite.com/tokens',
                      { method: 'POST',
                        headers: { 'Content-type': 'application/json' },
                        body: JSON.stringify(tokenRequest),
@@ -480,41 +561,61 @@ export class PortalServer {
             .then((r) => {
                 if ( r.status == 200 )
                     return r.json()
-                else if ( r.status == 401 )
-                    return Promise.reject('Not authorized to create this token')
+                if ( r.status == 400 ) {
+                    return r.json()
+                        .then((e) => {
+                            if ( e['missing-apps'] ) {
+                                return Promise.reject(new KiteMissingApps(e['missing-apps']))
+                            } else
+                                return Promise.reject(new KitePermissionsError('An unknown error occurred'))
+                        })
+                } else if ( r.status == 401 )
+                    return Promise.reject(new KitePermissionsError('Not authorized to create this token'))
                 else
-                    return Promise.reject('An unknown error occurred')
+                    return Promise.reject(new KitePermissionsError('An unknown error occurred'))
             })
     }
 
     requestNuclear(site) {
-        return this.requestPermissions([ 'kite+perm://flywithkite.com/admin/login',
-                                         'kite+perm://flywithkite.com/admin/site',
-                                         'kite+perm://flywithkite.com/admin/nuclear' ],
+        return this.requestPermissions([ 'kite+perm://admin.flywithkite.com/login',
+                                         'kite+perm://admin.flywithkite.com/site',
+                                         'kite+perm://admin.flywithkite.com/nuclear' ],
                                        7 * 24 * 60 * 60, // One week
                                        site.getFingerprints().map(wrtcToKiteFingerprint).filter((c) => c !== null))
 
     }
 
+    onResetLogins() {
+        resetLogins()
+            .then(() => this.showDisplay())
+    }
+
     onAccept() {
         // Attempt to make a token using this site ID
-        var permissions = [ 'kite+perm://flywithkite.com/admin/login',
-                            'kite+perm://flywithkite.com/admin/site',
+        var permissions = [ 'kite+perm://admin.flywithkite.com/login',
+                            'kite+perm://admin.flywithkite.com/site',
                             ...this.request.permissions ]
 
         this.requestPermissions(permissions, this.request.ttl, this.request.siteFingerprints)
             .then(({token, expiration}) => {
                 expiration = new Date(expiration).getTime()
-                console.log("Got expiration ", token, expiration)
                 this.respond({ success: true,
                                persona: this.flockClient.personaId,
                                flockUrl: this.flockClient.flockUrl,
                                applianceName: this.flockClient.appliance,
                                exp: expiration, token })
             }).catch((e) => {
-                this.state = PortalServerState.Error
-                this.error = `${e}`
-                console.error("Error while running request", e)
+                if ( e instanceof KiteMissingApps) {
+                    this.state = PortalServerState.InstallAppsRequest
+                    this.missingApps = e.missingApps
+                } else if ( e instanceof KitePermissionsError ) {
+                    this.state = PortalServerState.Error
+                    this.error = `${e.message}`
+                } else {
+                    this.state = PortalServerState.Error
+                    this.error = "An unknown error occurred"
+                }
+                this.updateModal()
             })
 
         this.state = PortalServerState.MintingToken;
@@ -541,6 +642,7 @@ export class PortalServer {
                                                   state: this.state,
                                                   logins: this.logins || [],
                                                   permissions: this.request.permissions,
+                                                  onResetLogins: this.onResetLogins.bind(this),
                                                   onSuccess: this.onAccept.bind(this)
                                                 }),
                             this.modalContainer)

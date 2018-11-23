@@ -44,7 +44,10 @@ export class Login {
                 if ( persona === undefined )
                     persona = 'token'
                 client.tryLogin(persona, `token:${this.loginToken}`)
-                    .then(() => resolve(client))
+                    .then(() => touchAppliance(this.applianceName))
+                    .then(() => {
+                        resolve(client)
+                    })
                     .catch((e) => {
                         console.error("Could not login to client", e)
                         reject(e)
@@ -71,6 +74,11 @@ export function getLoginsDb() {
     if ( loginsDb === undefined )
         loginsDb = new Promise((resolve, reject) => {
             var db = new Dexie('kite-logins');
+            db.version(9).stores({
+                login: 'token,exp,[persona_id+flock+appliance]',
+                site: 'exp',
+                appliance: 'appliance_name,last_auth_time'
+            })
             db.version(8).stores({
                 login: 'token,exp,[persona_id+flock+appliance]',
                 site: 'exp'
@@ -130,21 +138,40 @@ export function lookupLogins() {
         .then((db) => {
             return Promise.all([getSite(db), db.login.where('exp').above(now).toArray()])
         }).then(([site, logins]) => {
-            console.log("Got logins", logins)
             logins = List(logins)
                 .map((login) => new Login(login, site, now))
                 .groupBy((login) => login.key)
 
-            console.log("After group ", JSON.stringify(logins))
 
             logins = logins
                 .map((loginOptions) => loginOptions.maxBy((login) => login.expiration))
                 .valueSeq().toArray()
 
-            console.log("Got all logins", logins, site, logins.length, site.getFingerprints()[0].value);
             return logins
         }).catch((e) => { console.error("Error while running dexie", e)})
 }
 
-window.getLogins = getLoginsDb;
-window.lookupLogins = lookupLogins;
+export function resetLogins() {
+    return Promise.all([ getLoginsDb(),
+                         lookupLogins() ])
+        .then(([ db, logins ]) => {
+            return Promise.all(logins.map(({loginToken}) => {
+                return db.login.where('token').equals(loginToken).delete()
+            }))
+        }).then(() => null)
+}
+
+export function touchAppliance(appliance_name) {
+    var appObj = { appliance_name,
+                   last_auth_time: new Date() }
+    return getLoginsDb()
+        .then((db) => db.appliance.put(appObj))
+        .then(() => { console.log("Touched appliance ", appliance_name) })
+}
+
+export function getAppliances() {
+    return getLoginsDb()
+        .then((db) => {
+            return db.appliance.orderBy('last_auth_time').reverse().toArray()
+        })
+}

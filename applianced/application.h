@@ -57,7 +57,7 @@ struct appmanifest {
   // The entire manifest file, stored in memory
   unsigned int am_major, am_minor, am_revision;
 
-  const char *am_canonical;
+  const char *am_domain;
   const char *am_name;
   const char *am_nix_closure;
 
@@ -81,7 +81,7 @@ int appmanifest_newer(struct appmanifest *new, struct appmanifest *old);
 struct app {
   struct shared app_shared;
 
-  char *app_canonical_url;
+  char *app_domain;
   UT_hash_handle app_hh;
 
   pthread_mutex_t app_mutex;
@@ -117,8 +117,9 @@ struct app *application_from_manifest(struct appmanifest *mf);
 void application_unset_flags(struct app *a, uint32_t fs);
 void application_set_flags(struct app *a, uint32_t fs);
 void application_request_instance_resets(struct eventloop *el, struct app *a); // app_mutex must be locked
-int validate_canonical_url(const char *url, char *app_name, size_t app_name_sz,
-                           char *app_domain, size_t app_domain_sz);
+int validate_perm_url(const char *url,
+                      char *app_name, size_t app_name_sz,
+                      char *app_domain, size_t app_domain_sz);
 
 struct appmanifest *application_get_manifest(struct app *a);
 

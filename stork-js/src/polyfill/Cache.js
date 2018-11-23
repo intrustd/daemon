@@ -265,13 +265,10 @@ export class CacheControl {
 
         this.cacheName = this.makeCanonicalName()
 
-        var appUrl = parseKiteAppUrl(this.appId)
-
-        console.log("Got cache polyfill", cachePolyfill)
         if ( window.caches ) {
-            this.publicCache = window.caches.open(this.cacheName).then((cache) => new KiteCacheAdaptor(cache, appUrl.domain))
+            this.publicCache = window.caches.open(this.cacheName).then((cache) => new KiteCacheAdaptor(cache, appId))
         } else {
-            this.publicCache = cachePolyfill.caches.open(this.cacheName).then((cache) => new KiteCacheAdaptor(cache, appUrl.domain))
+            this.publicCache = cachePolyfill.caches.open(this.cacheName).then((cache) => new KiteCacheAdaptor(cache, appId))
         }
         this.privateCache = Promise.resolve(new PrivateCache())
     }
@@ -281,11 +278,7 @@ export class CacheControl {
         var flockNmNorm = `${flockUrl.protocol}-${flockUrl.hostname}-${flockUrl.port}`
         var applNmNorm = this.applianceName.split(' ').join('-')
 
-        var appUrl = parseKiteAppUrl(this.appId)
-        var appDomain = appUrl.domain
-        var appName = appUrl.appId
-
-        return `${CacheVersion}:${flockNmNorm}:${applNmNorm}:${this.personaId}:${appDomain}-${appName}`
+        return `${CacheVersion}:${flockNmNorm}:${applNmNorm}:${this.personaId}:${this.appId}`
     }
 
     shouldCache(request) {

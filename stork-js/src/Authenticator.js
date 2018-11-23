@@ -6,6 +6,7 @@ import ReactDom from 'react-dom';
 import { FlockClient } from './FlockClient.js';
 
 import "./Authenticator.scss";
+import { getAppliances, touchAppliance } from "./Logins.js";
 
 function loginToAppliance(flocks, appliance) {
     var attempts = flocks.map((flock, flockIndex) => () => {
@@ -59,6 +60,11 @@ export class AuthenticatorModal extends React.Component {
         this.state = { }
     }
 
+    componentDidMount() {
+        getAppliances()
+            .then((appliances) => { this.setState({ appliances }) })
+    }
+
     render() {
         const E = React.createElement;
 
@@ -77,14 +83,13 @@ export class AuthenticatorModal extends React.Component {
                       this.state.error)
         }
 
-        var personas
+        var personas, appliances
 
         if ( typeof this.state.personas == 'object' ) {
-            console.log("doing personas", this.state.personas.length)
             if ( this.state.personas.length == 0 ) {
             } else {
                 personas = E('div', {className: 'kite-form-row'},
-                             E('ul', {className: 'kite-persona-list'},
+                             E('ul', {className: 'kite-list kite-persona-list'},
                                this.state.personas.map(
                                    (p, ix) => {
                                        var loginBox
@@ -100,7 +105,19 @@ export class AuthenticatorModal extends React.Component {
                                                 loginBox)
                                    })))
             }
-        }
+        } else if ( typeof this.state.appliances == 'object' ) {
+            appliances = E('div', { className: 'kite-form-row' },
+                           E('ul', { className: 'kite-list kite-appliance-list' },
+                             this.state.appliances.map(
+                                 (app, ix) =>
+                                     E('li', { key: app.appliance_name,
+                                               onClick: () => { this.continueLogin(app.appliance_name) } },
+                                       E('span', { className: 'kite-appliance-name' }, app.appliance_name),
+                                       E('span', { className: 'kite-appliance-last-login'}, app.last_auth_time.toString()))
+                             )))
+        } else
+            appliances = E('div', { className: 'kite-form-row' },
+                           E('i', { className: 'fa fa-fw fa-3x fa-spin fa-circle-o-notch' }))
 
         var origin = this.props.origin || location.origin;
 
@@ -118,6 +135,7 @@ export class AuthenticatorModal extends React.Component {
                                    placeholder: 'Appliance Name',
                                    ref: this.applianceNameRef,
                                    onKeyDown: this.onKeyDown.bind(this) }))),
+                   appliances,
                    personas,
                    E('div', {className: 'kite-form-row'},
                      E('button', {className: `kite-form-submit ${loading ? 'kite-form-submit--loading' : ''}`,
@@ -135,7 +153,12 @@ export class AuthenticatorModal extends React.Component {
             this.continueLogin()
     }
 
-    continueLogin() {
+    continueLogin(applianceName) {
+        if ( applianceName === undefined ) {
+            applianceName = this.applianceNameRef.current.value
+        } else
+            this.applianceNameRef.current.value = applianceName
+
         if ( this.state.state == 'login' ) {
             var personaId = this.state.personas[this.state.selectedPersona].id
 
@@ -146,13 +169,14 @@ export class AuthenticatorModal extends React.Component {
                                             error: 'Invalid login', state: 'connecting'}))
         } else {
             this.setState({loading: true})
-            var applianceName = this.applianceNameRef.current.value
+
             loginToAppliance(this.props.flocks, applianceName)
-                .then((dev) => this.getPersonas(dev),
-                      (e) => {
-                          this.setState({loading: false,
-                                         error: 'Could not find appliance'})
-                      })
+                .then((dev) => (touchAppliance(applianceName)
+                                .then(() => this.getPersonas(dev))))
+                .catch((e) => {
+                    this.setState({loading: false,
+                                   error: 'Could not find appliance'})
+                })
         }
     }
 

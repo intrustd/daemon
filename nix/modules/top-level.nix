@@ -2,13 +2,9 @@
   imports = [ ./supervisord.nix ./permissions.nix ] ; # ./activation.nix ];
 
   options = with lib; {
-    kite.app-domain = mkOption {
+    kite.identifier = mkOption {
       type = types.string;
-      description = "App domain uri";
-    };
-    kite.app-name = mkOption {
-      type = types.string;
-      description = "A short alphanumeric name for this application";
+      description = "App domain URI";
     };
 
     kite.startHook = mkOption {
@@ -93,9 +89,13 @@
     kite.meta = mkOption {
       type = types.submodule {
         options = {
+          slug = mkOption {
+            type = types.str;
+            description = "Slug of package";
+          };
+
           name = mkOption {
             type = types.str;
-            default = config.kite.app-name;
             description = "Human-readable names of package";
           };
 
@@ -153,13 +153,13 @@
       "/share/kxmlgui5"
     ];
 
-    kite.manifest = pkgs.writeText "${config.kite.app-name}-manifest"
+    kite.manifest = pkgs.writeText "${config.kite.meta.slug}-manifest"
       (builtins.toJSON {
         name = config.kite.meta.name;
         app-url = config.kite.meta.app-url;
         icon = config.kite.meta.icon;
 #        authors = config.kite.meta.authors;
-        canonical = "kite+app://${config.kite.app-domain}/${config.kite.app-name}";
+        domain = config.kite.identifier;
         nix-closure = config.kite.toplevel;
         runAsAdmin = config.kite.runAsAdmin;
         singleton = config.kite.singleton;
@@ -190,7 +190,7 @@
           sortedPermissions = map mkPermission (lib.sort cmpPrio config.kite.permissions);
           kitePermissions = pkgs.writeText "permissions.json" (builtins.toJSON sortedPermissions);
       in pkgs.buildEnv {
-           name = "kite-environment-${config.kite.app-name}";
+           name = "kite-environment-${config.kite.meta.slug}";
            ignoreCollisions = true;
            paths = config.kite.systemPackages;
            inherit (config.kite) pathsToLink extraOutputsToInstall;

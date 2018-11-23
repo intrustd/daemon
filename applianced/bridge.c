@@ -2082,7 +2082,7 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
             container_release_running(&ai->inst_container, bpr->bpr_el);
             APPINSTANCE_UNREF(ai);
 
-            fprintf(stderr, "bridge_handle_bpr_response: launched application %s\n", ai->inst_app->app_canonical_url);
+            fprintf(stderr, "bridge_handle_bpr_response: launched application %s\n", ai->inst_app->app_domain);
 
             rsp.sm_flags = STKD_MKFLAGS(STKD_RSP, STKD_OPEN_APP_REQUEST);
             rsp.sm_data.sm_opened_app.sm_family = htonl(AF_INET);
@@ -2256,7 +2256,7 @@ int bridge_write_site_routes(struct brstate *br, struct pconn *pc) {
 
   SAFE_RWLOCK_RDLOCK(&br->br_appstate->as_applications_mutex);
   while ( fgets(perm, sizeof(perm), perms) ) {
-    if ( validate_canonical_url(perm, NULL, 0, NULL, 0) ) {
+    if ( validate_perm_url(perm, NULL, 0, NULL, 0) ) {
       // Check if any application has this permission
       HASH_FIND(app_hh, br->br_appstate->as_apps, perm, strlen(perm), a);
 
@@ -2295,10 +2295,10 @@ int bridge_write_site_routes(struct brstate *br, struct pconn *pc) {
       ai = launch_app_instance(br->br_appstate, pc->pc_persona, a);
       if ( !ai ) {
         fprintf(stderr, "bridge_write_site_routes: skipping %s because of an error while launching\n",
-                a->app_canonical_url);
+                a->app_domain);
       } else {
-        fprintf(routes, "%s %s\n", a->app_canonical_url, inet_ntop(AF_INET, &ai->inst_container.c_ip,
-                                                                   app_addr, sizeof(app_addr)));
+        fprintf(routes, "%s %s\n", a->app_domain, inet_ntop(AF_INET, &ai->inst_container.c_ip,
+                                                            app_addr, sizeof(app_addr)));
       }
     }
   }
