@@ -1,22 +1,20 @@
 let pkgs = import <nixpkgs> {};
 in with pkgs.lib;
 
-let systems = builtins.attrNames (import <system/systems.nix>);
+let kiteSystems = builtins.attrNames (import <system/systems.nix>);
 
     mkJobs = platform:
       let pkgs = (import <system/kite-appliance.nix> {
                     inherit platform;
                     nixpkgs-path = <nixpkgs>;
                   }).pkgs;
+      in { name = pkgs.stdenv.targetPlatform.system; value = pkgs; };
 
-          manifest = import ./build-bundle.nix rec {
-                       inherit pkgs;
-                       system = pkgs.stdenv.targetPlatform.system;
-                       kite-app-module = <src/kite.nix>;
-                       pure-build = true;
-                     };
+    manifest = import ./build-bundle.nix rec {
+       systems = builtins.listToAttrs (map mkJobs kiteSystems);
+       kite-app-module = <src/kite.nix>;
+       pure-build = true;
+    };
 
-      in [ (nameValuePair "manifest-${platform}" manifest)
-           (nameValuePair "app-${platform}" manifest.toplevel) ];
-
-in listToAttrs (concatLists (map mkJobs systems))
+in { inherit manifest; } //
+   mapAttrs' (platform: value: nameValuePair "app-${platform}" value) manifest.toplevels

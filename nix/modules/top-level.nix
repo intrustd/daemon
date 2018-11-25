@@ -80,12 +80,6 @@
       description = "The top-level package";
     };
 
-    kite.manifest = mkOption {
-      type = types.package;
-      internal = true;
-      description = "Manifest build";
-    };
-
     kite.meta = mkOption {
       type = types.submodule {
         options = {
@@ -152,20 +146,6 @@
       "/share/kservicestype5"
       "/share/kxmlgui5"
     ];
-
-    kite.manifest = (pkgs.writeText "${config.kite.meta.slug}-manifest"
-      (builtins.toJSON {
-        name = config.kite.meta.name;
-        app-url = config.kite.meta.app-url;
-        icon = config.kite.meta.icon;
-#        authors = config.kite.meta.authors;
-        domain = config.kite.identifier;
-        nix-closure = config.kite.toplevel;
-        runAsAdmin = config.kite.runAsAdmin;
-        singleton = config.kite.singleton;
-
-        bind-mounts = config.kite.bindMounts;
-      }) // { toplevel = config.kite.toplevel; });
 
     kite.toplevel =
       let startScript = pkgs.writeScript "start-script" ''
