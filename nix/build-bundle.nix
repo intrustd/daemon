@@ -1,4 +1,5 @@
-let defaultSystems = builtins.listToAttrs [ { name = builtins.currentSystem;
+let defaultPkgs = import <nixpkgs> {};
+    defaultSystems = builtins.listToAttrs [ { name = defaultPkgs.hostPlatform.config;
                                               value = import <nixpkgs> {}; } ];
 in { kite-app-module
    , systems ? defaultSystems
@@ -26,13 +27,14 @@ let kite-config = { config, pkgs, lib, ... }: {
       };
     };
 
-    evalInPlatform = system: pkgs: import <nixpkgs/nixos/lib/eval-config.nix> {
-      inherit system pkgs;
+    evalInPlatform = pkgs: import <nixpkgs/nixos/lib/eval-config.nix> {
+      inherit pkgs;
+      system = pkgs.stdenv.targetPlatform.system;
       modules = [ ./modules/top-level.nix (builtins.toPath kite-app-module) ];
       extraArgs = { kite-lib = (import ./lib/kite.nix) pkgs; inherit pure-build; };
     };
 
-    platforms = map (name: rec { inherit name; config = (evalInPlatform name (builtins.getAttr name systems)).config; package = config.kite.toplevel; })
+    platforms = map (name: rec { inherit name; config = (evalInPlatform (builtins.getAttr name systems)).config; package = config.kite.toplevel; })
                     (builtins.attrNames systems);
 
     config = (builtins.head platforms).config;

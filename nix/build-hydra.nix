@@ -8,7 +8,8 @@ let kiteSystems = builtins.attrNames (import <system/systems.nix>);
                     inherit platform;
                     nixpkgs-path = <nixpkgs>;
                   }).pkgs;
-      in { name = pkgs.stdenv.targetPlatform.system; value = pkgs; };
+      in { name = pkgs.hostPlatform.config;
+           value = pkgs; };
 
     manifest = import ./build-bundle.nix rec {
        systems = builtins.listToAttrs (map mkJobs kiteSystems);
