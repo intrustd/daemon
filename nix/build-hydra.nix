@@ -1,4 +1,4 @@
-{
+rec {
 
   manifest = import ./build-bundle.nix rec {
     pkgs = import <nixpkgs> {};
