@@ -153,7 +153,7 @@
       "/share/kxmlgui5"
     ];
 
-    kite.manifest = pkgs.writeText "${config.kite.meta.slug}-manifest"
+    kite.manifest = (pkgs.writeText "${config.kite.meta.slug}-manifest"
       (builtins.toJSON {
         name = config.kite.meta.name;
         app-url = config.kite.meta.app-url;
@@ -165,7 +165,7 @@
         singleton = config.kite.singleton;
 
         bind-mounts = config.kite.bindMounts;
-      });
+      }) // { toplevel = config.kite.toplevel; });
 
     kite.toplevel =
       let startScript = pkgs.writeScript "start-script" ''
