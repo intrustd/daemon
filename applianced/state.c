@@ -154,32 +154,9 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
   return 0;
 }
 
-static int appstate_add_app(struct appstate *st, struct app *a) {
-  char apps_path[PATH_MAX], digest_str[sizeof(a->app_current_manifest->am_digest) * 2 + 1];
-  FILE *apps;
-
-  int err;
-
-  err = snprintf(apps_path, sizeof(apps_path), APPS_PATH_TEMPLATE, st->as_conf_dir);
-  if ( err >= sizeof(apps_path) ) {
-    fprintf(stderr, "appstate_add_app: path buffer overflow\n");
-    return -1;
-  }
-
-  apps = fopen(apps_path, "at+");
-  if ( !apps ) {
-    fprintf(stderr, "appstate_add_app: could not open %s\n", apps_path);
-    return -1;
-  } else {
-    fprintf(apps, "%s %s\n", a->app_domain,
-            hex_digest_str(a->app_current_manifest->am_digest,
-                           digest_str, sizeof(a->app_current_manifest->am_digest)));
-    fclose(apps);
-    return 0;
-  }
-}
-
-static int appstate_update_app(struct appstate *st, struct app *a, struct appmanifest *mf) {
+static int appstate_update_app(struct appstate *st, const char *app_id,
+                               struct appmanifest *cur_mf, struct appmanifest *mf,
+                               int do_add) {
   char apps_path[PATH_MAX], tmp_path[PATH_MAX];
   char apps_line[1024];
   FILE *apps, *tmp;
@@ -214,10 +191,16 @@ static int appstate_update_app(struct appstate *st, struct app *a, struct appman
     return -1;
   }
 
-  fprintf(stderr, "upgrade %s from %s to %s\n",
-          a->app_domain,
-          hex_digest_str(a->app_current_manifest->am_digest, dbg_digest_str1, sizeof(a->app_current_manifest->am_digest)),
-          hex_digest_str(mf->am_digest, dbg_digest_str2, sizeof(mf->am_digest)));
+  if ( cur_mf ) {
+    fprintf(stderr, "upgrade %s from %s to %s\n",
+            app_id,
+            hex_digest_str(cur_mf->am_digest, dbg_digest_str1, sizeof(cur_mf->am_digest)),
+            hex_digest_str(mf->am_digest, dbg_digest_str2, sizeof(mf->am_digest)));
+  } else {
+    fprintf(stderr, "install %s from %s\n",
+            app_id,
+            hex_digest_str(mf->am_digest, dbg_digest_str2, sizeof(mf->am_digest)));
+  }
 
   while ( fgets(apps_line, sizeof(apps_line), apps) ) {
     int line_length = strlen(apps_line);
@@ -228,7 +211,7 @@ static int appstate_update_app(struct appstate *st, struct app *a, struct appman
       err = sscanf(apps_line, "%s %64s", apps_url, mf_digest_str);
       if ( err != 2 ) goto error;
 
-      if ( strcmp(apps_url, a->app_domain) == 0 ) {
+      if ( strcmp(apps_url, app_id) == 0 ) {
         if ( did_update ) {
           fprintf(stderr, "appstate_update_app: duplicate app entry\n");
           goto error;
@@ -252,6 +235,13 @@ static int appstate_update_app(struct appstate *st, struct app *a, struct appman
     unlink(tmp_path);
     fprintf(stderr, "appstate_update_app: could not add app to appliance: line overflow\n");
     return -1;
+  }
+
+  if ( !did_update && do_add ) {
+    char mf_digest_str[SHA256_DIGEST_LENGTH * 2 + 1];
+    fprintf(tmp, "%s %s\n", app_id, hex_digest_str(mf->am_digest, mf_digest_str, sizeof(mf->am_digest)));
+
+    did_update = 1;
   }
 
   fclose(apps);
@@ -1676,7 +1666,7 @@ int appstate_install_app_from_manifest(struct appstate *as, struct appmanifest *
         fprintf(stderr, "appstate_install_app_from_manifest: could not allocate app\n");
         ret = -1;
       } else {
-        ret = appstate_add_app(as, a);
+        ret = appstate_update_app(as, a->app_domain, NULL, mf, 1);
         if ( ret == 0 ) {
           HASH_ADD_KEYPTR(app_hh, as->as_apps, a->app_domain, strlen(a->app_domain), a);
         }
@@ -1701,7 +1691,7 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
       fprintf(stderr, "appstate_update_from_manifest: '%s' does not exist\n", mf->am_domain);
       ret = -1;
     } else {
-      ret = appstate_update_app(as, existing, mf);
+      ret = appstate_update_app(as, existing->app_domain, existing->app_current_manifest, mf, 0);
       APPLICATION_REF(existing);
     }
 
