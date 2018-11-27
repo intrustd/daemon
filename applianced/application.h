@@ -74,8 +74,8 @@ struct appmanifest {
 #define APPMANIFEST_REF(au) SHARED_REF(&(au)->am_shared)
 #define APPMANIFEST_UNREF(au) SHARED_UNREF(&(au)->am_shared)
 
-struct appmanifest *appmanifest_parse(const char *data, size_t data_sz);
-struct appmanifest *appmanifest_parse_from_file(const char *filename, unsigned char *exp_digest);
+struct appmanifest *appmanifest_parse(const char *data, size_t data_sz, const char *system);
+struct appmanifest *appmanifest_parse_from_file(const char *filename, unsigned char *exp_digest, const char *system);
 int appmanifest_newer(struct appmanifest *new, struct appmanifest *old);
 
 struct app {

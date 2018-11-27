@@ -32,6 +32,7 @@ struct appstate {
   const char *as_webrtc_proxy_path;
   const char *as_persona_init_path;
   const char *as_app_instance_init_path;
+  const char *as_system;
 
   X509     *as_cert;
   EVP_PKEY *as_privkey;

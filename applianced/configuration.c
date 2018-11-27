@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 
+#include "jsmn.h"
 #include "util.h"
 #include "configuration.h"
 
@@ -52,6 +53,106 @@ static void usage(const char *msg) {
           "  --valgrind                    Make things valgrind compatible\n");
 }
 
+static const char *get_nix_system_config() {
+  int err, p[2];
+  pid_t pid;
+
+  fprintf(stderr, "Getting nix system config\n");
+
+  err = pipe(p);
+  if ( err == -1 ) {
+    perror("get_nix_system_config: pipe");
+    return NULL;
+  }
+
+  pid = fork();
+  if ( pid < 0 ) {
+    perror("nix_build: fork");
+    close(p[0]);
+    close(p[1]);
+    return NULL;
+  } else if ( pid == 0 ) {
+    close(p[0]);
+
+    dup2(p[1], STDOUT_FILENO);
+    close(STDIN_FILENO);
+
+    execlp("nix-instantiate", "nix-instantiate", "--expr", "--eval",
+           "(import <nixpkgs> {}).stdenv.hostPlatform.config", "--json", NULL);
+    perror("execlp(nix-instantiate)");
+    exit(1);
+  } else {
+    int sts, bufsz;
+    char buf[512];
+    jsmntok_t token;
+    jsmn_parser parser;
+
+    close(p[1]);
+
+    err = waitpid(pid, &sts, 0);
+    if ( err < 0 ) {
+      close(p[0]);
+      perror("get_nix_system_config: waitpid");
+      return NULL;
+    } else if ( sts != 0 ) {
+      close(p[0]);
+      fprintf(stderr, "nix-instantiate returns error %d\n", sts);
+      return NULL;
+    }
+
+    err = bufsz = read(p[0], buf, sizeof(buf));
+    if ( err == -1 ) {
+      perror("get_nix_system_config: read");
+      close(p[0]);
+      return NULL;
+    }
+
+    if ( err > 0 )
+      buf[sizeof(buf) - 1] = '\0';
+
+    close(p[0]);
+
+    // Attempt to read the singular string
+    jsmn_init(&parser);
+
+    err = jsmn_parse(&parser, buf, bufsz, &token, 1);
+    if ( err != 1) {
+      switch ( err ) {
+      case JSMN_ERROR_INVAL:
+      case JSMN_ERROR_PART:
+        fprintf(stderr, "get_nix_system_config: Output is not valid JSON:\n%.*s\n", bufsz, buf);
+        return NULL;
+      case JSMN_ERROR_NOMEM:
+        fprintf(stderr, "get_nix_system_config: Output is too complicated:\n%.*s\n", bufsz, buf);
+        return NULL;
+      default:
+        fprintf(stderr, "get_nix_system_config: unknown error while parsing output:\n%.*s\n",
+                bufsz, buf);
+        return NULL;
+      }
+    } else {
+      if ( token.type != JSMN_STRING ) {
+        fprintf(stderr, "get_nix_system_config: expected string in output:\n%.*s\n",
+                bufsz, buf);
+        return NULL;
+      } else {
+        char *ret;
+
+        ret = malloc(token.end - token.start + 1);
+        if ( !ret ) {
+          fprintf(stderr, "get_nix_system_config: could not allocate space for system triple\n");
+          return NULL;
+        }
+
+        memset(ret, 0, token.end - token.start + 1);
+        memcpy(ret, buf + token.start, token.end - token.start);
+
+        return ret;
+      }
+    }
+  }
+}
+
 static const char *nix_build(const char *pkg_name, const char *suffix) {
   int p[2];
   int err;
@@ -66,7 +167,12 @@ static const char *nix_build(const char *pkg_name, const char *suffix) {
   }
 
   pid = fork();
-  if ( pid == 0 ) {
+  if ( pid < 0 ) {
+    perror("nix_build: fork");
+    close(p[0]);
+    close(p[1]);
+    return NULL;
+  } else if ( pid == 0 ) {
     close(p[0]);
 
     dup2(p[1], STDOUT_FILENO);
@@ -123,6 +229,7 @@ void appconf_init(struct appconf *ac) {
   ac->ac_webrtc_proxy_path = NULL;
   ac->ac_persona_init_path = NULL;
   ac->ac_app_instance_init_path = NULL;
+  ac->ac_system_config = NULL;
   ac->ac_kitepath = NULL;
   ac->ac_flags = 0;
   ac->ac_kite_user = -1;
@@ -183,6 +290,7 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "kite-user", required_argument, 0, KITE_USER_OPTION },
     { "kite-group", required_argument, 0, KITE_USER_GROUP_OPTION },
     { "dump-pkts", required_argument, 0, KITE_PACKETS_FILE_OPTION },
+    { "host", required_argument, 0, 'H' },
     { 0, 0, 0, 0 }
   };
 
@@ -190,7 +298,7 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
   appconf_attempt_kitepath(ac); // Attempts to get the kite path in other ways
 
   while ( 1 ) {
-    err = getopt_long(argc, argv, "hc:", long_options, &option_index);
+    err = getopt_long(argc, argv, "hc:H:", long_options, &option_index);
     if ( err == -1 ) break;
 
     switch ( err ) {
@@ -244,6 +352,10 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
 
     case KITE_PACKETS_FILE_OPTION:
       ac->ac_kite_packet_file = optarg;
+      break;
+
+    case 'H':
+      ac->ac_system_config = optarg;
       break;
 
     case 'h':
@@ -356,6 +468,15 @@ int appconf_validate(struct appconf *ac, int do_debug) {
       return -1;
     }
   }
+
+  if ( !ac->ac_system_config ) {
+    ac->ac_system_config = get_nix_system_config();
+    if ( !ac->ac_system_config ) {
+      fprintf(stderr, "Could not guess nix system config\n");
+    }
+  }
+
+  fprintf(stderr, "Will download applications for system '%s'\n", ac->ac_system_config);
 
   APPCONF_ENSURE_EXECUTABLE(ac_webrtc_proxy_path, "webrtc-proxy");
   APPCONF_ENSURE_EXECUTABLE(ac_persona_init_path, "persona-init");

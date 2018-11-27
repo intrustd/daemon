@@ -399,7 +399,7 @@ static void appupdater_parse_manifest(struct appupdater *au) {
     return;
   }
 
-  au->au_manifest = appmanifest_parse(buf, bufsz);
+  au->au_manifest = appmanifest_parse(buf, bufsz, au->au_appstate->as_system);
   free((void *)buf);
   if ( !au->au_manifest ) {
     fprintf(stderr, "appupdater_parse_manifest: failed parse\n");

@@ -1006,11 +1006,13 @@ static int appstate_open_apps(struct appstate *as, struct appconf *ac) {
         return -1;
       }
 
-      mf = appmanifest_parse_from_file(apps_path, mf_digest);
+      mf = appmanifest_parse_from_file(apps_path, mf_digest, as->as_system);
       if ( !mf ) {
         fclose(apps);
         fprintf(stderr, "appstate_open_apps: could not read app manifest for %s\n", mf_digest_str);
-        return -1;
+
+        // Do not error on this, but read whatever applications we can
+        continue;
       }
 
       a = application_from_manifest(mf);
@@ -1040,6 +1042,7 @@ void appstate_clear(struct appstate *as) {
   as->as_webrtc_proxy_path = NULL;
   as->as_persona_init_path = NULL;
   as->as_app_instance_init_path = NULL;
+  as->as_system = NULL;
   as->as_mutexes_initialized = 0;
   as->as_cert = NULL;
   as->as_privkey = NULL;
@@ -1068,6 +1071,7 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   as->as_webrtc_proxy_path = ac->ac_webrtc_proxy_path;
   as->as_persona_init_path = ac->ac_persona_init_path;
   as->as_app_instance_init_path = ac->ac_app_instance_init_path;
+  as->as_system = ac->ac_system_config;
 
   err = mkdir_recursive(ac->ac_conf_dir);
   if ( err < 0 ) {

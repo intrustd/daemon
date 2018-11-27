@@ -12,6 +12,8 @@ struct appconf {
   const char *ac_persona_init_path;
   const char *ac_app_instance_init_path;
 
+  const char *ac_system_config; // GCC/GNU triple. Specifies which app version we should download.
+
   uint32_t ac_flags;
 
   uid_t ac_kite_user;
@@ -24,6 +26,7 @@ struct appconf {
 #define AC_FLAG_VALGRIND_COMPAT 0x1
 
 #define AC_VALGRIND(ac) ((ac)->ac_flags & AC_FLAG_VALGRIND_COMPAT)
+
 
 void appconf_init(struct appconf *c);
 int appconf_parse_options(struct appconf *c, int argc, char **argv);

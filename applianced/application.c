@@ -13,7 +13,8 @@
 #define OP_APPINSTANCE_FORCE_RESET (EVT_CTL_CUSTOM + 2)
 
 static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
-                                                    jsmntok_t *tokens, int tokencnt);
+                                                    jsmntok_t *tokens, int tokencnt,
+                                                    const char *system);
 static void freemanifest(const struct shared *sh, int level);
 
 static int appinstance_setup(struct appinstance *ai);
@@ -35,7 +36,8 @@ int appmanifest_newer(struct appmanifest *new, struct appmanifest *old) {
 }
 
 
-struct appmanifest *appmanifest_parse(const char *data, size_t data_sz) {
+struct appmanifest *appmanifest_parse(const char *data, size_t data_sz,
+                                      const char *system) {
   jsmntok_t tokens[1024];
   int err, tokencnt;
   jsmn_parser parser;
@@ -59,10 +61,11 @@ struct appmanifest *appmanifest_parse(const char *data, size_t data_sz) {
     }
   }
 
-  return appmanifest_parse_tokens(data, data_sz, tokens, tokencnt);
+  return appmanifest_parse_tokens(data, data_sz, tokens, tokencnt, system);
 }
 
-struct appmanifest *appmanifest_parse_from_file(const char *fn, unsigned char *exp_digest) {
+struct appmanifest *appmanifest_parse_from_file(const char *fn, unsigned char *exp_digest,
+                                                const char *system) {
   struct buffer b;
   struct appmanifest *mf;
   const char *data;
@@ -84,7 +87,7 @@ struct appmanifest *appmanifest_parse_from_file(const char *fn, unsigned char *e
     return NULL;
   }
 
-  mf = appmanifest_parse(data, data_sz);
+  mf = appmanifest_parse(data, data_sz, system);
   free((void *) data);
   return mf;
 }
@@ -94,7 +97,8 @@ struct appmanifest *appmanifest_parse_from_file(const char *fn, unsigned char *e
     goto error;                                                         \
   } while (0)
 static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
-                                                    jsmntok_t *tokens, int tokencnt) {
+                                                    jsmntok_t *tokens, int tokencnt,
+                                                    const char *system) {
   int i;
   enum {
     PARSING_ST_INITIAL,
@@ -180,8 +184,47 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
       }
       break;
 
-    case PARSING_ST_DOMAIN:
     case PARSING_ST_NIX_CLOSURE:
+      if ( token->type == JSMN_OBJECT ) {
+        int closure_start = i + 1;
+        for ( i += 1;
+              (i + 1) < tokencnt &&
+                (i - closure_start + 1) <= token->size;
+              i += 2 ) {
+          jsmntok_t *key_tok = tokens + i, *value_tok = tokens + i + 1;
+          if ( key_tok->type != JSMN_STRING ) {
+            EXPECT("string for nix-closure key");
+          } else if ( value_tok->type != JSMN_STRING ) {
+            EXPECT("value for nix-closure key");
+          } else if ( strncmp(data + key_tok->start, system, key_tok->end - key_tok->start) == 0 ) {
+            // Found closure path
+            char *closure_path = malloc(value_tok->end - value_tok->start + 1);
+            if ( !closure_path ) {
+              fprintf(stderr, "out of memory\n");
+              goto error;
+            }
+
+            memcpy(closure_path, data + value_tok->start, value_tok->end - value_tok->start);
+            closure_path[value_tok->end - value_tok->start] = '\0';
+
+            nix_closure = closure_path;
+
+            state = PARSING_ST_MAIN_OBJECT_KEY;
+            i = closure_start + token->size;
+            break;
+          }
+        }
+
+        if ( !nix_closure ) {
+          fprintf(stderr, "could not find closure for system %s\n", system);
+          goto error;
+        }
+      } else {
+        EXPECT("object for nix-closure");
+      }
+      break;
+
+    case PARSING_ST_DOMAIN:
     case PARSING_ST_NAME:
       if ( token->type != JSMN_STRING ) {
         EXPECT("string");
