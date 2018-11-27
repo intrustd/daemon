@@ -34,6 +34,8 @@ static void usage(const char *msg) {
   fprintf(stderr,
           "  -c, --conf-dir <DIR>          Appliance configuration directory\n");
   fprintf(stderr,
+          "  -H, --host                    System type for application downloads\n");
+  fprintf(stderr,
           "  --ebroute <EBROUTE>           Path to 'ebroute' executable\n");
   fprintf(stderr,
           "  --iproute <IPROUTE>           Path to 'iproute' executable\n");
