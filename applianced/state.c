@@ -998,7 +998,6 @@ static int appstate_open_apps(struct appstate *as, struct appconf *ac) {
 
       mf = appmanifest_parse_from_file(apps_path, mf_digest, as->as_system);
       if ( !mf ) {
-        fclose(apps);
         fprintf(stderr, "appstate_open_apps: could not read app manifest for %s\n", mf_digest_str);
 
         // Do not error on this, but read whatever applications we can
