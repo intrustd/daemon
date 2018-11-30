@@ -34,6 +34,7 @@ typedef int(*containerctlfn)(struct container *, int, void *, ssize_t);
 #define CONTAINER_CTL_CHECK_PERMISSION 8
 
 #define CONTAINER_CTL_DO_SETUP         9
+#define CONTAINER_CTL_DO_HOST_SETUP    10
 
 #define CONTAINER_CTL_DESCRIBE        11
 

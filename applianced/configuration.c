@@ -22,6 +22,9 @@
 #define KITE_USER_OPTION 0x205
 #define KITE_USER_GROUP_OPTION 0x206
 #define KITE_PACKETS_FILE_OPTION 0x207
+#define KITE_INET_BRIDGE_OPTION 0x208
+#define KITE_DAEMON_USER_OPTION 0x209
+#define KITE_DAEMON_GROUP_OPTION 0x20A
 
 static void usage(const char *msg) {
   if ( msg ) fprintf(stderr, "Error: %s\n", msg);
@@ -53,6 +56,8 @@ static void usage(const char *msg) {
           "  --dump-pkts <PACKET FILE>     Dump all ethernet frames received at the bridge to a file\n");
   fprintf(stderr,
           "  --valgrind                    Make things valgrind compatible\n");
+  fprintf(stderr,
+          "  --inet-bridge                 Set to enable access to the internet via a veth to the given bridge");
 }
 
 static const char *get_nix_system_config() {
@@ -232,10 +237,13 @@ void appconf_init(struct appconf *ac) {
   ac->ac_persona_init_path = NULL;
   ac->ac_app_instance_init_path = NULL;
   ac->ac_system_config = NULL;
+  ac->ac_inet_bridge = NULL;
   ac->ac_kitepath = NULL;
   ac->ac_flags = 0;
   ac->ac_kite_user = -1;
   ac->ac_kite_user_group = -1;
+  ac->ac_daemon_user = -1;
+  ac->ac_daemon_group = -1;
   ac->ac_kite_packet_file = NULL;
 }
 
@@ -276,10 +284,43 @@ static void appconf_attempt_kitepath(struct appconf *ac) {
   fclose(maps);
 }
 
+static int parse_user(const char *user, uid_t *uid, gid_t *gid) {
+  struct passwd *kite_user = getpwnam(optarg);
+  if ( !kite_user && isdigit(optarg[0]) ) {
+    if ( sscanf(optarg, "%d", uid) != 1 ) {
+      fprintf(stderr, "No such user: %s\n", optarg);
+      return -1;
+    } else
+      return 0;
+  } else if ( !kite_user ) {
+    fprintf(stderr, "No such user: %s\n", optarg);
+    return -1;
+  } else {
+    *uid = kite_user->pw_uid;
+    *gid = kite_user->pw_gid;
+    return 0;
+  }
+}
+
+static int parse_group(const char *group, gid_t *gid) {
+  struct group *kite_user_group = getgrnam(optarg);
+  if ( !kite_user_group && isdigit(optarg[0]) ) {
+    if ( sscanf(optarg, "%d", gid) != 1 ) {
+      fprintf(stderr, "No such group: %s\n", optarg);
+      return -1;
+    } else
+      return 0;
+  } else if ( !kite_user_group ) {
+    fprintf(stderr, "No such group: %s\n", optarg);
+    return -1;
+  } else {
+    *gid = kite_user_group->gr_gid;
+    return 0;
+  }
+}
+
 int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
   int help_flag = 0, option_index = 0, err;
-  struct passwd *kite_user;
-  struct group *kite_user_group;
   struct option long_options[] = {
     { "help", no_argument, &help_flag, 1 },
     { "conf-dir", required_argument, 0, 'c' },
@@ -291,8 +332,11 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "app-instance-init", required_argument, 0, APP_INSTANCE_INIT_OPTION },
     { "kite-user", required_argument, 0, KITE_USER_OPTION },
     { "kite-group", required_argument, 0, KITE_USER_GROUP_OPTION },
+    { "user", required_argument, 0, KITE_DAEMON_USER_OPTION },
+    { "group", required_argument, 0, KITE_DAEMON_GROUP_OPTION },
     { "dump-pkts", required_argument, 0, KITE_PACKETS_FILE_OPTION },
     { "host", required_argument, 0, 'H' },
+    { "inet-bridge", required_argument, 0, KITE_INET_BRIDGE_OPTION },
     { 0, 0, 0, 0 }
   };
 
@@ -323,37 +367,31 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
       break;
 
     case KITE_USER_OPTION:
-      kite_user = getpwnam(optarg);
-      if ( !kite_user && isdigit(optarg[0]) ) {
-        if ( sscanf(optarg, "%d", &ac->ac_kite_user) != 1 ) {
-          fprintf(stderr, "No such user: %s\n", optarg);
-          return -1;
-        }
-      } else if ( !kite_user ) {
-        fprintf(stderr, "No such user: %s\n", optarg);
+      if ( parse_user(optarg, &ac->ac_kite_user, &ac->ac_kite_user_group) < 0 )
         return -1;
-      } else {
-        ac->ac_kite_user = kite_user->pw_uid;
-        ac->ac_kite_user_group = kite_user->pw_gid;
-      }
       break;
 
     case KITE_USER_GROUP_OPTION:
-      kite_user_group = getgrnam(optarg);
-      if ( !kite_user_group && isdigit(optarg[0]) ) {
-        if ( sscanf(optarg, "%d", &ac->ac_kite_user_group) != 1 ) {
-          fprintf(stderr, "No such group: %s\n", optarg);
-          return -1;
-        }
-      } else if ( !kite_user_group ) {
-        fprintf(stderr, "No such group: %s\n", optarg);
+      if ( parse_group(optarg, &ac->ac_kite_user_group) < 0 )
         return -1;
-      } else
-        ac->ac_kite_user_group = kite_user_group->gr_gid;
       break;
 
     case KITE_PACKETS_FILE_OPTION:
       ac->ac_kite_packet_file = optarg;
+      break;
+
+    case KITE_INET_BRIDGE_OPTION:
+      ac->ac_inet_bridge = optarg;
+      break;
+
+    case KITE_DAEMON_USER_OPTION:
+      if ( parse_user(optarg, &ac->ac_daemon_user, &ac->ac_daemon_group) < 0 )
+        return -1;
+      break;
+
+    case KITE_DAEMON_GROUP_OPTION:
+      if ( parse_group(optarg, &ac->ac_daemon_group) < 0 )
+        return -1;
       break;
 
     case 'H':
@@ -431,8 +469,20 @@ const char *appconf_get_default_executable(struct appconf *ac, const char *nm) {
   } while (0)
 
 int appconf_validate(struct appconf *ac, int do_debug) {
+  uid_t uid;
   if ( !ac->ac_conf_dir ) {
     usage("No configuration directory provided");
+    return -1;
+  }
+
+  uid = geteuid();
+  if ( ac->ac_inet_bridge && uid != 0 ) {
+    fprintf(stderr, "Must run as super-user to enable internet bridging\n");
+    return -1;
+  }
+
+  if ( uid == 0 && (ac->ac_daemon_user < 0 || ac->ac_daemon_group < 0) ) {
+    fprintf(stderr, "Kite will not run as super-user, sorry\nSpecify --user and --group to enable switching\n");
     return -1;
   }
 

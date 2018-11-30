@@ -81,8 +81,9 @@ void bridge_clear(struct brstate *br) {
   br->br_appstate = NULL;
   br->br_iproute_path = NULL;
   br->br_ebroute_path = NULL;
-  br->br_uid = br->br_user_uid = 0;
-  br->br_gid = br->br_user_gid = 0;
+  br->br_euid = 0;
+  br->br_uid = br->br_user_uid = br->br_daemon_uid = 0;
+  br->br_gid = br->br_user_gid = br->br_daemon_uid = 0;
   br->br_comm_fd[0] = br->br_comm_fd[1] = 0;
   br->br_debug_out = NULL;
   br->br_netns = br->br_userns = br->br_tapfd = 0;
@@ -96,8 +97,9 @@ void bridge_clear(struct brstate *br) {
   br->br_tunnels = NULL;
 }
 
-int bridge_init(struct brstate *br, struct appstate *as,
+int bridge_init(struct brstate *br, struct appstate *as, uid_t euid,
                 uid_t user_uid, gid_t user_gid,
+                uid_t daemon_uid, gid_t daemon_gid,
                 const char *iproute, const char *ebroute) {
   char ip_dbg[INET_ADDRSTRLEN], mac_dbg[32];
   int err;
@@ -105,10 +107,17 @@ int bridge_init(struct brstate *br, struct appstate *as,
   bridge_clear(br);
 
   br->br_appstate = as;
-  br->br_uid = getuid();
-  br->br_gid = getgid();
+  br->br_euid = euid;
+  if ( euid == 0 ) {
+    br->br_uid = br->br_gid = 0;
+  } else {
+    br->br_uid = getuid();
+    br->br_gid = getgid();
+  }
   br->br_user_uid = user_uid;
   br->br_user_gid = user_gid;
+  br->br_daemon_uid = daemon_uid;
+  br->br_daemon_gid = daemon_gid;
 
   bridge_allocate_ip(br, &br->br_bridge_addr);
   random_mac(br->br_bridge_mac);
@@ -843,10 +852,14 @@ int bridge_unregister_sctp(struct brstate *br, struct sctpentry *se) {
   } else return -1;
 }
 
-static void setup_namespace_users(uid_t uid, gid_t gid, uid_t user_uid, gid_t user_gid) {
+static void setup_namespace_users(uid_t uid, gid_t gid,
+                                  uid_t user_uid, gid_t user_gid,
+                                  uid_t daemon_uid, gid_t daemon_gid) {
   char buf[4096];
   int deny_setgroups, gid_map, uid_map;
   int err;
+
+  fprintf(stderr, "User is %d\n", geteuid());
 
   deny_setgroups = open("/proc/self/setgroups", O_WRONLY);
   if ( deny_setgroups < 0) {
@@ -867,7 +880,7 @@ static void setup_namespace_users(uid_t uid, gid_t gid, uid_t user_uid, gid_t us
     exit(1);
   }
 
-  SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1", gid) < sizeof(buf) ); // 0 %d 1\n100 %d 1", gid, user_gid) < sizeof(buf) );
+  SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1", gid) < sizeof(buf) );
   fprintf(stderr, "Writing %s\n", buf);
   err = write(gid_map, buf, strlen(buf));
   if ( err < 0 ) {
@@ -907,22 +920,25 @@ static void setup_namespace_users(uid_t uid, gid_t gid, uid_t user_uid, gid_t us
   }
 }
 
-static int bridge_setup_tap(struct brstate *br, char *tap_nm) {
+static int bridge_create_tap(struct brstate *br, char *tap_nm, int is_tun) {
   int fd, err;
   struct ifreq ifr;
 
   fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
   if ( fd < 0 ) {
-    perror("bridge_setup_tap: open(/dev/net/tun)");
+    perror("bridge_create_tap: open(/dev/net/tun)");
     exit(4);
   }
 
   memset(&ifr, 0, sizeof(ifr));
-  ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+  if ( is_tun )
+    ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+  else
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
 
   err = ioctl(fd, TUNSETIFF, (void *) &ifr);
   if ( err < 0 ) {
-    perror("bridge_setup_tap: ioctl(TUNSETIFF)");
+    perror("bridge_create_tap: ioctl(TUNSETIFF)");
     exit(5);
   }
 
@@ -1021,10 +1037,12 @@ static int bridge_setup_main(void *br_ptr) {
 
   close(br->br_comm_fd[1]);
 
-  setup_namespace_users(br->br_uid, br->br_gid, br->br_user_uid, br->br_user_gid);
+  setup_namespace_users(br->br_uid, br->br_gid,
+                        br->br_user_uid, br->br_user_gid,
+                        br->br_daemon_uid, br->br_daemon_gid);
   fprintf(stderr, "Setup namespace users\n");
 
-  tap = bridge_setup_tap(br, tap_nm);
+  tap = bridge_create_tap(br, tap_nm, 0);
   fprintf(stderr, "Created tap device %s\n", tap_nm);
 
   bridge_create_bridge(br, tap_nm);
@@ -1061,6 +1079,18 @@ static int bridge_setup_ns(struct brstate *br) {
   if ( err < 0 ) {
     perror("bridge_setup_ns: socketpair");
     return -1;
+  }
+
+  if ( br->br_euid == 0 ) {
+    if ( seteuid(0) < 0 ) {
+      perror("seteuid(0)");
+      exit(1);
+    }
+
+    if ( setegid(0) < 0 ) {
+      perror("setegid(0)");
+      exit(1);
+    }
   }
 
   new_proc =
@@ -1711,10 +1741,12 @@ static int find_hw_addr(const char *if_name, unsigned char *mac_addr) {
 }
 
 // Ask the bridge to accept all traffic going in and out of this port
-int bridge_mark_as_admin(struct brstate *br, int port_ix,
-                         struct arpentry *arp) {
+int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp,
+                         int *inet_tap) {
   pid_t new_proc;
   int err;
+
+  *inet_tap = -1;
 
   new_proc = fork();
   if ( new_proc < 0 ) {
@@ -1757,8 +1789,6 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix,
                    mac_ntop(arp->ae_mac, mac_dbg, sizeof(mac_dbg)));
     if ( err >= sizeof(cmd_buf) ) goto overflow;
 
-    fprintf(stderr, "Going to run %s\n", cmd_buf);
-
     err = system(cmd_buf);
     if ( err != 0 ) goto cmd_error;
 
@@ -1779,6 +1809,7 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix,
     exit(EXIT_FAILURE);
   } else {
     int sts;
+    char cmd_buf[512], dev_name[IFNAMSIZ];
     err = waitpid(new_proc, &sts, 0);
     if ( err < 0 ) {
       perror("bridge_mark_as_admin: waitpid");
@@ -1790,7 +1821,66 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix,
       return -1;
     }
 
+    // Admin applications are able to use the internet
+    //
+    // Enable internet by creating a TUN device at 192.168.1.1. Set
+    // this as gateway.
+    //
+    // Then, fork a separate internet ppp daemon to actually inject
+    // the TUN requests on the global network.
+    //
+    // The tun daemon is setuid."
+
+    fprintf(stderr, "Make tun device\n");
+
+    *inet_tap = bridge_create_tap(br, dev_name, 1);
+    if ( *inet_tap < 0 ) {
+      fprintf(stderr, "bridge_mark_as_admin: could not create internet gateway\n");
+      return -1;
+    }
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s name inet up",
+                   br->br_iproute_path, dev_name);
+    if ( err >= sizeof(cmd_buf) ) goto overflow_c;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error_c;
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add 192.168.1.1 dev inet", br->br_iproute_path);
+    if ( err >= sizeof(cmd_buf) ) goto overflow_c;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error_c;
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s route add default via 192.168.1.1", br->br_iproute_path);
+    if ( err >= sizeof(cmd_buf) )
+      goto overflow_c;
+
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_error_c;
+
+    fprintf(stderr, "Routes are\n");
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s route", br->br_iproute_path);
+    err = system(cmd_buf);
+    fprintf(stderr, "Links are\n");
+
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link", br->br_iproute_path);
+    err = system(cmd_buf);
+
     return 0;
+
+  overflow_c:
+    if ( *inet_tap ) close(*inet_tap);
+    *inet_tap = -1;
+    fprintf(stderr, "bridge_mark_as_admin: command overflow in container\n");
+    return -1;
+
+  cmd_error_c:
+    if ( *inet_tap ) close(*inet_tap);
+    *inet_tap = -1;
+    fprintf(stderr, "bridge_mark_as_admin: command '%s' fails with %d in container\n", cmd_buf, err);
+    return -1;
   }
 }
 

@@ -464,7 +464,7 @@ static void localsock_respond_persona(struct localapi *api, struct eventloop *el
   struct kitelocalattr *attr;
   int rspsz = KLM_SIZE_INIT;
 
-  rsp->klm_req = htons(KLM_RESPONSE | htons(in_response_to->klm_req));
+  rsp->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
   rsp->klm_req_flags = 0;
 
   attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
@@ -640,6 +640,53 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
 
  bad_request:
   localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+}
+
+static void localsock_get_system(struct localapi *api, struct eventloop *el,
+                                 struct kitelocalmsg *msg, int msgsz) {
+  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+  struct kitelocalmsg *rsp = (struct kitelocalmsg *)ret_buf;
+  struct kitelocalattr *attr;
+  int rspsz = KLM_SIZE_INIT;
+
+  const char *system_type = api->la_app_state->as_system;
+
+  msg->klm_req = htons(KLM_RESPONSE | ntohs(msg->klm_req));
+  msg->klm_req_flags = 0;
+
+  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  assert(attr);
+
+  attr->kla_name = htons(KLA_RESPONSE_CODE);
+  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
+  KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+  attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+  assert(attr);
+  attr->kla_name = htons(KLA_SYSTEM_TYPE);
+  attr->kla_length = htons(KLA_SIZE(strlen(system_type)));
+  if ( !KLA_DATA(attr, rsp, sizeof(ret_buf)) ) {
+    localsock_respond_simple(api, el, msg->klm_req, KLE_SYSTEM_ERROR);
+    return;
+  }
+  memcpy(KLA_DATA_UNSAFE(attr, void *), system_type, strlen(system_type));
+  KLM_SIZE_ADD_ATTR(rspsz, attr);
+
+  localsock_respond(api, el, ret_buf, rspsz);
+}
+
+static void localsock_crud_system(struct localapi *api, struct eventloop *el,
+                                  struct kitelocalmsg *msg, int msgsz) {
+  switch ( KLM_REQ_OP(msg) ) {
+  case KLM_REQ_GET:
+    localsock_get_system(api, el, msg, msgsz);
+    break;
+
+  default:
+    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    break;
+  }
 }
 
 static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
@@ -924,7 +971,8 @@ static void localsock_get_app(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_create_app(struct localapi *api, struct eventloop *el,
-                                 struct kitelocalmsg *msg, int msgsz) {
+                                 struct kitelocalmsg *msg, int msgsz,
+                                 int *fds, int nfds) {
   char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
 
   struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
@@ -933,7 +981,7 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
   const char *app_uri;
   size_t app_uri_sz;
 
-  int rspsz = KLM_SIZE_INIT, found_app_manifest = 0, do_force = 0;
+  int rspsz = KLM_SIZE_INIT, found_app_manifest = 0, do_force = 0, progress = -1;
 
   rsp->klm_req = htons(KLM_RESPONSE | htons(msg->klm_req));
   rsp->klm_req_flags = 0;
@@ -944,7 +992,6 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
   attr->kla_name = htons(KLA_RESPONSE_CODE);
   attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
 
-  fprintf(stderr, "Request to create app\n");
   for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
     switch ( KLA_NAME(attr) ) {
     case KLA_APP_MANIFEST_URL:
@@ -955,6 +1002,16 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
 
     case KLA_FORCE:
       do_force = 1;
+      break;
+
+    case KLA_STDOUT:
+      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(int) ) {
+        int fdix;
+        memcpy(&fdix, KLA_DATA_UNSAFE(attr, void*), sizeof(fdix));
+        if ( fdix < nfds ) {
+          progress = fds[fdix];
+        }
+      }
       break;
 
     default: break;
@@ -974,18 +1031,27 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
     KLM_SIZE_ADD_ATTR(rspsz, attr);
 
     localsock_respond(api, el, ret_buf, rspsz);
+
     return;
   } else {
-    struct appupdater *u = appstate_queue_update_ex(api->la_app_state, app_uri, app_uri_sz,
-                                                    AU_UPDATE_REASON_MANUAL, NULL);
+    int progress_fd = -1;
+    struct appupdater *u;
+
+    if ( progress > 0 ) {
+      progress_fd = dup(progress);
+      if ( progress_fd < 0 )
+        perror("dup(progress)");
+    }
+
+    u = appstate_queue_update_ex(api->la_app_state, app_uri, app_uri_sz,
+                                 AU_UPDATE_REASON_MANUAL,
+                                 progress_fd, NULL);
     if ( !u ) {
       *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SYSTEM_ERROR);
       KLM_SIZE_ADD_ATTR(rspsz, attr);
       localsock_respond(api, el, ret_buf, rspsz);
       return;
     }
-
-    fprintf(stderr, "appupdater: got force %d\n", do_force);
 
     appupdater_request_event(u, &api->la_update_completion);
     if ( do_force ) appupdater_force(u);
@@ -996,11 +1062,12 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_crud_app(struct localapi *api, struct eventloop *el,
-                               struct kitelocalmsg *msg, int msgsz) {
+                               struct kitelocalmsg *msg, int msgsz,
+                               int *fds, int nfds) {
 
   switch ( KLM_REQ_OP(msg) ) {
   case KLM_REQ_CREATE:
-    localsock_create_app(api, el, msg, msgsz);
+    localsock_create_app(api, el, msg, msgsz, fds, nfds);
     break;
 
   case KLM_REQ_GET:
@@ -1403,13 +1470,16 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
     localsock_crud_persona(api, el, msg, buf_sz);
     break;
   case KLM_REQ_ENTITY_APP:
-    localsock_crud_app(api, el, msg, buf_sz);
+    localsock_crud_app(api, el, msg, buf_sz, fds, nfds);
     break;
   case KLM_REQ_ENTITY_FLOCK:
     localsock_crud_flock(api, el, msg, buf_sz);
     break;
   case KLM_REQ_ENTITY_CONTAINER:
     localsock_crud_container(api, el, msg, buf_sz, fds, nfds);
+    break;
+  case KLM_REQ_ENTITY_SYSTEM:
+    localsock_crud_system(api, el, msg, buf_sz);
     break;
   default:
     localsock_return_bad_entity(api, el, msg, KLM_REQ_ENTITY(msg));

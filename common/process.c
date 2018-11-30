@@ -85,6 +85,27 @@ int pssubopts_pipe_to_file(struct pssubopts *pso, int which, FILE *f) {
   return 0;
 }
 
+int pssubopts_pipe_to_fd(struct pssubopts *pso, int which, int fd) {
+  int *tgt, *tgt_other;
+
+  switch ( which ) {
+  case PSSUB_STDERR: tgt = &pso->pso_stderr; tgt_other = &pso->pso_stderr_read; break;
+  case PSSUB_STDOUT: tgt = &pso->pso_stdout; tgt_other = &pso->pso_stdout_read; break;
+  case PSSUB_STDIN:  tgt = &pso->pso_stdin;  tgt_other = &pso->pso_stdin_write; break;
+  default: return -1;
+  }
+
+  if ( *tgt == fd ) return 0;
+
+  if ( *tgt_other ) close(*tgt_other);
+  if ( *tgt ) close(*tgt);
+
+  *tgt_other = -1;
+  *tgt = fd;
+
+  return 0;
+}
+
 void pssubopts_set_command(struct pssubopts *pso, const char *cmd, argfreefn freefn) {
   if ( pso->pso_command_free )
     pso->pso_command_free(pso->pso_command);
@@ -97,7 +118,7 @@ int pssubopts_push_arg(struct pssubopts *pso, const char *arg, argfreefn fn) {
   if ( pssubopts_error(pso) ) return -1;
 
   assert(pso->pso_argc <= pso->pso_args_size);
-  if ( pso->pso_argc == pso->pso_args_size ) {
+  if ( (pso->pso_argc + 1) >= pso->pso_args_size ) {
     size_t newsz;
     char **newargs;
     argfreefn *newfrees;

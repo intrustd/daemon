@@ -47,6 +47,13 @@ struct appinstance {
 
 void appinstance_request_reset(struct eventloop *el, struct appinstance *ai);
 
+struct bincache {
+  const char *bc_uri;
+
+  int bc_key_count;
+  const char **bc_keys;
+};
+
 struct appmanifest {
   struct shared am_shared;
 
@@ -62,7 +69,7 @@ struct appmanifest {
   const char *am_nix_closure;
 
   size_t am_bin_caches_count;
-  const char **am_bin_caches;
+  struct bincache *am_bin_caches;
 
   size_t am_bind_mount_count;
   const char **am_bind_mounts;

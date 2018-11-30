@@ -17,7 +17,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
                                                     const char *system);
 static void freemanifest(const struct shared *sh, int level);
 
-static int appinstance_setup(struct appinstance *ai);
+static int appinstance_setup(struct container *c, struct appinstance *ai);
 static int appinstance_container_ctl(struct container *c, int op, void *argp, ssize_t argl);
 static void appinstfn(struct eventloop *el, int op, void *arg);
 static void freeinstfn(const struct shared *sh, int level);
@@ -189,9 +189,10 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
         int closure_start = i + 1;
         for ( i += 1;
               (i + 1) < tokencnt &&
-                (i - closure_start + 1) <= token->size;
+                (i - closure_start + 1) < (token->size * 2);
               i += 2 ) {
           jsmntok_t *key_tok = tokens + i, *value_tok = tokens + i + 1;
+          fprintf(stderr, "Got system %.*s %d\n", key_tok->end - key_tok->start, data + key_tok->start, token->size);
           if ( key_tok->type != JSMN_STRING ) {
             EXPECT("string for nix-closure key");
           } else if ( value_tok->type != JSMN_STRING ) {
@@ -210,7 +211,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
             nix_closure = closure_path;
 
             state = PARSING_ST_MAIN_OBJECT_KEY;
-            i = closure_start + token->size;
+            i = closure_start + token->size * 2 - 1;
             break;
           }
         }
@@ -771,6 +772,7 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
 
   case CONTAINER_CTL_ON_SHUTDOWN:
     APPINSTANCE_UNREF(ai);
+    // If the internet was started, tear it down
     return 0;
 
   case CONTAINER_CTL_RELEASE_ARG:
@@ -783,7 +785,24 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
     return 0;
 
   case CONTAINER_CTL_DO_SETUP:
-    return appinstance_setup(ai);
+    return appinstance_setup(c, ai);
+
+  case CONTAINER_CTL_DO_HOST_SETUP:
+    if ( ai->inst_app->app_flags & APP_FLAG_RUN_AS_ADMIN ) {
+      int inet_tap = -1;
+
+      // Wait for internet TAP socket
+      fprintf(stderr, "Will wait for internet TAP socket\n");
+      if ( recv_fd(c->c_init_comm, 1, &inet_tap) < 0 ) {
+        perror("appinstance_container_ctl(CONTAINER_CTL_DO_HOST_SETUP): recv_fd");
+        return -1;
+      }
+
+      fprintf(stderr, "Got internet TAP socket %d\n", inet_tap);
+
+      // Request internet service
+    }
+    return 0;
 
   default:
     fprintf(stderr, "appinstance_container_ctl: unrecognized op %d\n", op);
@@ -814,7 +833,7 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
       fprintf(stderr, "appinstance_setup: while making %s\n", where);   \
     }                                                                   \
   } while (0)
-static int appinstance_setup(struct appinstance *ai) {
+static int appinstance_setup(struct container *c, struct appinstance *ai) {
   const char *image_path;
   struct appmanifest *cur_mf;
   char path[PATH_MAX], app_data_path[PATH_MAX],
@@ -896,6 +915,7 @@ static int appinstance_setup(struct appinstance *ai) {
   // If this app has the 'run_with_admin' permission, then run this application with administrator privileges
   if ( app_flags & APP_FLAG_RUN_AS_ADMIN ) {
     size_t i;
+    int inet_tap;
 
     FORMAT_PATH("%s/kite/appliance", image_path);
     err = mkdir_recursive(path);
@@ -921,10 +941,20 @@ static int appinstance_setup(struct appinstance *ai) {
 
     if ( bridge_mark_as_admin(&ai->inst_appstate->as_bridge,
                               ai->inst_container.c_bridge_port,
-                              &ai->inst_container.c_arp_entry) < 0 ) {
+                              &ai->inst_container.c_arp_entry,
+                              &inet_tap) < 0 ) {
       fprintf(stderr, "appinstance_setup: bridge_mark_as_admin fails\n");
-    } else
+    } else {
       fprintf(stderr, "appinstance_setup: marked as admin\n");
+
+      // Request that the internet gateway is connected
+      if ( send_fd(c->c_init_comm, 1, &inet_tap) < 0 ) {
+        close(inet_tap);
+        perror("send_fd: failed");
+        return -1;
+      } else
+        close(inet_tap);
+    }
   }
 
   if ( setenv("HOME", path, 1) < 0 ) {

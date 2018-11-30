@@ -33,6 +33,7 @@ struct kitelocalattr {
 #define KLM_REQ_ENTITY_APP     0x0200
 #define KLM_REQ_ENTITY_FLOCK   0x0300
 #define KLM_REQ_ENTITY_CONTAINER 0x0400
+#define KLM_REQ_ENTITY_SYSTEM  0x0500
 
 #define KLM_RESPONSE           0x8000
 
@@ -70,6 +71,7 @@ struct kitelocalattr {
 #define KLA_ATTRIBUTE          0x001B
 #define KLA_EXIT_CODE          0x001C
 #define KLA_PERSONA_FLAGS      0x001D /* Two uint32_ts. First are flags to add. second is flags to remove */
+#define KLA_SYSTEM_TYPE        0x001E
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001

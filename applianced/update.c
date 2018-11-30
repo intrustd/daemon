@@ -176,7 +176,7 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
 }
 
 struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t uri_len,
-                                  int reason, struct app *app) {
+                                  int reason, int progress, struct app *app) {
   UriParserStateA urip;
   UriUriA uri_uri, sign_uri;
 
@@ -233,6 +233,7 @@ struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t u
     u->au_sign_output = NULL;
     u->au_application = NULL;
     u->au_manifest = NULL;
+    u->au_progress = progress;
     download_clear(&u->au_download);
     download_clear(&u->au_sign_download);
     u->au_url = au_url = malloc(uri_len + 1);
@@ -442,8 +443,8 @@ static void appupdater_error(struct appupdater *au, int sts) {
 }
 
 static void appupdater_build_from_manifest(struct appupdater *au) {
-  char log_path[PATH_MAX], mf_digest[SHA256_DIGEST_LENGTH * 2 + 1];
-  FILE *stdout_log = NULL, *stderr_log = NULL;
+  char log_path[PATH_MAX], cache_path[PATH_MAX], mf_digest[SHA256_DIGEST_LENGTH * 2 + 1];
+  FILE *stdout_log = NULL, *stderr_log = NULL, *caches = NULL;
   struct pssubopts ps;
 
   if ( au->au_application )
@@ -465,7 +466,8 @@ static void appupdater_build_from_manifest(struct appupdater *au) {
 
   fprintf(stderr, "Made log path: %s\n", log_path);
 
-  if ( appstate_log_path(au->au_appstate, mf_digest, "stdout.log", log_path, sizeof(log_path)) >= 0 ) {
+  if ( au->au_progress < 0 &&
+       appstate_log_path(au->au_appstate, mf_digest, "stdout.log", log_path, sizeof(log_path)) >= 0 ) {
     stdout_log = fopen(log_path, "wb");
     if ( !stdout_log )
       perror("fopen(stdout.log)");
@@ -477,8 +479,25 @@ static void appupdater_build_from_manifest(struct appupdater *au) {
       perror("fopen(stderr.log)");
   }
 
-  if ( !stdout_log || !stderr_log ) {
-    fprintf(stderr, "appupdater_build_from_manifest: could not find stdout.log or stderr.log\n");
+  if ( appstate_log_path(au->au_appstate, mf_digest, "caches", cache_path, sizeof(cache_path)) >= 0 ) {
+    caches = fopen(cache_path, "wt");
+    if ( !caches )
+      perror("fopen(caches)");
+    else {
+      int i, k;
+      for ( i = 0; i < au->au_manifest->am_bin_caches_count; ++i ) {
+        fprintf(caches, "%s", au->au_manifest->am_bin_caches[i].bc_uri);
+        for ( k = 0; k < au->au_manifest->am_bin_caches[i].bc_key_count; ++k ) {
+          fprintf(caches, " %s", au->au_manifest->am_bin_caches[i].bc_keys[k]);
+        }
+      }
+      fprintf(caches, "\n");
+    }
+    fclose(caches);
+  }
+
+  if ( (au->au_progress < 0 && !stdout_log) || !stderr_log || !caches ) {
+    fprintf(stderr, "appupdater_build_from_manifest: could not find stdout.log, stderr.log, or caches\n");
     if ( stdout_log ) fclose(stdout_log);
     if ( stderr_log ) fclose(stderr_log);
     appupdater_error(au, AU_STATUS_ERROR);
@@ -487,40 +506,34 @@ static void appupdater_build_from_manifest(struct appupdater *au) {
 
   pssubopts_init(&ps);
 
-  if ( pssubopts_pipe_to_file(&ps, PSSUB_STDOUT, stdout_log) < 0 ||
-       pssubopts_pipe_to_file(&ps, PSSUB_STDERR, stderr_log) < 0 ) {
+  if ( au->au_progress >= 0 ) {
+    if ( pssubopts_pipe_to_fd(&ps, PSSUB_STDOUT, au->au_progress) < 0 ) {
+      pssubopts_release(&ps);
+      fprintf(stderr, "appupdate_build_from_manifest: could not set up progress output\n");
+      appupdater_error(au, AU_STATUS_ERROR);
+      return;
+    }
+  } else {
+    if ( pssubopts_pipe_to_file(&ps, PSSUB_STDOUT, stdout_log) < 0 ) {
+      pssubopts_release(&ps);
+      fprintf(stderr, "appupdate_build_from_manifest: could not direct stdout to log\n");
+      appupdater_error(au, AU_STATUS_ERROR);
+      return;
+    }
+  }
+
+  if ( pssubopts_pipe_to_file(&ps, PSSUB_STDERR, stderr_log) < 0 ) {
     pssubopts_release(&ps);
-    fprintf(stderr, "appupdater_build_from_manifest: could not set up pipes\n");
+    fprintf(stderr, "appupdater_build_from_manifest: could not direct stderr to log\n");
     appupdater_error(au, AU_STATUS_ERROR);
     return;
   }
 
-  pssubopts_set_command(&ps, "nix-store", NULL);
-  pssubopts_push_arg(&ps, "nix-store", NULL);
-  pssubopts_push_arg(&ps, "-r", NULL);
+  pssubopts_set_command(&ps, "nix-fetch", NULL);
+  pssubopts_push_arg(&ps, "nix-fetch", NULL);
+  pssubopts_push_arg(&ps, "--caches", NULL);
+  pssubopts_push_arg(&ps, cache_path, NULL);
   pssubopts_push_arg(&ps, au->au_manifest->am_nix_closure, NULL);
-
-  if ( au->au_manifest->am_bin_caches_count > 0 ) {
-    int i;
-    const char *data;
-    struct buffer binary_caches;
-
-    buffer_init(&binary_caches);
-
-    pssubopts_push_arg(&ps, "--option", NULL);
-    pssubopts_push_arg(&ps, "extra-binary-caches", NULL);
-
-    for ( i = 0; i < au->au_manifest->am_bin_caches_count; ++i ) {
-      if ( i == 0 )
-        buffer_printf(&binary_caches, "%s", au->au_manifest->am_bin_caches[i]);
-      else
-        buffer_printf(&binary_caches, " %s", au->au_manifest->am_bin_caches[i]);
-    }
-
-    buffer_finalize_str(&binary_caches, &data);
-
-    pssubopts_push_arg(&ps, data, free);
-  }
 
   if ( pssubopts_error(&ps) ) {
     pssubopts_release(&ps);

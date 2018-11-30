@@ -13,7 +13,8 @@
 
 * DONE auth tokens
 * DONE Use ebtables to direct traffic
-* IN-PROGRESS when a container exits, the corresponding ebtacbables should be deleted
+* DONE remove nix-build from applianced, and use explicit nix-fetch instead
+* IN-PROGRESS when a container exits, the corresponding ebtables should be deleted
     - Almost done. Need to remove the interface-based rules (in0 -> TABLE0)
 * DONE restart an app cleanly after updaet
 * TODO show a chooser box when there are multiple auth tokens available

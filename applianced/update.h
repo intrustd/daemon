@@ -36,6 +36,8 @@ struct appupdater {
   int au_reason;
   int au_force : 1;
 
+  int au_progress;
+
   unsigned char au_sha256_digest[SHA256_DIGEST_LENGTH];
   SHA256_CTX au_sha256_ctx;
 
@@ -56,7 +58,7 @@ struct appupdater {
 
 // appupdater
 struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t uri_len,
-                                  int reason, struct app *app);
+                                  int reason, int progress, struct app *app);
 #define appupdater_force(au) ((au)->au_force = 1)
 
 void appupdater_start(struct appupdater *au);

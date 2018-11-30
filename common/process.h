@@ -32,6 +32,7 @@ struct pssubopts {
 void pssubopts_init(struct pssubopts *pso);
 void pssubopts_release(struct pssubopts *pso);
 int pssubopts_pipe_to_file(struct pssubopts *pso, int which, FILE *f);
+int pssubopts_pipe_to_fd(struct pssubopts *pso, int which, int fd);
 
 void pssubopts_set_command(struct pssubopts *pso, const char *cmd, argfreefn fn);
 int pssubopts_push_arg(struct pssubopts *pso, const char *arg, argfreefn fn);

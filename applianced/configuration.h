@@ -14,10 +14,12 @@ struct appconf {
 
   const char *ac_system_config; // GCC/GNU triple. Specifies which app version we should download.
 
+  const char *ac_inet_bridge;
+
   uint32_t ac_flags;
 
-  uid_t ac_kite_user;
-  gid_t ac_kite_user_group;
+  uid_t ac_kite_user, ac_daemon_user;
+  gid_t ac_kite_user_group, ac_daemon_group;
 
   const char *ac_kite_packet_file;
 };

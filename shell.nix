@@ -80,10 +80,11 @@ in pkgs.stdenv.mkDerivation {
     lksctp-tools-1-0-18 libnl thrift
     curl-kite curl-kite.dev
 
-    nginx jq
+    nginx jq redis
 
     (python3.withPackages (ps: [
-       ps.flask ps.sqlalchemy ps.pyopenssl ps.pyudev
+       ps.flask ps.sqlalchemy ps.pyopenssl ps.pyudev ps.celery ps.redis
+       ps.kombu
      ]))
   ];
 

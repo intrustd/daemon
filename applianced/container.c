@@ -368,6 +368,14 @@ int container_start(struct container *c) {
     goto error;
   }
 
+  c->c_init_comm = ipc_sockets[0];
+
+  // Do any coordination with the setup program
+  if ( c->c_control(c, CONTAINER_CTL_DO_HOST_SETUP, 0, 0) == -1 ) {
+    fprintf(stderr, "container_start: host setup failed\n");
+    goto error;
+  }
+
   // Finally... wait for init process to start
   err = recv(ipc_sockets[0], &sts, 1, 0);
   if ( err != 1 ) {
@@ -377,7 +385,6 @@ int container_start(struct container *c) {
 
   fprintf(stderr, "Got init status: %d\n", sts);
 
-  c->c_init_comm = ipc_sockets[0];
   c->c_init_process = real_child;
 
   return 0;

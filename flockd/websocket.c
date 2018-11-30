@@ -703,6 +703,7 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
 
   case CONNECTION_OP_RELEASE_WEAK:
     fprintf(stderr, "wsconnectionctlfn: closing websocket\n");
+    SAFE_MUTEX_LOCK(&wsc->wsc_conn.conn_mutex);
     if ( wsc->wsc_websocket != 0 ) {
       int old_sk = wsc->wsc_websocket;
       wsc->wsc_websocket = 0;
@@ -717,6 +718,7 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
       SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "After close");
       close(old_sk);
     }
+    pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
     return 0;
 
   case CONNECTION_OP_RELEASE:

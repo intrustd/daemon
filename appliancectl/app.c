@@ -7,7 +7,7 @@
 #define IDENTIFIER_ARG   0x201
 
 static int register_app_usage() {
-  fprintf(stderr, "Usage: appliancectl register-app [-h] [-f] <app-manifest-url>\n");
+  fprintf(stderr, "Usage: appliancectl register-app [-h] [-f] [-P] <app-manifest-url>\n");
   return 1;
 }
 
@@ -16,14 +16,18 @@ int register_app(int argc, char **argv) {
   char *app_manifest;
   struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
   struct kitelocalattr *attr = KLM_FIRSTATTR(msg, sizeof(buf));
-  int sz = KLM_SIZE_INIT, sk, err, c, do_force = 0;
+  int sz = KLM_SIZE_INIT, sk, err, c, do_force = 0, show_progress = 0;
 
-  while ( (c = getopt(argc, argv, "hf")) ) {
+  while ( (c = getopt(argc, argv, "hfP")) ) {
     if ( c == -1 ) break;
 
     switch ( c ) {
     case 'f':
       do_force = 1;
+      break;
+
+    case 'P':
+      show_progress = 1;
       break;
 
     case 'h':
@@ -56,13 +60,29 @@ int register_app(int argc, char **argv) {
     KLM_SIZE_ADD_ATTR(sz, attr);
   }
 
+  if ( show_progress ) {
+    int fdidx = 0;
+
+    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    assert(attr);
+    attr->kla_name = ntohs(KLA_STDOUT);
+    attr->kla_length = ntohs(KLA_SIZE(sizeof(fdidx)));
+    memcpy(KLA_DATA_UNSAFE(attr, char*), &fdidx, sizeof(fdidx));
+    KLM_SIZE_ADD_ATTR(sz, attr);
+  }
+
   sk = mk_api_socket();
   if ( sk < 0 ) {
     fprintf(stderr, "register_app: mk_api_socket failed\n");
     return 3;
   }
 
-  err = send(sk, buf, sz, 0);
+  if ( !show_progress ) {
+    err = send(sk, buf, sz, 0);
+  } else {
+    int fds[1] = { STDOUT_FILENO };
+    err = send_with_fds(sk, buf, sz, 0, fds, 1);
+  }
   if ( err < 0 ) {
     perror("register_app: send");
     close(sk);

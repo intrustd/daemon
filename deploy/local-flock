@@ -3,7 +3,7 @@
 
 DEPLOYDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 # Start flockd along with nginx server serving portal
-valgrind ${DEPLOYDIR}/../bin/flockd -c ${DEPLOYDIR}/../certificate.pem -k ${DEPLOYDIR}/../key.pem &
+${DEPLOYDIR}/../bin/flockd -c ${DEPLOYDIR}/../certificate.pem -k ${DEPLOYDIR}/../key.pem &
 
 stopflock() {
     kill -s TERM %1

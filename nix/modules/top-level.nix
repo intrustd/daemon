@@ -199,6 +199,18 @@
              root:x:0:
              kite:x:100:
              EOF
+
+             cat >$out/etc/hosts <<EOF
+             127.0.0.1 localhost
+             EOF
+
+             cat >$out/etc/resolv.conf <<EOF
+             # Only admin apps can access the internet
+             EOF
+
+             cat >$out/etc/nsswitch.conf <<EOF
+             hosts: files dns
+             EOF
            '';
          };
   };
