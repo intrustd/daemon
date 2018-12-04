@@ -1427,12 +1427,6 @@ static int bridge_setup_main(void *br_ptr) {
     return 1;
   }
 
-  if ( fork() == 0 ) {
-    fprintf(stderr, "bridge running tcpdump\n");
-    execlp("tcpdump", "tcpdump", "-c", "50", "-i", "internet", NULL);
-    exit(120);
-  }
-
   fprintf(stderr, "Waiting for bridge message\n");
   // Read from the communications fd and serve requests
   while (1) {
