@@ -913,7 +913,8 @@ const char *wrtc_ctype_str(uint8_t ctype) {
   }
 }
 
-void dbg_chan(struct wrtcchan *chan) {
+static inline void dbg_chan(struct wrtcchan *chan) {
+#if WEBRTC_PROXY_DEBUG
   fprintf(stderr, "WebRTC channel %d\n", chan->wrc_chan_id);
   fprintf(stderr, "  Status: %s\n", chan_status_str(chan->wrc_sts));
   fprintf(stderr, "    Type: %s\n", wrtc_ctype_str(chan->wrc_ctype));
@@ -924,16 +925,18 @@ void dbg_chan(struct wrtcchan *chan) {
   fprintf(stderr, "  Family: %s(%d)\n", sk_family_str(chan->wrc_family), chan->wrc_family);
   fprintf(stderr, "    Type: %s(%d)\n", sk_type_str(chan->wrc_type), chan->wrc_type);
   fprintf(stderr, "  Socket: %d\n", chan->wrc_sk);
+#endif
 }
 
-void dbg_assoc_change(struct sctp_assoc_change *sac, int sz) {
+static inline void dbg_assoc_change(struct sctp_assoc_change *sac, int sz) {
   //  int ft_cnt = sz - sizeof(*sac), i;
+#if WEBRTC_PROXY_DEBUG
   fprintf(stderr, "SCTP Association change:\n");
   fprintf(stderr, "  - Num outbound: %d\n", sac->sac_outbound_streams);
   fprintf(stderr, "  -  Num inbound: %d\n", sac->sac_inbound_streams);
   fprintf(stderr, "  -     Assoc ID: %d\n", sac->sac_assoc_id);
   fprintf(stderr, "  -     Supports: ");
-
+#endif
 //  for ( i = 0; i < ft_cnt; ++i )
 //    switch ( fts[i] ) {
 //    case SCTP_PR_SUPPORTED:
@@ -1336,7 +1339,7 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
       chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_ERROR_ON_RETRY);
 
       log_printf("Sent buffer of size %ld\n%.*s", chan->wrc_msg_sz, (int)chan->wrc_msg_sz, chan->wrc_buffer);
-      print_hex_dump_fp(stderr, (unsigned char *)chan->wrc_buffer, chan->wrc_msg_sz);
+
       err = send(chan->wrc_sk, chan->wrc_buffer, chan->wrc_msg_sz, 0);
       if ( err < 0 ) {
         if ( errno == EAGAIN || errno == EWOULDBLOCK ) {
