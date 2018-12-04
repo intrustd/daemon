@@ -136,18 +136,23 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
           }
 
           if ( au->au_sts == AU_STATUS_DOWNLOADING_SIG ) {
-            err = snprintf(old_name, sizeof(old_name), "%s.sign", new_name);
-            if ( err >= sizeof(old_name) ) {
-              fprintf(stderr, "appupdater: overflowed path (signature)\n");
-              appupdater_error(au, AU_STATUS_ERROR);
-            } else {
-              au->au_sign_output = fopen(old_name, "wb");
-              if ( !au->au_sign_output ) {
-                perror("appupdater: fopen(signature)");
+            if ( au->au_sign_url ) {
+              err = snprintf(old_name, sizeof(old_name), "%s%s", new_name, SIGN_SUFFIX);
+              if ( err >= sizeof(old_name) ) {
+                fprintf(stderr, "appupdater: overflowed path (signature)\n");
                 appupdater_error(au, AU_STATUS_ERROR);
               } else {
-                download_start(&au->au_sign_download);
+                au->au_sign_output = fopen(old_name, "wb");
+                if ( !au->au_sign_output ) {
+                  perror("appupdater: fopen(signature)");
+                  appupdater_error(au, AU_STATUS_ERROR);
+                } else {
+                  download_start(&au->au_sign_download);
+                }
               }
+            } else {
+              au->au_sts = AU_STATUS_PARSING;
+              eventloop_invoke_async(&au->au_appstate->as_eventloop, &au->au_parse_async);
             }
           }
         }
@@ -175,14 +180,16 @@ static void appupdaterfn(struct eventloop *el, int op, void *arg) {
   }
 }
 
-struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t uri_len,
+struct appupdater *appupdater_new(struct appstate *as,
+                                  const char *uri, size_t uri_len,
+                                  const char *sign_uri_txt, size_t sign_len,
                                   int reason, int progress, struct app *app) {
   UriParserStateA urip;
   UriUriA uri_uri, sign_uri;
 
   char output_path[PATH_MAX];
   int err;
-  char *au_url, *au_sign_url;
+  char *au_url, *au_sign_url = NULL;
   struct appupdater *u;
 
   urip.uri = &uri_uri;
@@ -238,20 +245,24 @@ struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t u
     download_clear(&u->au_sign_download);
     u->au_url = au_url = malloc(uri_len + 1);
     if ( !u->au_url ) goto error;
-    u->au_sign_url = au_sign_url = malloc(uri_len + strlen(SIGN_SUFFIX) + 1);
-    if ( !u->au_sign_url ) goto error;
 
     memcpy(au_url, uri, uri_len);
     au_url[uri_len] = '\0';
 
-    strcpy(au_sign_url, au_url);
-    strcat(au_sign_url, SIGN_SUFFIX);
+    if ( sign_len > 0 ) {
+      u->au_sign_url = au_sign_url = malloc(sign_len + 1);
+      if ( !u->au_sign_url ) goto error;
 
-    urip.uri = &sign_uri;
-    if ( uriParseUriExA(&urip, au_sign_url, au_sign_url + strlen(au_sign_url)) != URI_SUCCESS ) {
-      fprintf(stderr, "appupdater_new: could not parse signature URL\n");
-      goto error;
-    }
+      memcpy(au_sign_url, sign_uri_txt, sign_len);
+      au_sign_url[sign_len] = '\0';
+
+      urip.uri = &sign_uri;
+      if ( uriParseUriExA(&urip, au_sign_url, au_sign_url + sign_len) != URI_SUCCESS ) {
+        fprintf(stderr, "appupdater_new: could not parse signature URL\n");
+        goto error;
+      }
+    } else
+      u->au_sign_url = NULL;
 
     u->au_appstate = as;
     if ( app )
@@ -275,10 +286,12 @@ struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t u
       goto error;
     }
 
-    if ( download_init(&u->au_sign_download, &u->au_appstate->as_eventloop, &sign_uri,
-                       OP_APPUPDATER_DL_SIGN_PROGRESS, appupdaterfn) < 0 ) {
-      fprintf(stderr, "appupdater_new: download_init(signature) error\n");
-      goto error;
+    if ( u->au_sign_url ) {
+      if ( download_init(&u->au_sign_download, &u->au_appstate->as_eventloop, &sign_uri,
+                         OP_APPUPDATER_DL_SIGN_PROGRESS, appupdaterfn) < 0 ) {
+        fprintf(stderr, "appupdater_new: download_init(signature) error\n");
+        goto error;
+      }
     }
 
     qdevtsub_init(&u->au_parse_async, OP_APPUPDATER_PARSE_ASYNC, appupdaterfn);
@@ -286,11 +299,15 @@ struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t u
   }
 
   uriFreeUriMembersA(&uri_uri);
+  if ( sign_len )
+    uriFreeUriMembersA(&sign_uri);
   return u;
 
  error:
 
   uriFreeUriMembersA(&uri_uri);
+  if ( sign_len )
+    uriFreeUriMembersA(&sign_uri);
   appupdater_free(&u->au_shared, SHFREE_NO_MORE_REFS);
   return NULL;
 }
@@ -385,6 +402,8 @@ static void appupdater_parse_manifest(struct appupdater *au) {
     appupdater_error(au, AU_STATUS_ERROR);
     return;
   }
+
+  fprintf(stderr, "Update from file %s\n", mf_path);
 
   err = buffer_read_from_file(&b, mf_path);
   if ( err < 0 ) {

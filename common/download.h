@@ -12,10 +12,13 @@
 #define DL_STATUS_ERROR (-1)
 #define DL_STATUS_NOT_FOUND (-2)
 #define DL_STATUS_CANCELLED (-3)
-
+#define DL_STATUS_UNDERFLOW (-4)
+#define DL_STATUS_INVALID_ENCODING (-5)
 
 #define DL_TYPE_UNKNOWN 0
 #define DL_TYPE_FILE    1
+#define DL_TYPE_DATA    2
+#define DL_TYPE_B64DATA 3
 
 struct download {
   pthread_mutex_t dl_mutex;
@@ -23,6 +26,7 @@ struct download {
   union {
     CURL *dl_hdl;
     FILE *dl_fl;
+    size_t dl_offs;
   };
   char *dl_buf;
   size_t dl_bufsz;

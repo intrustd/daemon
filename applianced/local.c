@@ -978,10 +978,10 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
   struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
   struct kitelocalattr *attr;
 
-  const char *app_uri;
-  size_t app_uri_sz;
+  const char *app_uri, *sign_uri = NULL;
+  size_t app_uri_sz, sign_uri_sz = 0;
 
-  int rspsz = KLM_SIZE_INIT, found_app_manifest = 0, do_force = 0, progress = -1;
+  int rspsz = KLM_SIZE_INIT, found_app_manifest = 0, do_force = 0, progress = -1, infer_app_sign = 1;
 
   rsp->klm_req = htons(KLM_RESPONSE | htons(msg->klm_req));
   rsp->klm_req_flags = 0;
@@ -998,6 +998,15 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
       app_uri = KLA_DATA_UNSAFE(attr, char *);
       app_uri_sz = KLA_PAYLOAD_SIZE(attr);
       found_app_manifest = 1;
+      break;
+
+    case KLA_APP_SIGNATURE_URL:
+      sign_uri = KLA_DATA_UNSAFE(attr, char *);
+      sign_uri_sz = KLA_PAYLOAD_SIZE(attr);
+      infer_app_sign = 0;
+
+      if ( sign_uri_sz == 0 )
+        sign_uri = NULL;
       break;
 
     case KLA_FORCE:
@@ -1037,13 +1046,27 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
     int progress_fd = -1;
     struct appupdater *u;
 
+    if ( infer_app_sign && !sign_uri ) {
+      sign_uri_sz = app_uri_sz + 5;
+      sign_uri = malloc(sign_uri_sz + 1);
+      if ( !sign_uri ) {
+        fprintf(stderr, "No space for signature url\n");
+        localsock_return_internal_error(api, el, msg);
+        return;
+      }
+
+      snprintf((char *)sign_uri, sign_uri_sz + 1, "%.*s.sign", (int)app_uri_sz, app_uri);
+    }
+
     if ( progress > 0 ) {
       progress_fd = dup(progress);
       if ( progress_fd < 0 )
         perror("dup(progress)");
     }
 
-    u = appstate_queue_update_ex(api->la_app_state, app_uri, app_uri_sz,
+    u = appstate_queue_update_ex(api->la_app_state,
+                                 app_uri, app_uri_sz,
+                                 sign_uri, sign_uri_sz,
                                  AU_UPDATE_REASON_MANUAL,
                                  progress_fd, NULL);
     if ( !u ) {

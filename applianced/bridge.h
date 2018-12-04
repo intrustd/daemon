@@ -134,6 +134,8 @@ struct brstate {
   uid_t br_euid;
   uid_t br_uid, br_user_uid, br_daemon_uid;
   gid_t br_gid, br_user_gid, br_daemon_gid;
+
+  pthread_mutex_t br_comm_mutex;
   int   br_comm_fd[2];
 
   char br_capability[BR_CAPABILITY_SIZE];
@@ -142,9 +144,9 @@ struct brstate {
   FILE *br_debug_out;
 
   // Net namespace and user namespace file descriptors
-  int br_netns, br_userns, br_tapfd;
-  struct in_addr br_bridge_addr;
-  mac_addr br_bridge_mac;
+  int br_tapfd;
+  struct in_addr br_bridge_addr, br_tap_addr;
+  mac_addr br_tap_mac;
 
   pthread_mutex_t br_tap_write_mutex;
   struct fdsub br_tap_sub;
@@ -170,6 +172,7 @@ struct brstate {
 #define BR_TAP_MUTEX_INITIALIZED    0x4
 #define BR_SCTP_MUTEX_INITIALIZED   0x8
 #define BR_TUNNEL_MUTEX_INITIALIZED 0x10
+#define BR_COMM_MUTEX_INITIALIZED   0x20
 
 void bridge_clear(struct brstate *br);
 int bridge_init(struct brstate *br, struct appstate *as, uid_t euid,
@@ -202,16 +205,13 @@ char *mac_ntop(const unsigned char *mac, char *str, int str_sz);
 // Container utilities
 int bridge_setup_root_uid_gid(struct brstate *br);
 int bridge_set_up_networking(struct brstate *br);
-int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
-                             struct in_addr *this_ip, const char *if_name,
-                             struct arpentry *arp);
 int bridge_disconnect_port(struct brstate *br, int port, struct arpentry *arp);
 
 int bridge_describe_arp(struct brstate *br, struct in_addr *ip, struct arpdesc *desc, size_t desc_sz);
 
 struct brtunnel *bridge_create_tunnel(struct brstate *br, int port1, int port2);
 
-int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp, int *inet_tap);
+int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp);
 
 // Ask to write out the routes for the given site. If the site
 // permissions do not exist, this will create the site permissions
@@ -220,5 +220,9 @@ int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp, 
 // pc should be locked
 struct pconn;
 int bridge_write_site_routes(struct brstate *br, struct pconn *pc);
+
+int bridge_setup_container(struct brstate *br, int port_ix,
+                           struct in_addr *this_addr, const char *if_name,
+                           struct arpentry *arp);
 
 #endif

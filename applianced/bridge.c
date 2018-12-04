@@ -17,6 +17,7 @@
 #include <linux/if_tun.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <sys/syscall.h>
 
 #include <net/if_arp.h>
 #include <netinet/ip.h>
@@ -33,23 +34,81 @@
 
 #define KITE_APPLIANCED_APP_PORT 9998
 
+#define INTERNET_GATEWAY "10.254.254.254"
+
+#define BRIDGE_STACK_SIZE (2 * 1024 * 1024)
+
 #define OP_BRIDGE_TAP_PACKETS EVT_CTL_CUSTOM
 #define OP_BRIDGE_BPR_FINISHED (EVT_CTL_CUSTOM + 1)
 
 #define OP_BRTUNNEL_INIT EVT_CTL_CUSTOM
 
+struct brctlmsg {
+  uint16_t bcm_what;
+};
+
+struct brctlrsp {
+  int bcr_sts;
+};
+
+struct brctlmsg_setupns {
+  struct brctlmsg bcm_msg;
+  int bcm_port_ix;
+  struct in_addr bcm_ip;
+};
+
+struct brctlmsg_newtun {
+  struct brctlmsg bcm_msg;
+  int bcm_ports[2];
+};
+
+struct brctlmsg_deltun {
+  struct brctlmsg bcm_msg;
+  int bcm_ports[2];
+};
+
+struct brctlmsg_delport {
+  struct brctlmsg bcm_msg;
+  int bcm_port;
+  struct arpentry bcm_arp;
+};
+
+struct brctlmsg_markadmin {
+  struct brctlmsg bcm_msg;
+  int bcm_port;
+  struct arpentry bcm_arp;
+};
+
+struct brctlrsp_markadmin {
+  struct brctlrsp bcr_rsp;
+  struct in_addr bcr_inet_gw;
+};
+
+#define BR_SETUP_NAMESPACE 1
+#define BR_NEW_TUNNEL      2
+#define BR_DEL_TUNNEL      3
+#define BR_DISCONNECT_PORT 4
+#define BR_MARK_AS_ADMIN   5
+
 static int bridge_setup_ns(struct brstate *br);
 static int bridge_setup_main(void *br_ptr);
+static int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns, struct in_addr *this_ip);
+static int setup_namespace(struct brstate *br, pid_t new_proc,
+                           int port_ix, struct in_addr *this_ip);
 
-static int bridge_enter_network_namespace(struct brstate *br);
-static int bridge_enter_user_namespace(struct brstate *br);
+//static int bridge_enter_network_namespace(struct brstate *br);
+//static int bridge_enter_user_namespace(struct brstate *br);
 static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int netns);
-static int bridge_create_veth(struct brstate *br, const char *in_if_name, const char *out_if_name);
+static int bridge_create_veth(struct brstate *br, const char *in_if_name, const char *out_if_name, int set_in_master);
+static int bridge_remove_ebtable_spoof(struct brstate *br, int port, struct arpentry *arp);
+static int bridge_remove_ebtable_sub(struct brstate *br, int port);
 static int bridge_delete_veth(struct brstate *br, const char *if_name);
 static int bridge_disconnect_iface(struct brstate *brb, const char *if_name);
 static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest *bpr);
 static int find_hw_addr(const char *if_name, unsigned char *mac_addr);
 static void bridgefn(struct eventloop *el, int op, void *arg);
+
+static pid_t g_main_pid = -1;
 
 static uint16_t ip_checksum(const void *buf, size_t sz) {
   size_t i;
@@ -86,11 +145,12 @@ void bridge_clear(struct brstate *br) {
   br->br_gid = br->br_user_gid = br->br_daemon_uid = 0;
   br->br_comm_fd[0] = br->br_comm_fd[1] = 0;
   br->br_debug_out = NULL;
-  br->br_netns = br->br_userns = br->br_tapfd = 0;
+  br->br_tapfd = 0;
   br->br_bridge_addr.s_addr = 0;
+  br->br_tap_addr.s_addr = 0;
   br->br_arp_table = NULL;
   br->br_sctp_table = NULL;
-  memset(&br->br_bridge_mac, 0, sizeof(mac_addr));
+  memset(&br->br_tap_mac, 0, sizeof(mac_addr));
   fdsub_clear(&br->br_tap_sub);
   br->br_next_ip = 0x0A000001;
   br->br_eth_ix = 0;
@@ -101,7 +161,7 @@ int bridge_init(struct brstate *br, struct appstate *as, uid_t euid,
                 uid_t user_uid, gid_t user_gid,
                 uid_t daemon_uid, gid_t daemon_gid,
                 const char *iproute, const char *ebroute) {
-  char ip_dbg[INET_ADDRSTRLEN], mac_dbg[32];
+  char ip_dbg[INET_ADDRSTRLEN], tap_ip_dbg[INET_ADDRSTRLEN], mac_dbg[32];
   int err;
 
   bridge_clear(br);
@@ -120,11 +180,14 @@ int bridge_init(struct brstate *br, struct appstate *as, uid_t euid,
   br->br_daemon_gid = daemon_gid;
 
   bridge_allocate_ip(br, &br->br_bridge_addr);
-  random_mac(br->br_bridge_mac);
+  br->br_tap_addr.s_addr = br->br_bridge_addr.s_addr;
+  bridge_allocate_ip(br, &br->br_tap_addr);
+  random_mac(br->br_tap_mac);
 
-  fprintf(stderr, "Opening bridge with IP address %s and mac %s\n",
+  fprintf(stderr, "Opening bridge with IP address %s (Tap Mac %s and IP %s)\n",
           inet_ntop(AF_INET, &br->br_bridge_addr, ip_dbg, sizeof(ip_dbg)),
-          mac_ntop(br->br_bridge_mac, mac_dbg, sizeof(mac_dbg)));
+          mac_ntop(br->br_tap_mac, mac_dbg, sizeof(mac_dbg)),
+          inet_ntop(AF_INET, &br->br_tap_addr, tap_ip_dbg, sizeof(tap_ip_dbg)));
 
   br->br_iproute_path = iproute;
   br->br_ebroute_path = ebroute;
@@ -156,6 +219,13 @@ int bridge_init(struct brstate *br, struct appstate *as, uid_t euid,
     goto error;
   }
   br->br_mutexes_initialized |= BR_TUNNEL_MUTEX_INITIALIZED;
+
+  err = pthread_mutex_init(&br->br_comm_mutex, NULL);
+  if ( err != 0 ) {
+    fprintf(stderr, "Could not initialize comm mutex: %s\n", strerror(err));
+    goto error;
+  }
+  br->br_mutexes_initialized |= BR_COMM_MUTEX_INITIALIZED;
 
   if ( bridge_setup_ns(br) < 0 ) {
     fprintf(stderr, "bridge_init: bridge_setup_ns failed\n");
@@ -204,14 +274,9 @@ void bridge_release(struct brstate *br) {
     br->br_mutexes_initialized &= ~BR_TUNNEL_MUTEX_INITIALIZED;
   }
 
-  if ( br->br_netns ) {
-    close(br->br_netns);
-    br->br_netns = 0;
-  }
-
-  if ( br->br_userns ) {
-    close(br->br_userns);
-    br->br_userns = 0;
+  if ( br->br_mutexes_initialized & BR_COMM_MUTEX_INITIALIZED ) {
+    pthread_mutex_destroy(&br->br_comm_mutex);
+    br->br_mutexes_initialized &= ~BR_COMM_MUTEX_INITIALIZED;
   }
 
   if ( br->br_tapfd ) {
@@ -302,18 +367,18 @@ static void bridge_process_arp(struct brstate *br, int size) {
       memcpy(&which_ip.s_addr, br->br_tap_pkt + sizeof(struct ethhdr) +
              sizeof(struct arphdr) + (2 * hdr.ar_hln) + hdr.ar_pln, sizeof(which_ip.s_addr));
 
-      if ( memcmp(&which_ip, &br->br_bridge_addr, sizeof(which_ip)) == 0 ) {
+      if ( memcmp(&which_ip, &br->br_tap_addr, sizeof(which_ip)) == 0 ) {
         was_found = 1;
-        memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
-        memcpy(src_hw_addr, br->br_bridge_mac, ETH_ALEN);
-        src_hw_ip = br->br_bridge_addr.s_addr;
+        memcpy(rsp_eth.h_source, br->br_tap_mac, ETH_ALEN);
+        memcpy(src_hw_addr, br->br_tap_mac, ETH_ALEN);
+        src_hw_ip = br->br_tap_addr.s_addr;
       } else {
         if ( pthread_rwlock_rdlock(&br->br_arp_mutex) == 0 ) {
           struct arpentry *found;
           HASH_FIND(ae_hh, br->br_arp_table, &which_ip, sizeof(which_ip), found);
           if ( found ) {
             was_found = 1;
-            memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
+            memcpy(rsp_eth.h_source, br->br_tap_mac, ETH_ALEN);
             memcpy(src_hw_addr, found->ae_mac, ETH_ALEN);
             src_hw_ip = found->ae_ip.s_addr;
           }
@@ -356,8 +421,8 @@ static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
                                struct iphdr *hdr_ip) {
   struct udphdr hdr_udp;
   unsigned char *buf = br->br_tap_pkt;
-  if ( hdr_ip->daddr == br->br_bridge_addr.s_addr &&
-       memcmp(hdr_eth->h_dest, br->br_bridge_mac, ETH_ALEN) == 0 ) {
+  if ( hdr_ip->daddr == br->br_tap_addr.s_addr &&
+       memcmp(hdr_eth->h_dest, br->br_tap_mac, ETH_ALEN) == 0 ) {
 
     sz -= sizeof(struct ethhdr) + sizeof(struct iphdr);
     if ( sz < sizeof(hdr_udp) ) {
@@ -466,8 +531,8 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
   memcpy(&hdr_eth, br->br_tap_pkt, sizeof(struct ethhdr));
   memcpy(&hdr_ip, br->br_tap_pkt + sizeof(struct ethhdr), sizeof(struct iphdr));
 
-  if ( memcmp(hdr_eth.h_dest, br->br_bridge_mac, ETH_ALEN) == 0 &&
-       hdr_ip.daddr == br->br_bridge_addr.s_addr ) {
+  if ( memcmp(hdr_eth.h_dest, br->br_tap_mac, ETH_ALEN) == 0 &&
+       hdr_ip.daddr == br->br_tap_addr.s_addr ) {
     if ( bridge_validate_ip(br, &hdr_eth, &hdr_ip) < 0 ) {
       fprintf(stderr, "bridge_process_ip: invalid source MAC/IP pair\n");
       return;
@@ -489,7 +554,7 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
       memcpy(&icmp, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
              sizeof(icmp));
       memcpy(rsp_eth.h_dest, hdr_eth.h_source, ETH_ALEN);
-      memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
+      memcpy(rsp_eth.h_source, br->br_tap_mac, ETH_ALEN);
       rsp_eth.h_proto = htons(ETH_P_IP);
 
       rsp_ip.version = 4;
@@ -503,7 +568,7 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
       rsp_ip.ttl = 64;
       rsp_ip.protocol = IPPROTO_ICMP;
       rsp_ip.check = 0;
-      rsp_ip.saddr = br->br_bridge_addr.s_addr;
+      rsp_ip.saddr = br->br_tap_addr.s_addr;
       rsp_ip.daddr = hdr_ip.saddr;
       rsp_icmp.type = ICMP_ECHOREPLY;
       rsp_icmp.code = 0;
@@ -558,8 +623,9 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
           if ( se ) {
             se->se_on_packet(se, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
                              sz - sizeof(struct ethhdr) - sizeof(struct iphdr));
-          } else
-            fprintf(stderr, "bridge_process_ip: warning: received SCTP to nowhere\n");
+          }
+//          else
+//            fprintf(stderr, "bridge_process_ip: warning: received SCTP to nowhere\n");
           pthread_rwlock_unlock(&br->br_sctp_mutex);
         } else
           fprintf(stderr, "bridge_process_ip: drop SCTP packet because we could not acquire lock\n");
@@ -574,9 +640,12 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
       fprintf(stderr, "bridge_process_ip: got Unknown packet %02x\n", hdr_ip.protocol);
       break;
     }
-  } else {
-    fprintf(stderr, "bridge_process_ip: Received IP packet somewhere else\n");
   }
+//  else {
+//    char inet_buf[INET_ADDRSTRLEN];
+//    fprintf(stderr, "bridge_process_ip: Received IP packet somewhere else: %s\n",
+//            inet_ntop(AF_INET, &hdr_ip.daddr, inet_buf, sizeof(inet_buf)));
+//  }
 }
 
  static void bridge_process_tap_packet(struct brstate *br, struct eventloop *el, int size) {
@@ -728,7 +797,7 @@ int bridge_write_from_foreign_pkt(struct brstate *br, struct container *dst,
   }
 
   memcpy(mac.h_dest, arp->ae_mac, ETH_ALEN);
-  memcpy(mac.h_source, br->br_bridge_mac, ETH_ALEN);
+  memcpy(mac.h_source, br->br_tap_mac, ETH_ALEN);
   mac.h_proto = htons(ETH_P_IP);
 
   switch ( sa->sa_family ) {
@@ -746,7 +815,7 @@ int bridge_write_from_foreign_pkt(struct brstate *br, struct container *dst,
     ip.ttl = 64;
     ip.protocol = IPPROTO_SCTP;
     ip.check = 0;
-    ip.saddr = br->br_bridge_addr.s_addr; //sin->sin_addr.s_addr;
+    ip.saddr = br->br_tap_addr.s_addr; //sin->sin_addr.s_addr;
     ip.daddr = arp->ae_ip.s_addr;
 
     ip.check = htons(ip_checksum(&ip, sizeof(ip)));
@@ -852,72 +921,116 @@ int bridge_unregister_sctp(struct brstate *br, struct sctpentry *se) {
   } else return -1;
 }
 
-static void setup_namespace_users(uid_t uid, gid_t gid,
-                                  uid_t user_uid, gid_t user_gid,
-                                  uid_t daemon_uid, gid_t daemon_gid) {
+static int setup_user_namespace(struct brstate *br, int proc_dir) {
   char buf[4096];
-  int deny_setgroups, gid_map, uid_map;
+  int gid_map, uid_map;
   int err;
 
-  fprintf(stderr, "User is %d\n", geteuid());
-
-  deny_setgroups = open("/proc/self/setgroups", O_WRONLY);
-  if ( deny_setgroups < 0) {
-    perror("Could not open /proc/self/setgroups");
-    exit(1);
-  }
-  err = write(deny_setgroups, "deny", sizeof("deny"));
-  if ( err < 0 ) {
-    perror("write(deny_setgroups)");
-    close(deny_setgroups);
-    exit(1);
-  } else
-    close(deny_setgroups);
-
-  gid_map = open("/proc/self/gid_map", O_WRONLY);
+//  deny_setgroups = openat(proc_dir, "setgroups", O_WRONLY);
+//  if ( deny_setgroups < 0) {
+//    perror("Could not open /proc/self/setgroups");
+//    return -1;
+//  }
+//  err = write(deny_setgroups, "deny", sizeof("deny"));
+//  if ( err < 0 ) {
+//    perror("write(deny_setgroups)");
+//    close(deny_setgroups);
+//    return -1;
+//  } else
+//    close(deny_setgroups);
+//
+  gid_map = openat(proc_dir, "gid_map", O_WRONLY);
   if ( gid_map < 0) {
     perror("Could not open /proc/self/gid_map");
-    exit(1);
+    return -1;
   }
 
-  SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1", gid) < sizeof(buf) );
-  fprintf(stderr, "Writing %s\n", buf);
+  if ( br->br_euid == 0 ) {
+    SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n100 %d 1\n",
+                          br->br_daemon_gid, br->br_user_gid) < sizeof(buf) );
+  } else {
+    SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1", br->br_gid) < sizeof(buf) );
+  }
+
   err = write(gid_map, buf, strlen(buf));
   if ( err < 0 ) {
     perror("write(gid_map)");
     close(gid_map);
-    exit(1);
+    return -1;
   } else
     close(gid_map);
 
-  uid_map = open("/proc/self/uid_map", O_WRONLY);
+  uid_map = openat(proc_dir, "uid_map", O_WRONLY);
   if ( uid_map < 0) {
     perror("Could not open /proc/self/uid_map");
     exit(1);
   }
 
-  SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n", uid) < sizeof(buf) );
+  if ( br->br_euid == 0 ) {
+    SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n1000 %d 1\n",
+                          br->br_daemon_uid, br->br_user_uid) < sizeof(buf) );
+  } else {
+    SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n", br->br_uid) < sizeof(buf) );
+  }
+  fprintf(stderr, "uid map is \n%s%d", buf, geteuid());
   err = write(uid_map, buf, strlen(buf));
   if ( err < 0 ) {
     perror("write(uid_map)");
     close(uid_map);
-    exit(1);
+    return -1;
   } else
     close(uid_map);
 
-  fprintf(stderr, "uid is %d\n", getuid());
+  return 0;
+}
 
-  err = setreuid(0, 0);
-  if ( err < 0 ) {
-    perror("setup_namespace_users: setreuid(0, 0)");
-    exit(1);
+static int open_proc_dir(pid_t new_proc) {
+  char path_dir[PATH_MAX];
+
+  if ( snprintf(path_dir, PATH_MAX, "/proc/%d", new_proc) >= sizeof(path_dir) ) {
+    errno = ENOMEM;
+    return -1;
   }
 
-  err = setregid(0, 0);
-  if ( err < 0 ) {
-    perror("setup_namespace_users: setregid(0, 0)");
-    exit(1);
+  fprintf(stderr, "Opening %d\n", new_proc);
+
+  return open(path_dir, O_CLOEXEC);
+}
+
+static int setup_namespace(struct brstate *br, pid_t new_proc,
+                           int port_ix, struct in_addr *this_ip) {
+  int proc_dir, err, netns;
+
+  proc_dir = open_proc_dir(new_proc);
+  if ( proc_dir < 0 ) {
+    perror("setup_namespace: open_proc_dir");
+    return -1;
   }
+
+  err = setup_user_namespace(br, proc_dir);
+  if ( err < 0 ) {
+    close(proc_dir);
+    fprintf(stderr, "setup_namespace: setup_user_namespace failed\n");
+    return -1;
+  }
+
+  netns = openat(proc_dir, "ns/net", O_CLOEXEC);
+  if ( netns < 0 ) {
+    perror("setup_namespace: openat(ns/net)");
+    close(proc_dir);
+    return -1;
+  }
+
+  err = bridge_create_veth_to_ns(br, port_ix, netns, this_ip);
+  if ( err < 0 ) {
+    close(proc_dir);
+    fprintf(stderr, "setup_namespace: bridge_create_veth_to_ns failed\n");
+    return -1;
+  }
+
+  close(proc_dir);
+
+  return 0;
 }
 
 static int bridge_create_tap(struct brstate *br, char *tap_nm, int is_tun) {
@@ -977,16 +1090,24 @@ static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add %s/8 dev bridge",
+                 br->br_iproute_path,
+                 inet_ntop(AF_INET, &br->br_bridge_addr,
+                           mac_buf, sizeof(mac_buf)));
+  if ( err >= sizeof(cmd_buf) ) goto nospc;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmdfailed;
+
   // Set up ebtables to drop all packets, except those destined for
   // the bridge itself or the admin app
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -P FORWARD DROP", br->br_ebroute_path);
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -P FORWARD ACCEPT", br->br_ebroute_path);
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
   err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A FORWARD --source %s -j ACCEPT",
-                 br->br_ebroute_path, mac_ntop(br->br_bridge_mac, mac_buf, sizeof(mac_buf)));
+                 br->br_ebroute_path, mac_ntop(br->br_tap_mac, mac_buf, sizeof(mac_buf)));
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
@@ -997,7 +1118,7 @@ static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
   if ( err != 0 ) goto cmdfailed;
 
   err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A KITE --destination %s -j ACCEPT",
-                 br->br_ebroute_path, mac_ntop(br->br_bridge_mac, mac_buf, sizeof(mac_buf)));
+                 br->br_ebroute_path, mac_ntop(br->br_tap_mac, mac_buf, sizeof(mac_buf)));
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
@@ -1030,52 +1151,392 @@ static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
   exit(3);
 }
 
+static void bridge_respond_error(struct brstate *br, int sts) {
+ struct brctlrsp r = { .bcr_sts = sts };
+ int err;
+
+ err = send(br->br_comm_fd[0], &r, sizeof(r), 0);
+ if ( err < 0 )
+   perror("bridge_respond_error");
+}
+
+static void bridge_respond_success(struct brstate *br) {
+  bridge_respond_error(br, 0);
+}
+
+static void bridge_do_setup_ns(struct brstate *br, struct brctlmsg *_msg, pid_t owner) {
+  struct brctlmsg_setupns *msg = (struct brctlmsg_setupns *) _msg;
+  int err;
+
+  err = setup_namespace(br, owner, msg->bcm_port_ix,
+                        &msg->bcm_ip);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_do_setup_ns: setup_namespace failed\n");
+    bridge_respond_error(br, -1);
+    return;
+  }
+
+  fprintf(stderr, "Bridge: set up namespace\n");
+
+  bridge_respond_success(br);
+}
+
+static void bridge_do_new_tunnel(struct brstate *br, struct brctlmsg *_msg) {
+  struct brctlmsg_newtun *msg = (struct brctlmsg_newtun *) _msg;
+  int err;
+  char cmd_buf[512];
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d --out-if in%d -j ACCEPT",
+                 br->br_ebroute_path, msg->bcm_ports[0], msg->bcm_ports[1]);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d --out-if in%d -j ACCEPT",
+                 br->br_ebroute_path, msg->bcm_ports[0], msg->bcm_ports[1]);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  bridge_respond_success(br);
+  return;
+
+ overflow:
+  fprintf(stderr, "bridge_do_new_tunnel: no space for command\n");
+  bridge_respond_error(br, -2);
+  return;
+
+ cmd_error:
+  fprintf(stderr, "bridge_do_new_tunnel: '%s' failed: %d\n", cmd_buf, err);
+  bridge_respond_error(br, -2);
+  return;
+}
+
+static void bridge_do_del_tunnel(struct brstate *br, struct brctlmsg *_msg) {
+  struct brctlmsg_deltun *msg = (struct brctlmsg_deltun *) _msg;
+  int err;
+  char cmd_buf[512];
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -D TABLE%d --out-if in%d -j ACCEPT",
+                 br->br_ebroute_path, msg->bcm_ports[0], msg->bcm_ports[1]);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -D TABLE%d --out-if in%d -j ACCEPT",
+                 br->br_ebroute_path, msg->bcm_ports[1], msg->bcm_ports[0]);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  bridge_respond_success(br);
+  return;
+
+ overflow:
+  fprintf(stderr, "bridge_do_del_tunnel: no space for command\n");
+  bridge_respond_error(br, -1);
+  return;
+
+ cmd_error:
+  fprintf(stderr, "bridge_do_del_tunnel: '%s' failed: %d\n", cmd_buf, err);
+  bridge_respond_error(br, -1);
+  return;
+}
+
+static void bridge_do_disconnect_port(struct brstate *br, struct brctlmsg *_msg) {
+  struct brctlmsg_delport *msg = (struct brctlmsg_delport *) _msg;
+  char in_if_name[IFNAMSIZ];
+  int err;
+
+  fprintf(stderr, "bridge_do_disconnect_port: port %d\n", msg->bcm_port);
+
+  err = snprintf(in_if_name, sizeof(in_if_name), "in%d", msg->bcm_port);
+  if ( err >= sizeof(in_if_name) ) {
+    fprintf(stderr, "bridge_do_disconnect_port: in_if_name overflow\n");
+    bridge_respond_error(br, -1);
+    return;
+  }
+
+  err = bridge_disconnect_iface(br, in_if_name);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_do_disconnect_port: could not remove %s\n", in_if_name);
+    bridge_respond_error(br, -1);
+    return;
+  }
+
+  err = bridge_delete_veth(br, in_if_name);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_do_disconnect_port: could not delete interface %s\n", in_if_name);
+    bridge_respond_error(br, -1);
+    return;
+  }
+
+  err = bridge_remove_ebtable_spoof(br, msg->bcm_port, &msg->bcm_arp);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_do_disconnect_port: unable to delete anti-spoof ebtable rule\n");
+    bridge_respond_error(br, -1);
+    return;
+  }
+
+  err = bridge_remove_ebtable_sub(br, msg->bcm_port);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_do_disconnect_port: unable to remove ebtable\n");
+    bridge_respond_error(br, -1);
+    return;
+  }
+
+  bridge_respond_success(br);
+}
+
+static void bridge_do_mark_as_admin(struct brstate *br, struct brctlmsg *_msg) {
+  int err;
+  char cmd_buf[512], mac_dbg[64];
+  struct brctlmsg_markadmin *msg = (struct brctlmsg_markadmin *)_msg;
+
+  // Ask ebtables to accept all on this table
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -F TABLE%d",
+                 br->br_ebroute_path, msg->bcm_port);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  // Add the anti-spoofing rule
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A TABLE%d -p IPv4 --ip-source ! %s -j DROP",
+                 br->br_ebroute_path, msg->bcm_port,
+                 inet_ntop(AF_INET, &msg->bcm_arp.ae_ip.s_addr,
+                           mac_dbg, sizeof(mac_dbg)));
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -P TABLE%d ACCEPT", br->br_ebroute_path, msg->bcm_port);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I KITE -1 --destination %s -j ACCEPT",
+                 br->br_ebroute_path,
+                 mac_ntop(msg->bcm_arp.ae_mac, mac_dbg, sizeof(mac_dbg)));
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  bridge_respond_success(br);
+  return;
+
+ overflow:
+  fprintf(stderr, "bridge_mark_as_admin: command overflow\n");
+  bridge_respond_error(br, -1);
+  return;
+
+ cmd_error:
+  fprintf(stderr, "bridge_mark_as_admin: command '%s' fails with %d\n", cmd_buf, err);
+  bridge_respond_error(br, -1);
+  return;
+}
+
+static int open_netns(pid_t p) {
+  char netns_path[PATH_MAX];
+  int err;
+
+  err = snprintf(netns_path, sizeof(netns_path),
+                 "/proc/%d/ns/net", p);
+  if ( err >= sizeof(netns_path) ) {
+    fprintf(stderr, "open_netns: path overflow\n");
+    errno = ENOMEM;
+    return -1;
+  }
+
+  return open(netns_path, O_CLOEXEC);
+}
+
 static int bridge_setup_main(void *br_ptr) {
   struct brstate *br = (struct brstate *)br_ptr;
-  char tap_nm[IFNAMSIZ];
-  int fds[3], tap, netns, userns, err;
+  char tap_nm[IFNAMSIZ], cmd_buf[512];
+  int tap, err, yes = 1, parent_netns;
 
   close(br->br_comm_fd[1]);
 
-  setup_namespace_users(br->br_uid, br->br_gid,
-                        br->br_user_uid, br->br_user_gid,
-                        br->br_daemon_uid, br->br_daemon_gid);
-  fprintf(stderr, "Setup namespace users\n");
+  if ( br->br_euid != 0 ) {
+    fprintf(stderr, "WARNING: running in unprivileged mode.\n");
+    fprintf(stderr, " Containers will be unable to access the internet\n");
+    fprintf(stderr, " Applications will not have privilege isolation within containers\n");
+  }
 
   tap = bridge_create_tap(br, tap_nm, 0);
   fprintf(stderr, "Created tap device %s\n", tap_nm);
 
+  fprintf(stderr, "Creating bridge\n");
   bridge_create_bridge(br, tap_nm);
+  fprintf(stderr, "Created bridge\n");
 
-  netns = open("/proc/self/ns/net", O_CLOEXEC);
-  if ( netns < 0 )
-    perror("open(/proc/self/ns/net)");
+  fprintf(stderr, "Creating internet link\n");
 
-  userns = open("/proc/self/ns/user", O_CLOEXEC);
-  if ( userns < 0 )
-    perror("open(/proc/self/ns/user)");
+  err = bridge_create_veth(br, "internet", "kitelink", 1);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_setup_main: bridge_create_veth failed");
+    return 1;
+  }
 
-  fds[0] = netns;
-  fds[1] = userns;
-  fds[2] = tap;
+  parent_netns = open_netns(g_main_pid);
+  if ( parent_netns < 0 ) {
+    perror("bridge_setup_main: open_netns");
+    return 1;
+  }
 
-  err = send_fd(br->br_comm_fd[0], sizeof(fds) / sizeof(fds[0]), fds);
+  fprintf(stderr, "got parent net ns %d\n", parent_netns);
+
+  err = bridge_move_if_to_ns(br, "kitelink", parent_netns);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_setup_main: bridge_move_if_to_ns failed\n");
+    close(parent_netns);
+    return 1;
+  }
+  close(parent_netns);
+
+  fprintf(stderr, "Moved kitelink to parent\n");
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY "/8 dev internet", br->br_iproute_path);
+  if ( err >= sizeof(cmd_buf) ) {
+    fprintf(stderr, "bridge_setup_main: command overflow while adding internet gateway address\n");
+    return 1;
+  }
+
+  err = system(cmd_buf);
+  if ( err != 0 ) {
+    fprintf(stderr, "bridge_setup_main: '%s' returned %d\n", cmd_buf, err);
+    return 1;
+  }
+
+  fprintf(stderr, "Sending fds\n");
+  err = send_fd(br->br_comm_fd[0], 1, &tap);
   if ( err < 0 ) {
     perror("bridge_setup_main: send_fd");
     return 1;
   }
 
-  close(br->br_comm_fd[0]);
+  fprintf(stderr, "Sent fds\n");
+  // Enable receiving credentials on this socket
+  if ( setsockopt(br->br_comm_fd[0], SOL_SOCKET, SO_PASSCRED,
+                  &yes, sizeof(yes)) < 0 ) {
+    perror("setsockopt(SO_PASSCRED)");
+    return 1;
+  }
+
+  if ( fork() == 0 ) {
+    fprintf(stderr, "bridge running tcpdump\n");
+    execlp("tcpdump", "tcpdump", "-c", "50", "-i", "internet", NULL);
+    exit(120);
+  }
+
+  fprintf(stderr, "Waiting for bridge message\n");
+  // Read from the communications fd and serve requests
+  while (1) {
+    union {
+      struct brctlmsg msg;
+      char buf[8192];
+    } rcvbuf;
+    int msgsz;
+    char control_buf[CMSG_SPACE(sizeof(struct ucred))];
+    struct iovec iov
+      = { .iov_base = rcvbuf.buf,
+          .iov_len = sizeof(rcvbuf.buf) };
+    struct msghdr msginfo
+      = { .msg_name = NULL,
+          .msg_namelen = 0,
+          .msg_iov = &iov,
+          .msg_iovlen = 1,
+          .msg_control = control_buf,
+          .msg_controllen = sizeof(control_buf),
+          .msg_flags = 0 };
+
+    msgsz = recvmsg(br->br_comm_fd[0], &msginfo, 0);
+    if ( msgsz == 0 ) {
+      fprintf(stderr, "bridge shutting down\n");
+      // TODO cleanup actions
+      return 0;
+    } else if ( msgsz < 0 ) {
+      perror("bridge: recvmsg");
+      if ( errno == EAGAIN || errno == EINTR ) continue;
+      return 1;
+    }
+
+    fprintf(stderr, "bridge: received message\n");
+
+    if ( msgsz < sizeof(rcvbuf.msg) ) {
+      fprintf(stderr, "bridge: not enough space in buffer\n");
+      bridge_respond_error(br, -1);
+      continue;
+    }
+
+    switch ( rcvbuf.msg.bcm_what ) {
+    case BR_SETUP_NAMESPACE:
+      if ( msginfo.msg_controllen == 0 ) {
+        fprintf(stderr, "bridge: no control message with BR_SETUP_NAMESPACE\n");
+        bridge_respond_error(br, -1);
+      } else {
+        struct cmsghdr *cmsg;
+        struct ucred uc;
+
+        cmsg = CMSG_FIRSTHDR(&msginfo);
+        if ( cmsg->cmsg_level != SOL_SOCKET ||
+             cmsg->cmsg_type != SCM_CREDENTIALS ||
+             cmsg->cmsg_len != CMSG_LEN(sizeof(struct ucred)) ) {
+          fprintf(stderr, "bridge: no credentials sent with BR_SETUP_NAMESPACE\n");
+          bridge_respond_error(br, -1);
+          continue;
+        }
+
+        memcpy(&uc, CMSG_DATA(cmsg), sizeof(uc));
+
+        fprintf(stderr, "bridge: request to setup %d\n", uc.pid);
+        bridge_do_setup_ns(br, &rcvbuf.msg, uc.pid);
+      }
+      break;
+
+    case BR_NEW_TUNNEL:
+      bridge_do_new_tunnel(br, &rcvbuf.msg);
+      break;
+
+    case BR_DEL_TUNNEL:
+      bridge_do_del_tunnel(br, &rcvbuf.msg);
+      break;
+
+    case BR_DISCONNECT_PORT:
+      bridge_do_disconnect_port(br, &rcvbuf.msg);
+      break;
+
+    case BR_MARK_AS_ADMIN:
+      bridge_do_mark_as_admin(br, &rcvbuf.msg);
+      break;
+
+    default:
+      fprintf(stderr, "Nonsense message received in bridge %d\n", rcvbuf.msg.bcm_what);
+      bridge_respond_error(br, -2);
+      break;
+    }
+  }
+
   return 0;
 }
 
 static int bridge_setup_ns(struct brstate *br) {
-  char stack[8192];
-  int err, new_proc, ns_fds[3], sts;
+  void *stack;
+  int err, new_proc;
+  char cmd_buf[512];
 
+  err = posix_memalign(&stack, sysconf(_SC_PAGE_SIZE), BRIDGE_STACK_SIZE);
+  if ( err != 0 ) {
+    fprintf(stderr, "bridge_setup_ns: could not allocate stack\n");
+    return -1;
+  }
   fprintf(stderr, "bridge_setup_ns: stack is %p\n", stack);
 
-  err = socketpair(AF_UNIX, SOCK_DGRAM, 0, br->br_comm_fd);
+  err = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, br->br_comm_fd);
   if ( err < 0 ) {
     perror("bridge_setup_ns: socketpair");
     return -1;
@@ -1093,9 +1554,11 @@ static int bridge_setup_ns(struct brstate *br) {
     }
   }
 
+  g_main_pid = getpid();
+
   new_proc =
-    clone(&bridge_setup_main, stack + sizeof(stack),
-          CLONE_NEWUSER | CLONE_NEWNET | CLONE_VFORK | SIGCHLD, br);
+    clone(&bridge_setup_main, stack + BRIDGE_STACK_SIZE,
+          CLONE_NEWNET | SIGCHLD, br);
   if ( new_proc == -1 ) {
     perror("bridge_setup_ns: clone");
     return -1;
@@ -1104,41 +1567,42 @@ static int bridge_setup_ns(struct brstate *br) {
   close(br->br_comm_fd[0]);
   br->br_comm_fd[0] = 0;
 
-  err = recv_fd(br->br_comm_fd[1], sizeof(ns_fds) / sizeof(ns_fds[0]), ns_fds);
+  err = recv_fd(br->br_comm_fd[1], 1, &br->br_tapfd);
   if ( err < 0 ) {
-    fprintf(stderr, "bridge_setup_ns: could not fetch namespace fds\n");
+    fprintf(stderr, "bridge_setup_ns: could not fetch TAP fd\n");
     return -1;
   }
 
-  br->br_netns = ns_fds[0];
-  br->br_userns = ns_fds[1];
-  br->br_tapfd = ns_fds[2];
+  fprintf(stderr, "Got tap fd(%d)\n", br->br_tapfd);
 
-  close(br->br_comm_fd[1]);
-  br->br_comm_fd[1] = 0;
-
-  fprintf(stderr, "Got net ns(%d), user ns(%d), and tap fd(%d)\n",
-          br->br_netns, br->br_userns, br->br_tapfd);
-
-  fcntl(br->br_netns, F_SETFD, FD_CLOEXEC);
-  fcntl(br->br_userns, F_SETFD, FD_CLOEXEC);
   fcntl(br->br_tapfd, F_SETFD, FD_CLOEXEC);
 
   if ( set_socket_nonblocking(br->br_tapfd) < 0 )
     fprintf(stderr, "Could not set TAP non blocking\n");
 
-  err = waitpid(new_proc, &sts, 0);
-  if ( err < 0 ) {
-    perror("bridge_setup_ns: waitpid");
-    return -1;
-  }
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY "/8 dev kitelink",
+                 br->br_iproute_path);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
 
-  if ( sts != 0 ) {
-    fprintf(stderr, "bridge_setup_ns: namespace child returned %d\n", sts);
-    return -1;
-  }
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set dev kitelink up",
+                 br->br_iproute_path);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
 
   return 0;
+
+ overflow:
+  fprintf(stderr, "bridge_setup_ns: command overflow while setting up kitelink\n");
+  return -1;
+
+ cmd_error:
+  fprintf(stderr, "bridge_setup_ns: '%s' returned %d\n", cmd_buf, err);
+  return -1;
 }
 
 // Utilities
@@ -1164,14 +1628,16 @@ char *mac_ntop(const unsigned char *mac, char *str, int str_sz) {
 // Container utils
 
 int bridge_setup_root_uid_gid(struct brstate *br) {
-  int err = setreuid(0, 0);
+  int err = syscall(SYS_setuid, 0); //setreuid(0, 0);
   if ( err < 0 ) {
+    errno = -err;
     perror("brudge_setup_root_uid_gid: setreuid");
     return -1;
   }
 
-  err = setregid(0, 0);
+  err = syscall(SYS_setgid, 0); //setregid(0, 0);
   if ( err < 0 ) {
+    errno = -err;
     perror("bridge_setup_root_uid_gid: setregid");
     return -1;
   }
@@ -1257,89 +1723,122 @@ static int bridge_remove_ebtable_sub(struct brstate *br, int port) {
 }
 
 int bridge_disconnect_port(struct brstate *br, int port, struct arpentry *arp) {
-  pid_t new_proc;
+  struct brctlmsg_delport msg
+    = { .bcm_msg = { .bcm_what = BR_DISCONNECT_PORT },
+        .bcm_port = port };
   int err;
-  char in_if_name[IFNAMSIZ];
 
-  fprintf(stderr, "bridge_disconnect_port: port %d\n", port);
+  memcpy(&msg.bcm_arp, arp, sizeof(msg.bcm_arp));
 
-  err = snprintf(in_if_name, sizeof(in_if_name), "in%d", port);
-  if ( err >= sizeof(in_if_name) ) {
-    fprintf(stderr, "bridge_disconnect_port: in_if_name overflow\n");
+  if ( pthread_mutex_lock(&br->br_comm_mutex) == 0 ) {
+    err = send(br->br_comm_fd[1], &msg, sizeof(msg), 0);
+    if ( err < 0 ) {
+      perror("bridge_disconnect_port: send");
+    } else {
+      struct brctlrsp rsp;
+
+      err = bridge_del_arp(br, arp);
+      if ( err < 0 ) {
+        fprintf(stderr, "bridge_disconnect_port: could not delete arp\n");
+        // Do not return, because we need to wait for the response
+      }
+
+      err = recv(br->br_comm_fd[1], &rsp, sizeof(rsp), 0);
+      if ( err < 0 ) {
+        perror("bridge_disconnect_port: recv");
+      }
+
+      err = rsp.bcr_sts;
+    }
+    pthread_mutex_unlock(&br->br_comm_mutex);
+    return err;
+  } else
     return -1;
-  }
-
-  new_proc = fork();
-  if ( new_proc < 0 ) {
-    perror("bridge_disconnect_port: fork");
-    return -1;
-  }
-
-  if ( new_proc == 0 ) {
-    err = bridge_enter_user_namespace(br);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: could not enter user namespace\n");
-      exit(1);
-    }
-
-    err = bridge_enter_network_namespace(br);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: could not enter bridge network namespace\n");
-      exit(1);
-    }
-
-    err = bridge_disconnect_iface(br, in_if_name);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: could not remove %s\n", in_if_name);
-      exit(1);
-    }
-
-    err = bridge_delete_veth(br, in_if_name);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: could not delete interface %s\n", in_if_name);
-      exit(1);
-    }
-
-    // TODO delete ebtable
-
-    err = bridge_remove_ebtable_spoof(br, port, arp);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: unable to delete anti-spoof ebtable rule\n");
-      exit(1);
-    }
-
-    err = bridge_remove_ebtable_sub(br, port);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: unable to remove ebtable\n");
-      exit(1);
-    }
-
-    exit(EXIT_SUCCESS);
-  } else {
-    int sts = 0;
-
-    err = bridge_del_arp(br, arp);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: could not delete arp\n");
-      // DO not return, because we need to wait for new_proc
-    }
-
-    err = waitpid(new_proc, &sts, 0);
-    if ( err < 0 ) {
-      perror("bridge_disconnect_port: waitpid");
-      return -1;
-    }
-
-    fprintf(stderr, "bridge_disconnect_port: got status %d\n", sts);
-
-    if ( sts != 0 ) {
-      fprintf(stderr, "bridge_disconnect_port: namespace child exited with %d\n", sts);
-      return -1;
-    }
-
-    return 0;
-  }
 }
+
+//  pid_t new_proc;
+//  int err;
+//  char in_if_name[IFNAMSIZ];
+//
+//  fprintf(stderr, "bridge_disconnect_port: port %d\n", port);
+//
+//  err = snprintf(in_if_name, sizeof(in_if_name), "in%d", port);
+//  if ( err >= sizeof(in_if_name) ) {
+//    fprintf(stderr, "bridge_disconnect_port: in_if_name overflow\n");
+//    return -1;
+//  }
+//
+//  new_proc = fork();
+//  if ( new_proc < 0 ) {
+//    perror("bridge_disconnect_port: fork");
+//    return -1;
+//  }
+//
+//  if ( new_proc == 0 ) {
+//    err = bridge_enter_user_namespace(br);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: could not enter user namespace\n");
+//      exit(1);
+//    }
+//
+//    err = bridge_enter_network_namespace(br);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: could not enter bridge network namespace\n");
+//      exit(1);
+//    }
+//
+//    err = bridge_disconnect_iface(br, in_if_name);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: could not remove %s\n", in_if_name);
+//      exit(1);
+//    }
+//
+//    err = bridge_delete_veth(br, in_if_name);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: could not delete interface %s\n", in_if_name);
+//      exit(1);
+//    }
+//
+//    // TODO delete ebtable
+//
+//    err = bridge_remove_ebtable_spoof(br, port, arp);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: unable to delete anti-spoof ebtable rule\n");
+//      exit(1);
+//    }
+//
+//    err = bridge_remove_ebtable_sub(br, port);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: unable to remove ebtable\n");
+//      exit(1);
+//    }
+//
+//    exit(EXIT_SUCCESS);
+//  } else {
+//    int sts = 0;
+//
+//    err = bridge_del_arp(br, arp);
+//    if ( err < 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: could not delete arp\n");
+//      // DO not return, because we need to wait for new_proc
+//    }
+//
+//    err = waitpid(new_proc, &sts, 0);
+//    if ( err < 0 ) {
+//      perror("bridge_disconnect_port: waitpid");
+//      return -1;
+//    }
+//
+//    fprintf(stderr, "bridge_disconnect_port: got status %d\n", sts);
+//
+//    if ( sts != 0 ) {
+//      fprintf(stderr, "bridge_disconnect_port: namespace child exited with %d\n", sts);
+//      return -1;
+//    }
+//
+//    return 0;
+//  }
+//}
 
 static int bridge_setup_container_ebtable(struct brstate *br, int port_ix,
                                           const char *in_if_name,
@@ -1383,18 +1882,13 @@ static int bridge_setup_container_ebtable(struct brstate *br, int port_ix,
     return -1;
 }
 
-int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
-                             struct in_addr *this_ip, const char *if_name,
-                             struct arpentry *arp) {
+int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns, struct in_addr *this_ip) {
   int err;
-  pid_t new_proc;
 
   char in_if_name[IFNAMSIZ], out_if_name[IFNAMSIZ], ip_addr_str[INET6_ADDRSTRLEN];
 
   inet_ntop(AF_INET, this_ip, ip_addr_str, sizeof(ip_addr_str));
-  fprintf(stderr, "bridge_create_veth_to_ns: create veth to %d: %s (IP %s)\n", br->br_netns, if_name, ip_addr_str);
-
-  memset(arp, 0, sizeof(*arp));
+  fprintf(stderr, "bridge_create_veth_to_ns: create veth to %d: IP %s\n", this_netns, ip_addr_str);
 
   err = snprintf(in_if_name, sizeof(in_if_name), "in%d", port_ix);
   if ( err >= sizeof(in_if_name) ) {
@@ -1408,115 +1902,21 @@ int bridge_create_veth_to_ns(struct brstate *br, int port_ix, int this_netns,
     return -1;
   }
 
-  new_proc = fork();
-  if ( new_proc < 0 ) {
-    perror("bridge_create_veth_to_ns: fork");
-    return -1;
-  }
-
-  if ( new_proc == 0 ) {
-    err = bridge_enter_network_namespace(br);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_create_veth_to_ns: could not enter bridge network namespace\n");
-      exit(1);
-    }
-
-    err = bridge_create_veth(br, in_if_name, out_if_name);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_create_veth_to_ns: could not create veth\n");
-      exit(2);
-    }
-
-    err = bridge_move_if_to_ns(br, out_if_name, this_netns);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_create_veth_to_ns: could not move interface\n");
-      exit(3);
-    }
-
-    err = bridge_setup_container_ebtable(br, port_ix, in_if_name, ip_addr_str);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_create_veth_to_ns: could not set up ebtables\n");
-      exit(4);
-    }
-
-    exit(EXIT_SUCCESS);
-  } else {
-    int sts = 0;
-    char cmd_buf[512];
-
-    fprintf(stderr, "Going to wait for pid %d\n", new_proc);
-    err = waitpid(new_proc, &sts, 0);
-    if ( err < 0 ) {
-      perror("bridge_create_veth_to_ns: waitpid");
-      return -1;
-    }
-
-    fprintf(stderr, "bridge_create_veth_to_ns: got status %d\n", sts);
-
-    if ( sts != 0 ) {
-      fprintf(stderr, "bridge_create_veth_to_ns: namespace child exited with %d\n", sts);
-      return -1;
-    }
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s name %s multicast off",
-                   br->br_iproute_path, out_if_name, if_name);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s address add %s/8 broadcast 10.255.255.255 dev %s",
-                   br->br_iproute_path, ip_addr_str, if_name);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set dev %s up",
-                   br->br_iproute_path, if_name);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-
-    err = find_hw_addr(if_name, arp->ae_mac);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_create_veth_to_ns: could not find hardware address of %s\n", if_name);
-      return -1;
-    }
-
-    memcpy(&arp->ae_ip, this_ip, sizeof(arp->ae_ip));
-
-    return 0;
-  overflow:
-    fprintf(stderr, "bridge_create_veth_to_ns: no space for commmand '%s'\n", cmd_buf);
-    return -1;
-
-  cmd_error:
-    fprintf(stderr, "bridge_create_veth_to_ns: %s failed: %d\n", cmd_buf, err);
-    return -1;
-  }
-}
-
-static int bridge_enter_user_namespace(struct brstate *br) {
-  int err;
-
-  err = setns(br->br_userns, CLONE_NEWUSER);
+  err = bridge_create_veth(br, in_if_name, out_if_name, 1);
   if ( err < 0 ) {
-    perror("bridge_enter_user_namespace: setns");
+    fprintf(stderr, "bridge_create_veth_to_ns: could not create veth\n");
     return -1;
   }
 
-  return 0;
-}
-
-static int bridge_enter_network_namespace(struct brstate *br) {
-  int err;
-
-  err = setns(br->br_netns, CLONE_NEWNET);
+  err = bridge_move_if_to_ns(br, out_if_name, this_netns);
   if ( err < 0 ) {
-    perror("bridge_enter_network_namespace: setns");
+    fprintf(stderr, "bridge_create_veth_to_ns: could not move interface\n");
+    return -1;
+  }
+
+  err = bridge_setup_container_ebtable(br, port_ix, in_if_name, ip_addr_str);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_create_veth_to_ns: could not set up ebtables\n");
     return -1;
   }
 
@@ -1625,7 +2025,9 @@ static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int net
   return 0;
 }
 
-static int bridge_create_veth(struct brstate *br, const char *in_if_name, const char *out_if_name) {
+static int bridge_create_veth(struct brstate *br,
+                              const char *in_if_name, const char *out_if_name,
+                              int set_in_master ) {
   char cmd_buf[512];
   int err;
 
@@ -1636,12 +2038,14 @@ static int bridge_create_veth(struct brstate *br, const char *in_if_name, const 
   err = system(cmd_buf);
   if ( err != 0 ) goto cmd_fails;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s master bridge",
-                 br->br_iproute_path, in_if_name);
-  if ( err >= sizeof(cmd_buf) ) goto overflow;
+  if ( set_in_master ) {
+    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s master bridge",
+                   br->br_iproute_path, in_if_name);
+    if ( err >= sizeof(cmd_buf) ) goto overflow;
 
-  err = system(cmd_buf);
-  if ( err != 0 ) goto cmd_fails;
+    err = system(cmd_buf);
+    if ( err != 0 ) goto cmd_fails;
+  }
 
   err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s up",
                  br->br_iproute_path, in_if_name);
@@ -1740,285 +2144,124 @@ static int find_hw_addr(const char *if_name, unsigned char *mac_addr) {
   return 0;
 }
 
-// Ask the bridge to accept all traffic going in and out of this port
-int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp,
-                         int *inet_tap) {
-  pid_t new_proc;
+static int enable_internet_in_container(struct brstate *br) {
+  char cmd_buf[512];
   int err;
 
-  *inet_tap = -1;
-
-  new_proc = fork();
-  if ( new_proc < 0 ) {
-    perror("bridge_mark_as_admin: fork");
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s route add default via " INTERNET_GATEWAY,
+                 br->br_iproute_path);
+  if ( err >= sizeof(cmd_buf) ) {
+    fprintf(stderr, "enable_internet_in_container: command buffer overflow\n");
     return -1;
   }
 
-  if ( new_proc == 0 ) {
-    char cmd_buf[512], mac_dbg[64];
-
-    err = bridge_enter_network_namespace(br);
-    if ( err < 0 ) {
-      fprintf(stderr, "bridge_mark_as_admin: could not enter namespace\n");
-      exit(1);
-    }
-
-    // Ask ebtables to accept all on this table
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -F TABLE%d", br->br_ebroute_path, port_ix);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    // Add the anti-spoofing rule
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A TABLE%d -p IPv4 --ip-source ! %s -j DROP",
-                   br->br_ebroute_path, port_ix, inet_ntop(AF_INET, &arp->ae_ip.s_addr, mac_dbg, sizeof(mac_dbg)));
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -P TABLE%d ACCEPT", br->br_ebroute_path, port_ix);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I KITE -1 --destination %s -j ACCEPT",
-                   br->br_ebroute_path,
-                   mac_ntop(arp->ae_mac, mac_dbg, sizeof(mac_dbg)));
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-//    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", br->br_ebroute_path);
-//    if ( err >= sizeof(cmd_buf) ) goto overflow;
-//
-//    err = system(cmd_buf);
-//    if ( err != 0 ) goto cmd_error;
-
-    exit(EXIT_SUCCESS);
-
-  overflow:
-    fprintf(stderr, "bridge_mark_as_admin: command overflow\n");
-    exit(EXIT_FAILURE);
-
-  cmd_error:
-    fprintf(stderr, "bridge_mark_as_admin: command '%s' fails with %d\n", cmd_buf, err);
-    exit(EXIT_FAILURE);
-  } else {
-    int sts;
-    char cmd_buf[512], dev_name[IFNAMSIZ];
-    err = waitpid(new_proc, &sts, 0);
-    if ( err < 0 ) {
-      perror("bridge_mark_as_admin: waitpid");
-      return -1;
-    }
-
-    if ( sts != 0 ) {
-      fprintf(stderr, "bridge_mark_as_admin: namespace child returned %d\n", sts);
-      return -1;
-    }
-
-    // Admin applications are able to use the internet
-    //
-    // Enable internet by creating a TUN device at 192.168.1.1. Set
-    // this as gateway.
-    //
-    // Then, fork a separate internet ppp daemon to actually inject
-    // the TUN requests on the global network.
-    //
-    // The tun daemon is setuid."
-
-    fprintf(stderr, "Make tun device\n");
-
-    *inet_tap = bridge_create_tap(br, dev_name, 1);
-    if ( *inet_tap < 0 ) {
-      fprintf(stderr, "bridge_mark_as_admin: could not create internet gateway\n");
-      return -1;
-    }
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set %s name inet up",
-                   br->br_iproute_path, dev_name);
-    if ( err >= sizeof(cmd_buf) ) goto overflow_c;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error_c;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add 192.168.1.1 dev inet", br->br_iproute_path);
-    if ( err >= sizeof(cmd_buf) ) goto overflow_c;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error_c;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s route add default via 192.168.1.1", br->br_iproute_path);
-    if ( err >= sizeof(cmd_buf) )
-      goto overflow_c;
-
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error_c;
-
-    fprintf(stderr, "Routes are\n");
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s route", br->br_iproute_path);
-    err = system(cmd_buf);
-    fprintf(stderr, "Links are\n");
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link", br->br_iproute_path);
-    err = system(cmd_buf);
-
-    return 0;
-
-  overflow_c:
-    if ( *inet_tap ) close(*inet_tap);
-    *inet_tap = -1;
-    fprintf(stderr, "bridge_mark_as_admin: command overflow in container\n");
-    return -1;
-
-  cmd_error_c:
-    if ( *inet_tap ) close(*inet_tap);
-    *inet_tap = -1;
-    fprintf(stderr, "bridge_mark_as_admin: command '%s' fails with %d in container\n", cmd_buf, err);
+  err = system(cmd_buf);
+  if ( err != 0 ) {
+    fprintf(stderr, "enable_internet_in_container: command '%s' failed: %d\n",
+            cmd_buf, err);
     return -1;
   }
+
+  return 0;
 }
 
-static void brtunnel_init(struct brtunnel *tun) {
-  int err;
-  pid_t new_proc;
-  char cmd_buf[512];
+// Ask the bridge to accept all traffic going in and out of this port
+int bridge_mark_as_admin(struct brstate *br, int port_ix, struct arpentry *arp) {
+  struct brctlmsg_markadmin msg
+    = { .bcm_msg = { .bcm_what = BR_MARK_AS_ADMIN },
+        .bcm_port = port_ix };
 
-  new_proc = fork();
-  if ( new_proc < 0 ) {
-    perror("brtunnel_init: fork");
-    return;
-  }
+  memcpy(&msg.bcm_arp, arp, sizeof(msg.bcm_arp));
 
-  if ( new_proc == 0 ) {
-    err = bridge_enter_user_namespace(tun->brtun_br);
+  if ( pthread_mutex_lock(&br->br_comm_mutex) == 0 ) {
+    int ret = 0, err;
+    err = send(br->br_comm_fd[1], &msg, sizeof(msg), 0);
     if ( err < 0 ) {
-      fprintf(stderr, "brtunnel_init: could not enter bridge user namespace\n");
-      exit(1);
+      perror("bridge_mark_as_admin: send");
+      ret = -1;
+    } else {
+      struct brctlrsp rsp = { .bcr_sts = -1 };
+      err = recv(br->br_comm_fd[1], &rsp, sizeof(rsp), 0);
+      if ( err < 0 ) {
+        perror("bridge_mark_as_admi: recv");
+        ret = -1;
+      } else
+        ret = rsp.bcr_sts;
+
+      if ( ret == 0 ) {
+        ret = enable_internet_in_container(br);
+        if ( ret < 0 ) {
+          fprintf(stderr, "bridge_mark_as_admin: enable_internet_in_container fails\n");
+        }
+      }
     }
-
-    err = bridge_enter_network_namespace(tun->brtun_br);
-    if ( err < 0 ) {
-      fprintf(stderr, "brtunnel_init: could not enter bridge network namespace\n");
-      exit(1);
-    }
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d --out-if in%d -j ACCEPT",
-                   tun->brtun_br->br_ebroute_path, tun->brtun_ports[0], tun->brtun_ports[1]);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d --out-if in%d -j ACCEPT",
-                   tun->brtun_br->br_ebroute_path, tun->brtun_ports[1], tun->brtun_ports[0]);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-//    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -Ln", tun->brtun_br->br_ebroute_path);
-//    if ( err >= sizeof(cmd_buf) ) goto overflow;
-//    err = system(cmd_buf);
-//    if ( err != 0 ) goto cmd_error;
-
-    exit(0);
-
-  overflow:
-    fprintf(stderr, "brtunnel_init: no space for command '%s'\n", cmd_buf);
-    exit(2);
-
-  cmd_error:
-    fprintf(stderr, "brtunnel_init: '%s' failed: %d\n", cmd_buf, err);
-    exit(3);
-  } else {
-    int sts = 0;
-
-    err = waitpid(new_proc, &sts, 0);
-    if ( err < 0 ) {
-      perror("brtunnel_init: waitpid");
-      return;
-    }
-
-    if ( sts != 0 ) {
-      fprintf(stderr, "brtunnel_init: child returned %d\n", sts);
-      return;
-    }
-  }
+    pthread_mutex_unlock(&br->br_comm_mutex);
+    return ret;
+  } else
+    return -1;
 }
 
 static void brtunnel_deinit(struct brtunnel *tun) {
+  struct brctlmsg_deltun msg;
+  struct brstate *br = tun->brtun_br;
   int err;
-  pid_t new_proc;
-  char cmd_buf[512];
 
-  new_proc = fork();
-  if ( new_proc < 0 ) {
-    perror("brtunnel_init: fork");
-    return;
-  }
+  msg.bcm_msg.bcm_what = BR_DEL_TUNNEL;
+  memcpy(msg.bcm_ports, tun->brtun_ports, sizeof(msg.bcm_ports));
 
-  if ( new_proc == 0 ) {
-    // Undo everything in brtunnel_init
-    err = bridge_enter_user_namespace(tun->brtun_br);
+  if ( pthread_mutex_lock(&br->br_comm_mutex) == 0 ) {
+    err = send(br->br_comm_fd[1], &msg, sizeof(msg), 0);
     if ( err < 0 ) {
-      fprintf(stderr, "brtunnel_deinit: could not enter bridge user namespace\n");
-      exit(1);
+      perror("brtunnel_deinit: send");
+    } else {
+      struct brctlrsp rsp;
+      err = recv(br->br_comm_fd[1], &rsp, sizeof(rsp), 0);
+      if ( err < 0 ) {
+        perror("brtunnel_deinit: recv");
+      } else if ( rsp.bcr_sts < 0 ) {
+        fprintf(stderr, "brtunnel_deinit: bridge signalled error while deinitializing\n");
+      }
     }
-
-    err = bridge_enter_network_namespace(tun->brtun_br);
-    if ( err < 0 ) {
-      fprintf(stderr, "brtunnel_init: could not enter bridge network namespace\n");
-      exit(1);
-    }
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -D TABLE%d --out-if in%d -j ACCEPT",
-                   tun->brtun_br->br_ebroute_path, tun->brtun_ports[0], tun->brtun_ports[1]);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -D TABLE%d --out-if in%d -j ACCEPT",
-                   tun->brtun_br->br_ebroute_path, tun->brtun_ports[1], tun->brtun_ports[0]);
-    if ( err >= sizeof(cmd_buf) ) goto overflow;
-    err = system(cmd_buf);
-    if ( err != 0 ) goto cmd_error;
-
-    exit(0);
-
-  overflow:
-    fprintf(stderr, "brtunnel_deinit: no space for command '%s'\n", cmd_buf);
-    exit(2);
-
-  cmd_error:
-    fprintf(stderr, "brtunnel_deinit: '%s' failed: %d\n", cmd_buf, err);
-    exit(3);
-  } else {
-    int sts;
-
-    err = waitpid(new_proc, &sts, 0);
-    if ( err < 0 ) {
-      perror("brtunnel_deinit: waitpid");
-      return;
-    }
-
-    if ( sts != 0 ) {
-      fprintf(stderr, "brtunnel_deinit: child returned %d\n", sts);
-    }
+    pthread_mutex_unlock(&br->br_comm_mutex);
   }
 }
 
 static void brtunnel_evtfn(struct eventloop *el, int op, void *arg) {
   struct qdevent *qde = arg;
   struct brtunnel *tun;
+  struct brstate *br;
+
+  struct brctlmsg_newtun ntmsg;
+
+  int err;
 
   switch ( op ) {
   case OP_BRTUNNEL_INIT:
     tun = STRUCT_FROM_BASE(struct brtunnel, brtun_init_evt, qde->qde_sub);
-    brtunnel_init(tun);
+    br = tun->brtun_br;
+
+    ntmsg.bcm_msg.bcm_what = BR_NEW_TUNNEL;
+    memcpy(ntmsg.bcm_ports, tun->brtun_ports, sizeof(ntmsg.bcm_ports));
+
+    if ( pthread_mutex_lock(&br->br_comm_mutex) == 0 ) {
+      err = send(br->br_comm_fd[1], &ntmsg, sizeof(ntmsg), 0);
+      if ( err < 0 ) {
+        perror("brtunnel_evtfn: send");
+      } else {
+        struct brctlrsp rsp;
+
+        err = recv(br->br_comm_fd[1], &rsp, sizeof(rsp), 0);
+        if ( err < 0 ) {
+          perror("brtunnel_evtfn: recv");
+        } else {
+          if ( rsp.bcr_sts != 0 )
+            fprintf(stderr, "brtunnel: could not initialize: %d\n", rsp.bcr_sts);
+        }
+      }
+      pthread_mutex_unlock(&br->br_comm_mutex);
+    } else
+      fprintf(stderr, "brtunnel: could not initialize because we couldn't unlock mutex\n");
+
     break;
 
   default:
@@ -2109,7 +2352,7 @@ static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
     { .iov_base = rsp, .iov_len = rspsz }
   };
 
-  memcpy(rsp_eth.h_source, br->br_bridge_mac, ETH_ALEN);
+  memcpy(rsp_eth.h_source, br->br_tap_mac, ETH_ALEN);
   memcpy(rsp_eth.h_dest, bpr->bpr_srchost, ETH_ALEN);
   rsp_eth.h_proto = htons(ETH_P_IP);
 
@@ -2122,7 +2365,7 @@ static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
   rsp_ip.ttl = 64;
   rsp_ip.protocol = IPPROTO_UDP;
   rsp_ip.check = 0;
-  rsp_ip.saddr = br->br_bridge_addr.s_addr;
+  rsp_ip.saddr = br->br_tap_addr.s_addr;
   rsp_ip.daddr = bpr->bpr_srcaddr.sin_addr.s_addr;
 
   rsp_ip.check = htons(ip_checksum(&rsp_ip, sizeof(rsp_ip)));
@@ -2135,7 +2378,7 @@ static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
   bridge_write_tap_pktv(br, iov, sizeof(iov) / sizeof(iov[0]));
 }
 
-static void bridge_respond_error(struct brstate *br, struct brpermrequest *bpr, int err) {
+static void bridge_respond_bpr_error(struct brstate *br, struct brpermrequest *bpr, int err) {
   struct stkdmsg rsp;
   rsp.sm_flags = STKD_MKFLAGS(STKD_RSP | STKD_ERROR, STKD_OPEN_APP_REQUEST);
   rsp.sm_data.sm_error = htonl(err);
@@ -2146,13 +2389,13 @@ static void bridge_respond_error(struct brstate *br, struct brpermrequest *bpr, 
 static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest *bpr) {
   if ( bpr->bpr_sts < 0 ) {
     fprintf(stderr, "bridge_handle_bpr_response: brpermrequest fails with %d\n", bpr->bpr_sts);
-    bridge_respond_error(br, bpr, STKD_ERROR_SYSTEM_ERROR);
+    bridge_respond_bpr_error(br, bpr, STKD_ERROR_SYSTEM_ERROR);
   } else {
     switch ( bpr->bpr_perm.bp_type ) {
     case BR_PERM_APPLICATION:
       if ( !bpr->bpr_persona ) {
         fprintf(stderr, "bridge_handle_bpr_response: expected bpr_persona to be filled for BR_PERM_APPLICATION\n");
-        bridge_respond_error(br, bpr, STKD_ERROR_PERSONA_DOES_NOT_EXIST);
+        bridge_respond_bpr_error(br, bpr, STKD_ERROR_PERSONA_DOES_NOT_EXIST);
       } else {
         struct app *a = appstate_get_app_by_url_ex(br->br_appstate,
                                                    (const char *)bpr->bpr_perm.bp_data,
@@ -2160,7 +2403,7 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
         if ( !a ) {
           fprintf(stderr, "bridge_handle_bpr_response: could not find app %.*s\n",
                   bpr->bpr_perm_size, bpr->bpr_perm.bp_data);
-          bridge_respond_error(br, bpr, STKD_ERROR_APP_DOES_NOT_EXIST);
+          bridge_respond_bpr_error(br, bpr, STKD_ERROR_APP_DOES_NOT_EXIST);
         } else {
           struct appinstance *ai = launch_app_instance(bpr->bpr_persona->p_appstate,
                                                        bpr->bpr_persona, a);
@@ -2413,3 +2656,80 @@ int bridge_write_site_routes(struct brstate *br, struct pconn *pc) {
     return 0;
   }
 }
+
+// Bridge API
+
+int bridge_setup_container(struct brstate *br, int port_ix,
+                           struct in_addr *this_addr, const char *if_name,
+                           struct arpentry *arp) {
+  char cmd_buf[512], ip_addr_str[INET6_ADDRSTRLEN];
+  int err, ret = 0;
+  struct brctlmsg_setupns msg =
+    { .bcm_msg = { .bcm_what = BR_SETUP_NAMESPACE },
+      .bcm_port_ix = port_ix };
+  struct brctlrsp rsp;
+
+  memcpy(&msg.bcm_ip, this_addr, sizeof(msg.bcm_ip));
+
+  fprintf(stderr, "bridge_setup_container: going to send message\n");
+
+  if ( pthread_mutex_lock(&br->br_comm_mutex) == 0 ) {
+    err = send(br->br_comm_fd[1], &msg, sizeof(msg), 0);
+    if ( err < 0 ) {
+      perror("bridge_setup_container: sendmsg");
+      ret = -1;
+    } else {
+      err = recv(br->br_comm_fd[1], &rsp, sizeof(rsp), 0);
+      if ( err < 0 ) {
+        perror("bridge_setup_container: recv");
+        ret = -1;
+      } else {
+        ret = rsp.bcr_sts;
+      }
+    }
+    pthread_mutex_unlock(&br->br_comm_mutex);
+  }
+
+  if ( ret < 0 ) return -1;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set out%d name %s multicast off",
+                 br->br_iproute_path, port_ix, if_name);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  inet_ntop(AF_INET, this_addr, ip_addr_str, sizeof(ip_addr_str));
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s address add %s/8 broadcast 10.255.255.255 dev %s",
+                 br->br_iproute_path, ip_addr_str, if_name);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set dev %s up",
+                 br->br_iproute_path, if_name);
+  if ( err >= sizeof(cmd_buf) ) goto overflow;
+
+  err = system(cmd_buf);
+  if ( err != 0 ) goto cmd_error;
+
+  err = find_hw_addr(if_name, arp->ae_mac);
+  if ( err < 0 ) {
+    fprintf(stderr, "bridge_setup_container: could not find hardware address of %s\n", if_name);
+    return -1;
+  }
+
+  memcpy(&arp->ae_ip, this_addr, sizeof(arp->ae_ip));
+
+  return 0;
+
+  overflow:
+    fprintf(stderr, "bridge_setup_container: no space for commmand '%s'\n", cmd_buf);
+    return -1;
+
+  cmd_error:
+    fprintf(stderr, "bridge_setup_container: %s failed: %d\n", cmd_buf, err);
+    return -1;
+}
+

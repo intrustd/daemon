@@ -7,18 +7,19 @@
 #define IDENTIFIER_ARG   0x201
 
 static int register_app_usage() {
-  fprintf(stderr, "Usage: appliancectl register-app [-h] [-f] [-P] <app-manifest-url>\n");
+  fprintf(stderr, "Usage: appliancectl register-app [-h] [-f] [-P] <app-manifest-url> [-S <signature-url>]\n");
   return 1;
 }
 
 int register_app(int argc, char **argv) {
   char buf[KITE_MAX_LOCAL_MSG_SZ];
   char *app_manifest;
+  const char *signature = NULL;
   struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
   struct kitelocalattr *attr = KLM_FIRSTATTR(msg, sizeof(buf));
   int sz = KLM_SIZE_INIT, sk, err, c, do_force = 0, show_progress = 0;
 
-  while ( (c = getopt(argc, argv, "hfP")) ) {
+  while ( (c = getopt(argc, argv, "hfPS:")) ) {
     if ( c == -1 ) break;
 
     switch ( c ) {
@@ -28,6 +29,10 @@ int register_app(int argc, char **argv) {
 
     case 'P':
       show_progress = 1;
+      break;
+
+    case 'S':
+      signature = optarg;
       break;
 
     case 'h':
@@ -57,6 +62,15 @@ int register_app(int argc, char **argv) {
     assert(attr);
     attr->kla_name = ntohs(KLA_FORCE);
     attr->kla_length = ntohs(KLA_SIZE(0));
+    KLM_SIZE_ADD_ATTR(sz, attr);
+  }
+
+  if ( signature ) {
+    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    assert(attr);
+    attr->kla_name = ntohs(KLA_APP_SIGNATURE_URL);
+    attr->kla_length = ntohs(KLA_SIZE(strlen(signature)));
+    memcpy(KLA_DATA_UNSAFE(attr, char*), signature, strlen(signature));
     KLM_SIZE_ADD_ATTR(sz, attr);
   }
 

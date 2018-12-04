@@ -1057,18 +1057,39 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
 
   appstate_clear(as);
 
-//  if ( our_uid == 0 ) {
-//    if ( setegid(ac->ac_daemon_group) < 0 ) {
-//      perror("setegid");
-//      goto error;
-//    }
-//
-//    if ( seteuid(ac->ac_daemon_user) < 0 ) {
-//      perror("seteuid");
-//      goto error;
-//    }
-//  }
+  if ( !(AC_VALGRIND(ac)) ) {
+    // this will fork, and return only in the child.
+    //
+    // The parent becomes the bridge controller.
+    err = bridge_init(&as->as_bridge, as, our_uid,
+                      ac->ac_kite_user, ac->ac_kite_user_group,
+                      ac->ac_daemon_user, ac->ac_daemon_group,
+                      ac->ac_iproute_bin, ac->ac_ebroute_bin);
+    if ( err < 0 ) {
+      fprintf(stderr, "appstate_setup: bridge_init failed\n");
+      goto error;
+    }
+  }
 
+  // Set up internet bridging
+  if ( ac->ac_inet_bridge ) {
+    fprintf(stderr, "Would set up internet bridging now\n");
+  }
+
+  // Drop privileges
+  if ( our_uid == 0 ) {
+    fprintf(stderr, "Dropping privileges to %d:%d\n", ac->ac_daemon_user, ac->ac_daemon_group);
+
+    if ( setgid(ac->ac_daemon_group) < 0 ) {
+      perror("setresgid");
+      goto error;
+    }
+
+    if ( setuid(ac->ac_daemon_user) < 0 ) {
+      perror("setreuid");
+      goto error;
+    }
+  }
   as->as_conf_dir = ac->ac_conf_dir;
   as->as_webrtc_proxy_path = ac->ac_webrtc_proxy_path;
   as->as_persona_init_path = ac->ac_persona_init_path;
@@ -1142,37 +1163,6 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
                         30, 60 * 5, 32) < 0 ) {
     fprintf(stderr, "appstate_setup: could not initialize dtls cookies\n");
     goto error;
-  }
-
-  if ( !(AC_VALGRIND(ac)) ) {
-    err = bridge_init(&as->as_bridge, as, our_uid,
-                      ac->ac_kite_user, ac->ac_kite_user_group,
-                      ac->ac_daemon_user, ac->ac_daemon_group,
-                      ac->ac_iproute_bin, ac->ac_ebroute_bin);
-    if ( err < 0 ) {
-      fprintf(stderr, "appstate_setup: bridge_init failed\n");
-      goto error;
-    }
-  }
-
-  // Set up internet bridging
-  if ( ac->ac_inet_bridge ) {
-    fprintf(stderr, "Would set up internet bridging now\n");
-  }
-
-  // Drop privileges
-  if ( our_uid == 0 ) {
-    fprintf(stderr, "Dropping privileges to %d:%d\n", ac->ac_daemon_user, ac->ac_daemon_group);
-
-    if ( setgid(ac->ac_daemon_group) < 0 ) {
-      perror("setresgid");
-      goto error;
-    }
-
-    if ( setuid(ac->ac_daemon_user) < 0 ) {
-      perror("setreuid");
-      goto error;
-    }
   }
 
   if ( appstate_open_trusted_keys(as, ac) < 0 )
@@ -1358,7 +1348,9 @@ void appstate_start_services(struct appstate *as, struct appconf *ac) {
   eventloop_subscribe_fd(&as->as_eventloop, as->as_local_fd, FD_SUB_ACCEPT, &as->as_local_sub);
 
   qdevtsub_init(&as->as_autostart_evt, OP_APPSTATE_AUTOSTART_APPS, appstatefn);
-  eventloop_queue(&as->as_eventloop, &as->as_autostart_evt);
+  if ( !AC_VALGRIND(ac) ) {
+    eventloop_queue(&as->as_eventloop, &as->as_autostart_evt);
+  }
 }
 
 int appstate_create_flock(struct appstate *as, struct flock *f, int is_old) {
@@ -1650,13 +1642,15 @@ int appstate_get_personaset(struct appstate *as, struct personaset **ps) {
   return ret;
 }
 
-struct appupdater *appstate_queue_update_ex(struct appstate *as, const char *uri, size_t uri_len,
+struct appupdater *appstate_queue_update_ex(struct appstate *as,
+                                            const char *uri, size_t uri_len,
+                                            const char *sign_uri, size_t sign_uri_len,
                                             int reason, int progress, struct app *app) {
   if ( pthread_rwlock_wrlock(&as->as_applications_mutex) == 0 ) {
     struct appupdater *ret;
     HASH_FIND(au_hh, as->as_updates, uri, uri_len, ret);
     if ( !ret ) {
-      ret = appupdater_new(as, uri, uri_len, reason, progress, app);
+      ret = appupdater_new(as, uri, uri_len, sign_uri, sign_uri_len, reason, progress, app);
       if ( ret ) {
         APPUPDATER_REF(ret);
         HASH_ADD_KEYPTR(au_hh, as->as_updates, ret->au_url, strlen(ret->au_url), ret);

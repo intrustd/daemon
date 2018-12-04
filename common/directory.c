@@ -134,3 +134,47 @@ int recv_fd(int fd, size_t num, int *fds) {
     return 0;
   }
 }
+
+int readlink_recursive(const char *path, char *out, size_t out_sz) {
+  struct stat s;
+  int err;
+
+  if ( strlen(path) >= out_sz ) {
+    errno = ENOSPC;
+    return -1;
+  }
+
+  strncpy(out, path, out_sz);
+  out[out_sz - 1] = '\0';
+
+  do {
+    err = stat(out, &s);
+    if ( err < 0 )
+      return -1;
+
+    if ( (s.st_mode & S_IFMT) == S_IFLNK ) {
+      ssize_t rlerr;
+      char tmp[PATH_MAX];
+
+      rlerr = readlink(out, tmp, sizeof(tmp));
+      if ( rlerr < 0 )
+        return -1;
+
+      if ( rlerr == sizeof(tmp) ) {
+        errno = ENOSPC;
+        return -1;
+      }
+
+      tmp[rlerr] = '\0';
+
+      if ( rlerr >= out_sz ) {
+        errno = ENOSPC;
+        return -1;
+      }
+
+      strcpy(out, tmp);
+    }
+  } while ( (s.st_mode & S_IFMT) == S_IFLNK );
+
+  return err;
+}

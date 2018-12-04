@@ -20,6 +20,11 @@
 #define OP_CONTAINER_TIMES_OUT EVT_CTL_CUSTOM
 #define OP_CONTAINER_CHECK_PERM (EVT_CTL_CUSTOM + 1)
 
+struct containerchildinfo {
+  struct container *cci_cont;
+  int cci_comm;
+};
+
 struct containerinit {
   int            ci_bridge_port;
   struct in_addr ci_ip;
@@ -37,8 +42,6 @@ static int containerpermfn(struct arpentry *ae, int op, void *arg, ssize_t sz);
 static int container_start_child(void *c_);
 
 static void ctrwaiterevtfn(struct eventloop *el, int op, void *arg);
-
-static int g_child_sync_pipes[] = { -1, -1 }; // No need for synchronization because of fork()
 
 void container_clear(struct container *c) {
   c->c_bridge = NULL;
@@ -234,10 +237,20 @@ static int container_setup_sctp(struct container *c) {
 }
 
 int container_start(struct container *c) {
+  static const size_t child_stack_sz = 256 * 1024;
   int err, ipc_sockets[2] = { -1, -1 };
   uint8_t sts;
-  pid_t child = -1, real_child = -1;
+  pid_t child = -1;
   struct containerinit ci_data;
+  char *child_stack = NULL;
+  int clone_flags = CLONE_PARENT | SIGCHLD;
+  struct containerchildinfo cci = { .cci_cont = c };
+
+  err = posix_memalign((void **)&child_stack, sysconf(_SC_PAGE_SIZE), child_stack_sz);
+  if ( err != 0 ) {
+    fprintf(stderr, "container_start: could not allocate stack\n");
+    return -1;
+  }
 
   err = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, ipc_sockets);
   if ( err < 0 ) {
@@ -245,99 +258,26 @@ int container_start(struct container *c) {
     goto error;
   }
 
-  child = fork();
-  if ( child < 0 ) {
-    perror("container_start: fork");
-    goto error;
-  } else if ( child == 0 ) {
-    char *child_stack = NULL;
-    int yes = 1;
-    int clone_flags = CLONE_PARENT | SIGCHLD;
-    size_t child_stack_sz = 256 * 1024;
+  cci.cci_comm = ipc_sockets[1];
 
-    err = posix_memalign((void **)&child_stack, sysconf(_SC_PAGE_SIZE), child_stack_sz);
-    if ( err != 0 ) {
-      fprintf(stderr, "container_start: could not allocate stack\n");
-      exit(1);
-    }
-
-    close(ipc_sockets[0]);
-    ipc_sockets[0] = -1;
-
-    err = pipe(g_child_sync_pipes);
-    if ( err < 0 ) {
-      perror("container_start: pipe");
-      exit(1);
-    }
-
-    // child process
-    err = setns(c->c_bridge->br_userns, CLONE_NEWUSER);
-    if ( err < 0 ) {
-      perror("container_start: setns");
-      exit(1);
-    }
-
-    // Because we've forked, writing this does not overwrite the value in the parent process
-    c->c_init_comm = ipc_sockets[1];
-
-    if ( c->c_flags & CONTAINER_FLAG_NETWORK_ONLY ) {
-      clone_flags |= CLONE_NEWNET | CLONE_NEWUTS;
-    } else {
-      clone_flags |= CLONE_NEWCGROUP | CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS |
-        CLONE_NEWPID | CLONE_NEWUTS;
-    }
-
-    if ( c->c_flags & CONTAINER_FLAG_ENABLE_SCTP ) {
-      clone_flags |= CLONE_NEWNS;
-    }
-
-    real_child = clone(container_start_child, child_stack + child_stack_sz,
-                       clone_flags, (void *)c);
-    if ( real_child < 0 ) {
-      perror("container_start: clone");
-      exit(1);
-    }
-
-    close(g_child_sync_pipes[0]);
-
-    err = send(ipc_sockets[1], &real_child, sizeof(real_child), 0);
-    if ( err < 0 ) {
-      perror("container_start: send");
-      exit(1);
-    }
-
-    err = write(g_child_sync_pipes[1], &yes, sizeof(yes));
-    if ( err < 0 ) {
-      perror("container_start: write");
-      exit(1);
-    }
-
-    exit(0);
+  if ( c->c_flags & CONTAINER_FLAG_NETWORK_ONLY ) {
+    clone_flags |= CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS;
   } else {
-    int child_sts = 0;
-
-    err = recv(ipc_sockets[0], &real_child, sizeof(real_child), 0);
-    if ( err < 0 ) {
-      perror("container_start: recv");
-      goto error;
-    }
-
-    err = waitpid(child, &child_sts, 0);
-    if ( err < 0 ) {
-      perror("container_start: waitpid");
-      goto error;
-    }
-    child = -1;
-
-    if ( child_sts != 0 ) {
-      fprintf(stderr, "container_start: child reported error: %d\n", child_sts);
-      goto error;
-    }
+    clone_flags |= CLONE_NEWUSER | CLONE_NEWCGROUP | CLONE_NEWIPC |
+      CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWPID    | CLONE_NEWUTS;
   }
 
-  if ( real_child < 0 ) {
-    fprintf(stderr, "container_start: the child process indicated there was an error\n");
-    goto error;
+  if ( c->c_flags & CONTAINER_FLAG_ENABLE_SCTP ) {
+    clone_flags |= CLONE_NEWNS;
+  }
+
+  child = clone(container_start_child, child_stack + child_stack_sz,
+                     clone_flags, (void *) &cci);
+  if ( child < 0 ) {
+      perror("container_start: clone");
+      close(ipc_sockets[1]);
+      close(ipc_sockets[0]);
+      return -1;
   }
 
   close(ipc_sockets[1]);
@@ -352,7 +292,7 @@ int container_start(struct container *c) {
     goto error;
   }
 
-  fprintf(stderr, "container_start: got child id %d... fetching arp\n", real_child);
+  fprintf(stderr, "container_start: got child id %d... fetching arp\n", child);
 
   // Now receive the arp entry
   err = recv(ipc_sockets[0], &c->c_arp_entry, sizeof(c->c_arp_entry), 0);
@@ -385,7 +325,7 @@ int container_start(struct container *c) {
 
   fprintf(stderr, "Got init status: %d\n", sts);
 
-  c->c_init_process = real_child;
+  c->c_init_process = child;
 
   return 0;
 
@@ -394,8 +334,6 @@ int container_start(struct container *c) {
   close(ipc_sockets[1]);
   if ( child >= 0 )
     kill(child, SIGKILL);
-  if ( real_child >= 0 )
-    kill(real_child, SIGKILL);
   return -1;
 }
 
@@ -485,8 +423,9 @@ int container_stop(struct container *c, struct eventloop *el, struct qdevtsub *c
 
 // Called in the child
 static int container_start_child(void *c_) {
-  struct container *c = (struct container *)c_;
-  int sync, err, argc, netns;
+  struct containerchildinfo *cci = (struct containerchildinfo *) c_;
+  struct container *c = cci->cci_cont;
+  int err, argc;
   struct containerinit ci;
 
   const char *hostname_str = NULL, *init_path_str = NULL;
@@ -495,29 +434,15 @@ static int container_start_child(void *c_) {
 
   struct arpentry arp_entry;
 
+  c->c_init_comm = cci->cci_comm;
   memset(argv, 0, sizeof(argv));
 
   fprintf(stderr, "container_start_child: starting: %d\n", getpid());
-
-  close(g_child_sync_pipes[1]);
-
-  err = read(g_child_sync_pipes[0], &sync, sizeof(sync));
-  if ( err < 0 ) {
-    perror("container_start_child: read");
-    return 1;
-  }
 
   // Receive the setup data on this socket
   err = recv(c->c_init_comm, &ci, sizeof(ci), 0);
   if ( err != sizeof(ci) ) {
     perror("container_start_child: recv");
-    return 1;
-  }
-
-  // We're in the bridge namespace
-  err = bridge_setup_root_uid_gid(c->c_bridge);
-  if ( err < 0 ) {
-    fprintf(stderr, "could not set root uid gid\n");
     return 1;
   }
 
@@ -565,22 +490,22 @@ static int container_start_child(void *c_) {
     return 1;
   }
 
+  err = bridge_setup_container(c->c_bridge, c->c_bridge_port, &c->c_ip, "eth0", &arp_entry);
+  if ( err < 0 ) {
+    fprintf(stderr, "container_start_child: ccould not set up veth\n");
+    return 1;
+  }
+
+  // We're in the bridge namespace
+  err = bridge_setup_root_uid_gid(c->c_bridge);
+  if ( err < 0 ) {
+    fprintf(stderr, "could not set root uid gid\n");
+    return 1;
+  }
+
   err = bridge_set_up_networking(c->c_bridge);
   if ( err < 0 ) {
     fprintf(stderr, "container_start_child: could not set up bridge networking\n");
-    return 1;
-  }
-
-  netns = open("/proc/self/ns/net", O_CLOEXEC);
-  if ( netns < 0 ) {
-    perror("container_start_child: open(/proc/self/ns/net)");
-    return 1;
-  }
-
-  err = bridge_create_veth_to_ns(c->c_bridge, c->c_bridge_port, netns,
-                                 &c->c_ip, "eth0", &arp_entry);
-  if ( err < 0 ) {
-    fprintf(stderr, "container_start_child: ccould not set up veth\n");
     return 1;
   }
 

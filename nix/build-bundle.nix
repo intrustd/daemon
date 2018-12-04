@@ -48,7 +48,7 @@ in ((import <nixpkgs> {}).writeText "${config.kite.meta.slug}-manifest"
 #        authors = config.kite.meta.authors;
         domain = config.kite.identifier;
         nix-closure = closures;
-        runAsAdmin = config.kite.runAsAdmin;
+        run-as-admin = config.kite.runAsAdmin;
         singleton = config.kite.singleton;
 
         bind-mounts = config.kite.bindMounts;

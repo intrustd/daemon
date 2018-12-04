@@ -1,6 +1,11 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <uriparser/Uri.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+#define flock __flock
+#include <fcntl.h>
+#undef flock
 
 #include "jsmn.h"
 #include "application.h"
@@ -146,7 +151,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
           state = PARSING_ST_NIX_CLOSURE;
         } else if ( strncmp(data + token->start, "singleton", token->end - token->start) == 0 ) {
           state = PARSING_ST_SINGLETON;
-        } else if ( strncmp(data + token->start, "runAsAdmin", token->end - token->start) == 0 ) {
+        } else if ( strncmp(data + token->start, "run-as-admin", token->end - token->start) == 0 ) {
           state = PARSING_ST_RUN_AS_ADMIN;
         } else if ( strncmp(data + token->start, "bind-mounts", token->end - token->start) == 0 ) {
           state = PARSING_ST_BIND_MOUNTS;
@@ -787,23 +792,6 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
   case CONTAINER_CTL_DO_SETUP:
     return appinstance_setup(c, ai);
 
-  case CONTAINER_CTL_DO_HOST_SETUP:
-    if ( ai->inst_app->app_flags & APP_FLAG_RUN_AS_ADMIN ) {
-      int inet_tap = -1;
-
-      // Wait for internet TAP socket
-      fprintf(stderr, "Will wait for internet TAP socket\n");
-      if ( recv_fd(c->c_init_comm, 1, &inet_tap) < 0 ) {
-        perror("appinstance_container_ctl(CONTAINER_CTL_DO_HOST_SETUP): recv_fd");
-        return -1;
-      }
-
-      fprintf(stderr, "Got internet TAP socket %d\n", inet_tap);
-
-      // Request internet service
-    }
-    return 0;
-
   default:
     fprintf(stderr, "appinstance_container_ctl: unrecognized op %d\n", op);
     return -2;
@@ -830,6 +818,13 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
     err = mkdir(where, 0755);                                           \
     if ( err < 0 ) {                                                    \
       perror("appinstance_setup: mkdir");                               \
+      fprintf(stderr, "appinstance_setup: while making %s\n", where);   \
+    }                                                                   \
+  } while (0)
+#define DO_MKNOD(where, mode, maj, min) do {                            \
+    err = mknod(where, mode, makedev(maj, min));                        \
+    if ( err < 0 ) {                                                    \
+      perror("appinstance_setup: mknod");                               \
       fprintf(stderr, "appinstance_setup: while making %s\n", where);   \
     }                                                                   \
   } while (0)
@@ -862,8 +857,33 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   FORMAT_PATH("%s/dev", image_path);
   DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755,size=16384k");
 
+  FORMAT_PATH("%s/dev/random", image_path);
+  err = open(path, O_CREAT, 0666);
+  close(err);
+  DO_MOUNT("/dev/random", path, "bind", MS_BIND | MS_RDONLY, "");
+
+  FORMAT_PATH("%s/dev/urandom", image_path);
+  err = open(path, O_CREAT, 0666);
+  close(err);
+  DO_MOUNT("/dev/urandom", path, "bind", MS_BIND | MS_RDONLY, "");
+
+  FORMAT_PATH("%s/etc/ssl/certs/ca-certificates.crt", image_path);
+  err = readlink_recursive("/etc/ssl/certs/ca-certificates.crt",
+                           app_data_path, sizeof(app_data_path));
+  if ( err < 0 ) {
+    perror("readlink_recursive");
+    fprintf(stderr, "Could not read /etc/ssl/certs/ca-certificates.crt\n");
+    return -1;
+  }
+  fprintf(stderr, "Read link : %s\n", app_data_path);
+  // This should lead somewhere in the nix store
+  DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_RDONLY, "");
+
   FORMAT_PATH("%s/run", image_path);
   DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=700,size=16384k");
+
+  FORMAT_PATH("%s/tmp", image_path);
+  DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=777,size=16384k");
 
   FORMAT_PATH("%s/dev/pts", image_path);
   DO_MKDIR(path);
@@ -915,7 +935,6 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   // If this app has the 'run_with_admin' permission, then run this application with administrator privileges
   if ( app_flags & APP_FLAG_RUN_AS_ADMIN ) {
     size_t i;
-    int inet_tap;
 
     FORMAT_PATH("%s/kite/appliance", image_path);
     err = mkdir_recursive(path);
@@ -941,19 +960,10 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
 
     if ( bridge_mark_as_admin(&ai->inst_appstate->as_bridge,
                               ai->inst_container.c_bridge_port,
-                              &ai->inst_container.c_arp_entry,
-                              &inet_tap) < 0 ) {
+                              &ai->inst_container.c_arp_entry) < 0 ) {
       fprintf(stderr, "appinstance_setup: bridge_mark_as_admin fails\n");
     } else {
       fprintf(stderr, "appinstance_setup: marked as admin\n");
-
-      // Request that the internet gateway is connected
-      if ( send_fd(c->c_init_comm, 1, &inet_tap) < 0 ) {
-        close(inet_tap);
-        perror("send_fd: failed");
-        return -1;
-      } else
-        close(inet_tap);
     }
   }
 

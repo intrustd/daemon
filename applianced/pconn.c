@@ -557,9 +557,10 @@ static int candsrc_handle_response(struct candsrc *cs) {
 	} else {
 	  //              fprintf(stderr, "Got DTLS packet while established of size: %d\n", pkt_sz);
 	  //              print_hex_dump_fp(stderr, (const unsigned char *) my_buf, pkt_sz);
-	  
+
 	  // Only write the packet if the webrtc-proxy is up
 	  //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
+          pconn_reset_connectivity_check_timeout(cs->cs_pconn);
 	  bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
 					&cs->cs_pconn->pc_container,
 					&peer_addr.ksa, peer_addr_sz,

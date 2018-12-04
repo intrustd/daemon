@@ -57,7 +57,9 @@ struct appupdater {
 #define APPUPDATER_UNREF(au) SHARED_UNREF(&(au)->au_shared)
 
 // appupdater
-struct appupdater *appupdater_new(struct appstate *as, const char *uri, size_t uri_len,
+struct appupdater *appupdater_new(struct appstate *as,
+                                  const char *uri, size_t uri_len,
+                                  const char *sign_uri, size_t sign_uri_len,
                                   int reason, int progress, struct app *app);
 #define appupdater_force(au) ((au)->au_force = 1)
 

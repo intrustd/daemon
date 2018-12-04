@@ -200,6 +200,7 @@ void BIO_static_set(BIO *b, struct BIO_static *st);
 
 // File utilities
 int mkdir_recursive(const char *path);
+int readlink_recursive(const char *which, char *out, size_t out_sz);
 // Returns 0 if the src cannot fit in dst
 int strncpy_safe(char *dst, const char *src, size_t sz);
 int strncpy_fixed(char *dst, size_t dsz, const char *src, size_t ssz);

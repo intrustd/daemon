@@ -72,6 +72,7 @@ struct kitelocalattr {
 #define KLA_EXIT_CODE          0x001C
 #define KLA_PERSONA_FLAGS      0x001D /* Two uint32_ts. First are flags to add. second is flags to remove */
 #define KLA_SYSTEM_TYPE        0x001E
+#define KLA_APP_SIGNATURE_URL  0x001F
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001

@@ -709,6 +709,7 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
       wsc->wsc_websocket = 0;
       old_subs = eventloop_unsubscribe_fd(wsc->wsc_conn.conn_el, old_sk,
                                           FD_SUB_ALL, &wsc->wsc_wsk_sub);
+      pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex); // Must unlock here, since the WSC_UNREFs below can result in a full release being done
       if ( old_subs & FD_SUB_READ )
         WSC_WUNREF(wsc);
       if ( old_subs & FD_SUB_WRITE )
@@ -717,8 +718,8 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
         WSC_WUNREF(wsc);
       SHARED_DEBUG(&wsc->wsc_conn.conn_shared, "After close");
       close(old_sk);
-    }
-    pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
+    } else
+      pthread_mutex_unlock(&wsc->wsc_conn.conn_mutex);
     return 0;
 
   case CONNECTION_OP_RELEASE:

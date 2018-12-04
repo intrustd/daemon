@@ -111,7 +111,9 @@ X509 *appstate_get_certificate(struct appstate *as);
 
 #define APPSTATE_FROM_EVENTLOOP(el) STRUCT_FROM_BASE(struct appstate, as_eventloop, el)
 
-struct appupdater *appstate_queue_update_ex(struct appstate *as, const char *uri, size_t uri_len,
+struct appupdater *appstate_queue_update_ex(struct appstate *as,
+                                            const char *uri, size_t uri_len,
+                                            const char *sign_uri, size_t sign_uri_len,
                                             int reason, int progress, struct app *app);
 int appstate_log_path(struct appstate *as, const char *mf_digest_str, const char *extra,
                       char *out, size_t out_sz);

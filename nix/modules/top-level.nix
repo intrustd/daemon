@@ -7,6 +7,33 @@
       description = "App domain URI";
     };
 
+    kite.binaryCaches = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          url = mkOption {
+            type = types.str;
+            description = "Url of binary cache";
+          };
+
+          signatures = mkOption {
+            type = types.str;
+            description = "Signatures for this cache";
+          };
+
+          type = mkOption {
+            type = types.enum [ "system" "app" ];
+            description = "The type of this cache (system or app)";
+          };
+
+          priority = mkOption {
+            type = types.int;
+            description = "Priority of this cache";
+          };
+        };
+      });
+      description = "List of binary caches";
+    };
+
     kite.startHook = mkOption {
       type = types.string;
       description = "Script to run when kite wants to start this application";
@@ -147,6 +174,13 @@
       "/share/kxmlgui5"
     ];
 
+    kite.binaryCaches = [
+      { url = "https://hydra.flywithkite.com/cache";
+        signatures = [ "cache.flywithkite.com-1:7JJMfk9Vl5tetCyL8TnGSmo6IMvJypOlLv4Y7huDvDQ=" ];
+        type = "system";
+        priority = 1000000; }
+    ];
+
     kite.toplevel =
       let startScript = pkgs.writeScript "start-script" ''
             #!/bin/sh
@@ -185,14 +219,17 @@
              mkdir -p $out/app
              mkdir -p $out/run
              mkdir -p $out/etc
+             mkdir -p $out/etc/ssl/certs
              mkdir -p $out/var/log
+             mkdir -p $out/tmp
+             chmod 777 $out/tmp
              ln -s ${healthCheckScript} $out/app/hc
              ln -s ${startScript} $out/app/start
              ln -s ${kitePermissions} $out/permissions.json
 
              cat >$out/etc/passwd <<EOF
              root:x:0:0:System administrator:/kite:${pkgs.bash}/bin/bash
-             kite:x:1001:100:Kite user:/kite:${pkgs.bash}/bin/bash
+             kite:x:1000:100:Kite user:/kite:${pkgs.bash}/bin/bash
              EOF
 
              cat >$out/etc/group <<EOF
@@ -211,6 +248,10 @@
              cat >$out/etc/nsswitch.conf <<EOF
              hosts: files dns
              EOF
+
+             touch $out/etc/ssl/certs/ca-certificates.crt
+
+             ln -s /etc/ssl/certs/ca-certificates.crt $out/etc/ssl/certs/ca-bundle.crt
            '';
          };
   };

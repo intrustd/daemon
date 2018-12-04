@@ -202,7 +202,7 @@ struct stkcmsg {
 #define SCM_CONNECT_RSP_SZ      1
 #define SCM_DATA_REQ_SZ         5
 
-#define STORKD_ADDR "10.0.0.1"
+#define STORKD_ADDR "10.0.0.2"
 #define STORKD_OPEN_APP_PORT 9998 // The port where we send open app requests
 
 #define OUTGOING_BUF_SIZE    65536
