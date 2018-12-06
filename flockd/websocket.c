@@ -406,7 +406,6 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
                 send_handshake_response(wsc, &handshake);
                 wsc->wsc_mode = WSC_MODE_WEBSOCKET;
                 wsc->wsc_proto_mode = WSC_PROTO_LOGIN;
-                connection_wait_for_auth(&wsc->wsc_conn);
                 WSC_SUBSCRIBE_READ(wsc);
               }
 
