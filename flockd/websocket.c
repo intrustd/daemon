@@ -393,6 +393,8 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
               connection_complete_unlocked(&wsc->wsc_conn);
             } else {
 
+              fprintf(stderr, "Connected to appliance %s\n", appliance_name);
+
               if ( connection_connect_appliance(&wsc->wsc_conn, appliance) < 0 ) {
                 handshake.ws_error = 500;
                 send_http_error(wsc, &handshake);
@@ -404,6 +406,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
                 send_handshake_response(wsc, &handshake);
                 wsc->wsc_mode = WSC_MODE_WEBSOCKET;
                 wsc->wsc_proto_mode = WSC_PROTO_LOGIN;
+                connection_wait_for_auth(&wsc->wsc_conn);
                 WSC_SUBSCRIBE_READ(wsc);
               }
 

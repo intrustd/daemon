@@ -1194,6 +1194,7 @@ int flockservice_lookup_connection(struct flockservice *svc, uint64_t conn_id,
     pthread_rwlock_unlock(&svc->fs_connections_mutex);
     return -1;
   } else {
+    CONN_REF(*c);
     pthread_rwlock_unlock(&svc->fs_connections_mutex);
     return 0;
   }
