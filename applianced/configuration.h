@@ -14,7 +14,7 @@ struct appconf {
 
   const char *ac_system_config; // GCC/GNU triple. Specifies which app version we should download.
 
-  const char *ac_inet_bridge;
+  const char *ac_resolv_conf;
 
   uint32_t ac_flags;
 

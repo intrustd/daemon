@@ -33,6 +33,7 @@ struct appstate {
   const char *as_persona_init_path;
   const char *as_app_instance_init_path;
   const char *as_system;
+  const char *as_resolv_conf;
 
   X509     *as_cert;
   EVP_PKEY *as_privkey;

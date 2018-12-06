@@ -879,6 +879,9 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   // This should lead somewhere in the nix store
   DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_RDONLY, "");
 
+  FORMAT_PATH("%s/etc/resolv.conf", image_path);
+  DO_MOUNT(ai->inst_appstate->as_resolv_conf, path, "bind", MS_BIND | MS_RDONLY, "");
+
   FORMAT_PATH("%s/run", image_path);
   DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=700,size=16384k");
 

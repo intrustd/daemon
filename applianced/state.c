@@ -1032,6 +1032,7 @@ void appstate_clear(struct appstate *as) {
   as->as_persona_init_path = NULL;
   as->as_app_instance_init_path = NULL;
   as->as_system = NULL;
+  as->as_resolv_conf = NULL;
   as->as_mutexes_initialized = 0;
   as->as_cert = NULL;
   as->as_privkey = NULL;
@@ -1071,11 +1072,6 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
     }
   }
 
-  // Set up internet bridging
-  if ( ac->ac_inet_bridge ) {
-    fprintf(stderr, "Would set up internet bridging now\n");
-  }
-
   // Drop privileges
   if ( our_uid == 0 ) {
     fprintf(stderr, "Dropping privileges to %d:%d\n", ac->ac_daemon_user, ac->ac_daemon_group);
@@ -1095,6 +1091,7 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   as->as_persona_init_path = ac->ac_persona_init_path;
   as->as_app_instance_init_path = ac->ac_app_instance_init_path;
   as->as_system = ac->ac_system_config;
+  as->as_resolv_conf = ac->ac_resolv_conf;
 
   err = mkdir_recursive(ac->ac_conf_dir);
   if ( err < 0 ) {

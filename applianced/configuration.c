@@ -22,7 +22,7 @@
 #define KITE_USER_OPTION 0x205
 #define KITE_USER_GROUP_OPTION 0x206
 #define KITE_PACKETS_FILE_OPTION 0x207
-#define KITE_INET_BRIDGE_OPTION 0x208
+#define KITE_RESOLV_CONF_OPTION 0x208
 #define KITE_DAEMON_USER_OPTION 0x209
 #define KITE_DAEMON_GROUP_OPTION 0x20A
 
@@ -57,7 +57,7 @@ static void usage(const char *msg) {
   fprintf(stderr,
           "  --valgrind                    Make things valgrind compatible\n");
   fprintf(stderr,
-          "  --inet-bridge                 Set to enable access to the internet via a veth to the given bridge");
+          "  --resolv-conf                 Location of resolv.conf for containers\n");
 }
 
 static const char *get_nix_system_config() {
@@ -237,7 +237,7 @@ void appconf_init(struct appconf *ac) {
   ac->ac_persona_init_path = NULL;
   ac->ac_app_instance_init_path = NULL;
   ac->ac_system_config = NULL;
-  ac->ac_inet_bridge = NULL;
+  ac->ac_resolv_conf = NULL;
   ac->ac_kitepath = NULL;
   ac->ac_flags = 0;
   ac->ac_kite_user = -1;
@@ -336,7 +336,7 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "group", required_argument, 0, KITE_DAEMON_GROUP_OPTION },
     { "dump-pkts", required_argument, 0, KITE_PACKETS_FILE_OPTION },
     { "host", required_argument, 0, 'H' },
-    { "inet-bridge", required_argument, 0, KITE_INET_BRIDGE_OPTION },
+    { "resolv-conf", required_argument, 0, KITE_RESOLV_CONF_OPTION },
     { 0, 0, 0, 0 }
   };
 
@@ -380,8 +380,8 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
       ac->ac_kite_packet_file = optarg;
       break;
 
-    case KITE_INET_BRIDGE_OPTION:
-      ac->ac_inet_bridge = optarg;
+    case KITE_RESOLV_CONF_OPTION:
+      ac->ac_resolv_conf = optarg;
       break;
 
     case KITE_DAEMON_USER_OPTION:
@@ -476,11 +476,6 @@ int appconf_validate(struct appconf *ac, int do_debug) {
   }
 
   uid = geteuid();
-  if ( ac->ac_inet_bridge && uid != 0 ) {
-    fprintf(stderr, "Must run as super-user to enable internet bridging\n");
-    return -1;
-  }
-
   if ( uid == 0 && (ac->ac_daemon_user < 0 || ac->ac_daemon_group < 0) ) {
     fprintf(stderr, "Kite will not run as super-user, sorry\nSpecify --user and --group to enable switching\n");
     return -1;
@@ -502,6 +497,9 @@ int appconf_validate(struct appconf *ac, int do_debug) {
     fprintf(stderr, "No valid kite-user group\n");
     return -1;
   }
+
+  if ( !ac->ac_resolv_conf )
+    ac->ac_resolv_conf = "/etc/resolv.conf";
 
   if ( !ac->ac_iproute_bin ) {
     // Attempt to get iproute information using nix-build
