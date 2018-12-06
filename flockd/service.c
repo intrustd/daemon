@@ -1188,27 +1188,14 @@ void flockservice_fn(struct eventloop *el, int op, void *arg) {
 
 int flockservice_lookup_connection(struct flockservice *svc, uint64_t conn_id,
                                    struct connection **c) {
-  SHARED_DEFERRED defered_free;
-
   SAFE_RWLOCK_RDLOCK(&svc->fs_connections_mutex);
   HASH_FIND(conn_hh, svc->fs_connections, &conn_id, sizeof(conn_id), *c);
   if ( *c == NULL ) {
     pthread_rwlock_unlock(&svc->fs_connections_mutex);
     return -1;
   } else {
-    // The hash table contains a weak reference to the connection
-    if ( CONN_SAFE_LOCK(*c, &defered_free) == 0 ) {
-      // If we got a connection reference, then store another weak reference for the hash table
-      CONN_WREF(*c);
-      pthread_rwlock_unlock(&svc->fs_connections_mutex);
-      SHARED_DO_DEFERRED(&defered_free);
-      return 0;
-    } else {
-      pthread_rwlock_unlock(&svc->fs_connections_mutex);
-      SHARED_DO_DEFERRED(&defered_free);
-      *c = NULL;
-      return -1;
-    }
+    pthread_rwlock_unlock(&svc->fs_connections_mutex);
+    return 0;
   }
 }
 
