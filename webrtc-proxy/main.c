@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <string.h>
+#include <sched.h>
 #include <unistd.h>
 #include <assert.h>
 #include <fcntl.h>
@@ -50,18 +51,21 @@ struct stack_ent {
   struct stack_ent *next;
 };
 
+#define STACK_END_MARKER ((void *) (~((uintptr_t) 0)))
 #define STACK_INIT { NULL }
 #define STACK_IS_EMPTY(stack_ent) ((stack_ent)->next == NULL)
 #define CLEAR_STACK(stack_ent) (void) ((stack_ent)->next = NULL)
 #define PUSH_STACK(stack_ent, new_top, field)                           \
   if ((new_top)->field.next == NULL) {                                  \
     (new_top)->field.next = (stack_ent)->next;                          \
+    if ( (new_top)->field.next == 0 )                                   \
+      (new_top)->field.next = (void *)~0;                               \
     (stack_ent)->next = &((new_top)->field);                            \
   }
-#define GET_STACK(stack_ent, result_ty, field) ((result_ty *) ((stack_ent)->next ? (((uintptr_t) (stack_ent)->next) - offsetof(result_ty, field)) : 0))
+#define GET_STACK(stack_ent, result_ty, field) ((result_ty *) (((stack_ent)->next && (stack_ent)->next != STACK_END_MARKER) ? (((uintptr_t) (stack_ent)->next) - offsetof(result_ty, field)) : 0))
 #define CONSUME_STACK(stack_head, v, result_ty, field)                  \
   for ( v = GET_STACK(stack_head, result_ty, field); v;                 \
-        (stack_head)->next = v->field.next,                             \
+        (stack_head)->next = v->field.next == STACK_END_MARKER ? 0 : v->field.next, \
         v->field.next = NULL,                                           \
         v = GET_STACK(stack_head, result_ty, field) )
 #define READ_STACK(stack_head, v, result_ty, field)     \
@@ -591,7 +595,6 @@ void perform_delayed_closes(int srv) {
 
     CONSUME_STACK(&g_pending_free_channels, chan, struct wrtcchan, wrc_closed_stack) {
       // log_printf("Closing channel %d (delayed)\n", chan->wrc_chan_id);
-      fprintf(stderr, "Closing channel %d (delayed) %p\n", chan->wrc_chan_id, g_reset_in_progress.next);
       PUSH_STACK(&g_reset_in_progress, chan, wrc_reset_stack);
       total_cnt++;
     }
@@ -609,7 +612,7 @@ void perform_delayed_closes(int srv) {
       srs->srs_number_streams = total_cnt;
 
       READ_STACK(&g_reset_in_progress, chan, struct wrtcchan, wrc_reset_stack) {
-        fprintf(stderr, "Marking %d (sk %d) for deletion (i = %d, srs->stream_list=%p, sz=%d)\n", chan->wrc_chan_id, chan->wrc_sk, i, srs->srs_stream_list, buf_sz);
+        log_printf("Marking %d (sk %d) for deletion (i = %d, srs->stream_list=%p, sz=%d)\n", chan->wrc_chan_id, chan->wrc_sk, i, srs->srs_stream_list, buf_sz);
         srs->srs_stream_list[i] = chan->wrc_chan_id;
         i++;
       }
@@ -617,6 +620,7 @@ void perform_delayed_closes(int srv) {
       if ( setsockopt(srv, IPPROTO_SCTP, SCTP_RESET_STREAMS, srs, buf_sz) < 0 &&
            errno != EINPROGRESS ) {
         if ( errno == EAGAIN ) {
+          sched_yield();
           //fprintf(stderr, "perform_delayed_closes: trying again later\n");
 
           // Put everything back
@@ -709,10 +713,10 @@ void process_strreset_ack(struct sctp_stream_reset_event *rse, int sz) {
     if ( rse->strreset_stream_list[i] != 0xFFFF ) {
       chan = find_chan(WEBRTC_CHANID(rse->strreset_stream_list[i]));
       if ( !chan ) {
-        fprintf(stderr, "process_strreset_ack: received new stream reset for unopened channel %d\n",
-                rse->strreset_stream_list[i]);
+        log_printf("process_strreset_ack: received new stream reset for unopened channel %d\n",
+                   rse->strreset_stream_list[i]);
       } else {
-        fprintf(stderr, "process_strreset_ack: received new stream reset for %d\n", rse->strreset_stream_list[i]);
+        log_printf("process_strreset_ack: received new stream reset for %d\n", rse->strreset_stream_list[i]);
         force_close_channel(chan);
         mark_channel_closed(chan);
       }
@@ -1172,7 +1176,7 @@ int proxy_stream_socket(int srv, struct wrtcchan *chan, int *events) {
       return 0;
     }
   } else {
-    fprintf(stderr, "Nothing in buffer\n");
+    log_printf("Nothing in buffer\n");
     return 0;
   }
 }
@@ -1264,7 +1268,7 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
       if ( err < 0 ) {
         fprintf(stderr, "flush_chan: could not send connection opens response\n");
       } else if ( err > 0 ) {
-        fprintf(stderr, "flush_chan: Going to delay connection opens response\n");
+        log_printf("flush_chan: Going to delay connection opens response\n");
 
         // Needs availability on SCTP channel
         if ( err > *needs_write_space )
