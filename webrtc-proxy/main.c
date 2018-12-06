@@ -608,7 +608,7 @@ void perform_delayed_closes(int srv) {
       srs->srs_number_streams = total_cnt;
 
       READ_STACK(&g_reset_in_progress, chan, struct wrtcchan, wrc_reset_stack) {
-        //fprintf(stderr, "Marking %d (sk %d) for deletion\n", chan->wrc_chan_id, chan->wrc_sk);
+        fprintf(stderr, "Marking %d (sk %d) for deletion (i = %d, srs->stream_list=%p, sz=%d)\n", chan->wrc_chan_id, chan->wrc_sk, i, srs->srs_stream_list, buf_sz);
         srs->srs_stream_list[i] = chan->wrc_chan_id;
         i++;
       }
