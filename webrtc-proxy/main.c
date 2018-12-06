@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <string.h>
+#include <sched.h>
 #include <unistd.h>
 #include <assert.h>
 #include <fcntl.h>
@@ -50,18 +51,21 @@ struct stack_ent {
   struct stack_ent *next;
 };
 
+#define STACK_END_MARKER ((void *) (~((uintptr_t) 0)))
 #define STACK_INIT { NULL }
 #define STACK_IS_EMPTY(stack_ent) ((stack_ent)->next == NULL)
 #define CLEAR_STACK(stack_ent) (void) ((stack_ent)->next = NULL)
 #define PUSH_STACK(stack_ent, new_top, field)                           \
   if ((new_top)->field.next == NULL) {                                  \
     (new_top)->field.next = (stack_ent)->next;                          \
+    if ( (new_top)->field.next == 0 )                                   \
+      (new_top)->field.next = (void *)~0;                               \
     (stack_ent)->next = &((new_top)->field);                            \
   }
-#define GET_STACK(stack_ent, result_ty, field) ((result_ty *) ((stack_ent)->next ? (((uintptr_t) (stack_ent)->next) - offsetof(result_ty, field)) : 0))
+#define GET_STACK(stack_ent, result_ty, field) ((result_ty *) (((stack_ent)->next && (stack_ent)->next != STACK_END_MARKER) ? (((uintptr_t) (stack_ent)->next) - offsetof(result_ty, field)) : 0))
 #define CONSUME_STACK(stack_head, v, result_ty, field)                  \
   for ( v = GET_STACK(stack_head, result_ty, field); v;                 \
-        (stack_head)->next = v->field.next,                             \
+        (stack_head)->next = v->field.next == STACK_END_MARKER ? 0 : v->field.next, \
         v->field.next = NULL,                                           \
         v = GET_STACK(stack_head, result_ty, field) )
 #define READ_STACK(stack_head, v, result_ty, field)     \
@@ -617,6 +621,7 @@ void perform_delayed_closes(int srv) {
       if ( setsockopt(srv, IPPROTO_SCTP, SCTP_RESET_STREAMS, srs, buf_sz) < 0 &&
            errno != EINPROGRESS ) {
         if ( errno == EAGAIN ) {
+          sched_yield();
           //fprintf(stderr, "perform_delayed_closes: trying again later\n");
 
           // Put everything back
