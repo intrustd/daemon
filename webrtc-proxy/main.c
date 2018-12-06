@@ -590,7 +590,8 @@ void perform_delayed_closes(int srv) {
     int total_cnt = 0, i = 0;
 
     CONSUME_STACK(&g_pending_free_channels, chan, struct wrtcchan, wrc_closed_stack) {
-      //log_printf("Closing channel %d (delayed)\n", chan->wrc_chan_id);
+      // log_printf("Closing channel %d (delayed)\n", chan->wrc_chan_id);
+      fprintf(stderr, "Closing channel %d (delayed) %p\n", chan->wrc_chan_id, g_reset_in_progress.next);
       PUSH_STACK(&g_reset_in_progress, chan, wrc_reset_stack);
       total_cnt++;
     }
