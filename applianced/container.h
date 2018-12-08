@@ -6,10 +6,11 @@
 
 #include "event.h"
 #include "bridge.h"
+#include "process.h"
 
 #define CONTAINER_MAX_ARGC 255
 #define CONTAINER_MAX_ENVC 255
-#define CONTAINER_TIMEOUT (10 * 60000) // Ten minutes
+#define APP_CONTAINER_TIMEOUT (10 * 60000) // Ten minutes
 
 struct container;
 typedef int(*containerctlfn)(struct container *, int, void *, ssize_t);
@@ -38,6 +39,8 @@ typedef int(*containerctlfn)(struct container *, int, void *, ssize_t);
 
 #define CONTAINER_CTL_DESCRIBE        11
 
+#define CONTAINER_CTL_INIT_EXITS      12
+
 struct container {
   struct brstate *c_bridge;
   pthread_mutex_t c_mutex;
@@ -58,10 +61,15 @@ struct container {
   // If >0 then, some thing needs this container running
   int             c_running_refs;
 
+  // How long to keep the container alive after its reference count reaches 0.
+  unsigned int    c_keepalive;
+
   // After the last reference is released, this timer is set
   struct timersub c_timeout;
 
   struct arpentry c_arp_entry;
+
+  struct pssub    c_on_init_exit;
 };
 
 #define CONTAINER_FLAG_KILL_IMMEDIATELY 0x1
@@ -69,7 +77,7 @@ struct container {
 #define CONTAINER_FLAG_ENABLE_SCTP      0x4
 
 void container_clear(struct container *c);
-int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags);
+int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags, unsigned int keepalive);
 void container_release(struct container *c);
 int container_start(struct container *c);
 int container_force_stop(struct container *c);

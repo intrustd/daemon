@@ -179,15 +179,32 @@ void pssub_release(struct pssub *ps) {
 }
 
 int pssub_attach(struct eventloop *el, struct pssub *ps, pid_t p) {
+  return pssub_detach_attach(el, NULL, ps, p);
+}
+
+int pssub_detach(struct eventloop *el, struct pssub *ps) {
+  return pssub_detach_attach(el, ps, NULL, 0);
+}
+
+int pssub_detach_attach(struct eventloop *el, struct pssub *det, struct pssub *att, pid_t p) {
   if ( pthread_mutex_lock(&el->el_ps_mutex) == 0 ) {
     int ret = 0;
-    if ( ps->ps_which < 0 ) {
-      ps->ps_which = p;
-      ps->ps_status = -1;
 
-      DLIST_INSERT(&el->el_processes, ps_list, ps);
+    if ( det && det->ps_which > 0 ) {
+      DLIST_REMOVE(&el->el_processes, ps_list, det);
+      det->ps_which = -1;
+      det->ps_status = -1;
+    } else if ( det )
+      ret = -1;
+
+    if ( att && att->ps_which < 0 && ret == 0 ) {
+      att->ps_which = p;
+      att->ps_status = -1;
+
+      DLIST_INSERT(&el->el_processes, ps_list, att);
     } else
       ret = -1;
+
     pthread_mutex_unlock(&el->el_ps_mutex);
     return ret;
   } else
