@@ -8,8 +8,11 @@
 #include <sys/wait.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#define flock _linux_flock
 #include <fcntl.h>
+#undef flock
 
+#include "state.h"
 #include "container.h"
 #include "util.h"
 #include "init_proto.h"
@@ -19,6 +22,7 @@
 
 #define OP_CONTAINER_TIMES_OUT EVT_CTL_CUSTOM
 #define OP_CONTAINER_CHECK_PERM (EVT_CTL_CUSTOM + 1)
+#define OP_CONTAINER_INIT_EXITS (EVT_CTL_CUSTOM + 2)
 
 struct containerchildinfo {
   struct container *cci_cont;
@@ -49,13 +53,14 @@ void container_clear(struct container *c) {
   c->c_init_process = -1;
   c->c_init_comm = -1;
   c->c_bridge_port = -1;
+  c->c_keepalive = 0;
   memset(&c->c_ip, 0, sizeof(c->c_ip));
   memset(c->c_mac, 0, sizeof(c->c_mac));
   c->c_control = NULL;
   c->c_running_refs = 0;
 }
 
-int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags) {
+int container_init(struct container *c, struct brstate *br, containerctlfn cfn, uint32_t flags, unsigned int keepalive) {
   container_clear(c);
 
   if ( pthread_mutex_init(&c->c_mutex, NULL) < 0 )
@@ -64,9 +69,11 @@ int container_init(struct container *c, struct brstate *br, containerctlfn cfn, 
   c->c_bridge = br;
   c->c_control = cfn;
   c->c_flags = flags;
+  c->c_keepalive = keepalive;
 
   bridge_allocate(br, &c->c_ip, &c->c_bridge_port);
 
+  pssub_init(&c->c_on_init_exit, OP_CONTAINER_INIT_EXITS, containerevtfn);
   timersub_init_default(&c->c_timeout, OP_CONTAINER_TIMES_OUT, containerevtfn);
 
   return 0;
@@ -131,7 +138,7 @@ int container_release_running(struct container *c, struct eventloop *el) {
       if ( c->c_flags & CONTAINER_FLAG_KILL_IMMEDIATELY ) {
         timersub_set_from_now(&c->c_timeout, 0);
       } else {
-        timersub_set_from_now(&c->c_timeout, CONTAINER_TIMEOUT);
+        timersub_set_from_now(&c->c_timeout, c->c_keepalive);
       }
 
       eventloop_subscribe_timer(el, &c->c_timeout);
@@ -168,6 +175,7 @@ static void ctrwaiterevtfn(struct eventloop *el, int op, void *arg) {
 
 static void containerevtfn(struct eventloop *el, int op, void *arg) {
   struct qdevent *te;
+  struct psevent *pe;
   struct container *c;
   struct brpermrequest *bpr;
 
@@ -194,6 +202,16 @@ static void containerevtfn(struct eventloop *el, int op, void *arg) {
       fprintf(stderr, "containerpermfn: CONTAINER_CTL_CHECK_PERMISSION failed\n");
     }
     eventloop_queue(bpr->bpr_el, &bpr->bpr_finished_event);
+    return;
+
+  case OP_CONTAINER_INIT_EXITS:
+    pe = (struct psevent *) arg;
+    c = STRUCT_FROM_BASE(struct container, c_on_init_exit, pe->pse_sub);
+
+    if ( c->c_control(c, CONTAINER_CTL_INIT_EXITS, NULL, pe->pse_sts) < 0 ) {
+      fprintf(stderr, "containerevtfn: CONTAINER_CTL_INIT_EXITS fails\n");
+    }
+
     return;
 
   default:
@@ -327,6 +345,8 @@ int container_start(struct container *c) {
 
   c->c_init_process = child;
 
+  SAFE_ASSERT( pssub_attach(&c->c_bridge->br_appstate->as_eventloop, &c->c_on_init_exit, child) == 0 );
+
   return 0;
 
  error:
@@ -341,6 +361,8 @@ int container_force_stop(struct container *c) {
   int err = 0;
   SAFE_MUTEX_LOCK(&c->c_mutex);
   if ( c->c_init_process > 0 ) {
+    SAFE_ASSERT( pssub_detach(&c->c_bridge->br_appstate->as_eventloop, &c->c_on_init_exit) == 0 );
+
     err = kill(c->c_init_process, SIGKILL);
     if ( err < 0 ) {
       perror("container_force_stop: kill SIGKILL");
@@ -395,7 +417,7 @@ int container_stop(struct container *c, struct eventloop *el, struct qdevtsub *c
     waiter->cw_completion_evt = comp_event;
 
     pssub_init(&waiter->cw_process, OP_CONTAINER_WAITER_COMPLETE, ctrwaiterevtfn);
-    err = pssub_attach(el, &waiter->cw_process, c->c_init_process);
+    err = pssub_detach_attach(el, &c->c_on_init_exit, &waiter->cw_process, c->c_init_process);
     if ( err < 0 ) {
       ret = -1;
       fprintf(stderr, "container_stop: could not attach to init process\n");

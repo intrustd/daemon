@@ -566,7 +566,7 @@ struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, 
     ret->inst_persona = NULL;
 
   ret->inst_init_comm = -1;
-  container_init(&ret->inst_container, &as->as_bridge, appinstance_container_ctl, 0);
+  container_init(&ret->inst_container, &as->as_bridge, appinstance_container_ctl, 0, APP_CONTAINER_TIMEOUT);
 
   if ( pthread_mutex_lock(&a->app_mutex) == 0 ) {
     if ( p )

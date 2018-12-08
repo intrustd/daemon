@@ -1186,13 +1186,13 @@ static void bridge_do_new_tunnel(struct brstate *br, struct brctlmsg *_msg) {
   int err;
   char cmd_buf[512];
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d --out-if in%d -j ACCEPT",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d -1 --out-if in%d -j ACCEPT",
                  br->br_ebroute_path, msg->bcm_ports[0], msg->bcm_ports[1]);
   if ( err >= sizeof(cmd_buf) ) goto overflow;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmd_error;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d --out-if in%d -j ACCEPT",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I TABLE%d -1 --out-if in%d -j ACCEPT",
                  br->br_ebroute_path, msg->bcm_ports[0], msg->bcm_ports[1]);
   if ( err >= sizeof(cmd_buf) ) goto overflow;
   err = system(cmd_buf);
@@ -1663,10 +1663,6 @@ static int bridge_remove_ebtable_spoof(struct brstate *br, int port, struct arpe
   int err;
 
   err = snprintf(cmd_buf, sizeof(cmd_buf),
-                 "%s -Ln", br->br_ebroute_path);
-  err = system(cmd_buf);
-
-  err = snprintf(cmd_buf, sizeof(cmd_buf),
                  "%s -D TABLE%d -p IPv4 --ip-source ! %s -j DROP",
                  br->br_ebroute_path, port,
                  inet_ntop(AF_INET, &arp->ae_ip.s_addr, ip_addr_str, sizeof(ip_addr_str)));
@@ -1703,6 +1699,10 @@ static int bridge_remove_ebtable_sub(struct brstate *br, int port) {
 
   err = system(cmd_buf);
   if ( err != 0 ) goto cmd_failed;
+
+  err = snprintf(cmd_buf, sizeof(cmd_buf),
+                 "%s -Ln", br->br_ebroute_path);
+  err = system(cmd_buf);
 
   return 0;
 

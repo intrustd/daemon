@@ -560,7 +560,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
 
 	  // Only write the packet if the webrtc-proxy is up
 	  //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
-          pconn_reset_connectivity_check_timeout(cs->cs_pconn);
+
 	  bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
 					&cs->cs_pconn->pc_container,
 					&peer_addr.ksa, peer_addr_sz,
@@ -592,12 +592,6 @@ static int candsrc_handle_response(struct candsrc *cs) {
       } else {
         // This could be a connectivity check. Check to see if the transaction ID matches any candidate pair
         for ( i = 0; i < cs->cs_pconn->pc_candidate_pairs_count; ++i ) {
-//	  fprintf(stderr, "Check binding response(cand %d): Got txid %08x%08x%08x. Cand txid is %08x%08x%08x\n",
-//		  i, msg->sm_tx_id.a, msg->sm_tx_id.b, msg->sm_tx_id.c,
-//		  cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id.a,
-//		  
-//		  cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id.b,
-//		  cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id.c);
           if ( memcmp(&cs->cs_pconn->pc_candidate_pairs_sorted[i]->icp_tx_id,
                       &msg->sm_tx_id, sizeof(msg->sm_tx_id)) == 0 ) {
             pconn_connectivity_check_succeeds(cs->cs_pconn, i, ICECANDPAIR_FLAG_NOMINATED);
@@ -1201,7 +1195,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
 
   if ( container_init(&ret->pc_container, &as->as_bridge, pconn_container_fn,
                       CONTAINER_FLAG_KILL_IMMEDIATELY | CONTAINER_FLAG_NETWORK_ONLY |
-                      CONTAINER_FLAG_ENABLE_SCTP ) < 0 ) {
+                      CONTAINER_FLAG_ENABLE_SCTP, 0) < 0 ) {
     fprintf(stderr, "pconn_alloc: could not allocate container\n");
     pthread_mutex_destroy(&ret->pc_mutex);
     free(ret);
@@ -1878,7 +1872,7 @@ static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix
     return;
   }
 
-  if ( pc->pc_active_candidate_pair > 0 &&
+  if ( pc->pc_active_candidate_pair >= 0 &&
        pc->pc_active_candidate_pair == cand_pair_ix ) {
     // reset timeout timer
     pconn_reset_connectivity_check_timeout(pc);
@@ -3015,7 +3009,17 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
 
   case CONTAINER_CTL_ON_SHUTDOWN:
     PCONN_UNREF(pc);
+    SHARED_DEBUG(&pc->pc_shared, "after on shutdown");
     return 0;
+
+  case CONTAINER_CTL_INIT_EXITS:
+    if ( pthread_mutex_lock(&pc->pc_mutex) == 0 ){
+      fprintf(stderr, "pconn_container_fn: webrtc-proxy exits with %zd\n", argl);
+      pconn_teardown_established(pc);
+      pthread_mutex_unlock(&pc->pc_mutex);
+      return 0;
+    } else
+      return -1;
 
   default:
     fprintf(stderr, "pconn_container_fn: unrecognized op %d\n", op);
