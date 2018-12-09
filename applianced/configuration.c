@@ -501,6 +501,8 @@ int appconf_validate(struct appconf *ac, int do_debug) {
   if ( !ac->ac_resolv_conf )
     ac->ac_resolv_conf = "/etc/resolv.conf";
 
+  fprintf(stderr, "Using '%s' for resolv.conf\n", ac->ac_resolv_conf);
+
   if ( !ac->ac_iproute_bin ) {
     // Attempt to get iproute information using nix-build
     ac->ac_iproute_bin = nix_build("iproute", "bin/ip");
