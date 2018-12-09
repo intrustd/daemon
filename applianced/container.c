@@ -261,7 +261,7 @@ int container_start(struct container *c) {
   pid_t child = -1;
   struct containerinit ci_data;
   char *child_stack = NULL;
-  int clone_flags = CLONE_PARENT | SIGCHLD;
+  int clone_flags = SIGCHLD;
   struct containerchildinfo cci = { .cci_cont = c };
 
   err = posix_memalign((void **)&child_stack, sysconf(_SC_PAGE_SIZE), child_stack_sz);
