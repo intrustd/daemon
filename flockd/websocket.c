@@ -332,14 +332,11 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
   bytes_available = sizeof(wsc->wsc_pkt_buf) - wsc->wsc_pkt_sz;
 
   if ( bytes_available > 0 ) {
-  recv_again:
     err = recv(wsc->wsc_websocket, wsc->wsc_pkt_buf + wsc->wsc_pkt_sz, bytes_available, 0);
     if ( err <= 0 ) {
       if ( errno == EWOULDBLOCK ) {
         fprintf(stderr, "wsconnection_onread: encountered EWOULDBLOCK...\n");
         return 0;
-      } else if ( errno == EINTR ) {
-        goto recv_again;
       } else {
         perror("wsconnection_onread: socket error");
         connection_complete_unlocked(&wsc->wsc_conn);
