@@ -959,6 +959,7 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
         fprintf(stderr, "appinstance_setup: while bind mounting %s (making %s)\n", cur_mf->am_bind_mounts[i], path);
       }
 
+      fprintf(stderr, "Do bind mount %s to %s\n", cur_mf->am_bind_mounts[i], path);
       DO_MOUNT(cur_mf->am_bind_mounts[i], path, "bind", MS_BIND | MS_REC, "");
     }
 
