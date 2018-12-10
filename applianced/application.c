@@ -880,6 +880,7 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_RDONLY, "");
 
   FORMAT_PATH("%s/etc/resolv.conf", image_path);
+  fprintf(stderr, "Mount %s as /etc/resolv.conf\n", ai->inst_appstate->as_resolv_conf);
   DO_MOUNT(ai->inst_appstate->as_resolv_conf, path, "bind", MS_BIND | MS_RDONLY, "");
 
   FORMAT_PATH("%s/run", image_path);
