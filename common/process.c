@@ -1,3 +1,4 @@
+#include <string.h>
 #include <assert.h>
 #include <errno.h>
 #include <unistd.h>
@@ -21,6 +22,9 @@ void pssubopts_init(struct pssubopts *pso) {
   pso->pso_args_size = 0;
   pso->pso_args = NULL;
   pso->pso_arg_free = NULL;
+  pso->pso_envc = 0;
+  pso->pso_envs_size = 0;
+  pso->pso_env = NULL;
 }
 
 void pssubopts_release(struct pssubopts *pso) {
@@ -48,8 +52,19 @@ void pssubopts_release(struct pssubopts *pso) {
       pso->pso_arg_free[i](pso->pso_args[i]);
   }
 
-  free(pso->pso_arg_free);
-  free(pso->pso_args);
+  for ( i = 0; i < pso->pso_envc; ++i ) {
+    free(pso->pso_env[i]);
+  }
+
+  if ( pso->pso_arg_free ) {
+    free(pso->pso_arg_free);
+  }
+  if ( pso->pso_args ) {
+    free(pso->pso_args);
+  }
+  if ( pso->pso_env ) {
+    free(pso->pso_env);
+  }
 }
 
 int pssubopts_pipe_to_file(struct pssubopts *pso, int which, FILE *f) {
@@ -152,6 +167,51 @@ int pssubopts_push_arg(struct pssubopts *pso, const char *arg, argfreefn fn) {
   return -1;
 }
 
+int pssubopts_push_env(struct pssubopts *pso, const char *var, const char *val) {
+  char *env;
+  int envoffs = 0;
+
+  if ( pssubopts_error(pso) ) return -1;
+
+  env  = malloc(strlen(var) + strlen(val) + 2);
+  if ( ! env ) {
+    return -1;
+  }
+
+  memcpy(env, var, strlen(var));
+  envoffs += strlen(var);
+
+  env[envoffs++] = '=';
+
+  memcpy(env + envoffs, val, strlen(val));
+  envoffs += strlen(val);
+  env[envoffs] = '\0';
+
+  assert(pso->pso_envc <= pso->pso_envs_size);
+  if ( (pso->pso_envc + 1) >= pso->pso_envs_size ) {
+    char **newenv;
+    size_t newsz;
+
+    newsz = pso->pso_envs_size * 2;
+    if ( newsz == 0 )
+      newsz = 4;
+
+    newenv = realloc(pso->pso_env, sizeof(*newenv) * newsz);
+    if ( !newenv ) {
+      pso->pso_flags |= PSSUBOPT_FLAG_ERROR;
+      return -1;
+    }
+    pso->pso_env = newenv;
+    pso->pso_envs_size = newsz;
+  }
+
+  assert((pso->pso_envc + 1) < pso->pso_envs_size);
+  pso->pso_env[pso->pso_envc] = (char *)env;
+  pso->pso_envc++;
+
+  return -1;
+}
+
 // pssub
 
 
@@ -224,7 +284,16 @@ int pssub_run_from_opts(struct eventloop *el, struct pssub *ps, struct pssubopts
         perror("pssub_run_from_opts: fork");
         ret = -1;
       } else if ( new_child == 0 ) {
-        int err;
+        int err, i;
+
+        // Set all environment variables
+        for ( i = 0; i < opts->pso_envc; ++i ) {
+          if ( putenv(opts->pso_env[i]) < 0 ) {
+            perror("pssub_run_from_opts: putenv");
+            exit(256);
+          }
+        }
+
         if ( opts->pso_stdin_write >= 0 ) close(opts->pso_stdin_write);
         if ( opts->pso_stdout_read >= 0 ) close(opts->pso_stdout_read);
         if ( opts->pso_stderr_read >= 0 ) close(opts->pso_stderr_read);

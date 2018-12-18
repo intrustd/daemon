@@ -7,6 +7,12 @@
       description = "App domain URI";
     };
 
+    kite.environment = mkOption {
+      type = types.attrsOf types.string;
+      description = "Environment variables shared between all running processes in this container";
+      default = {};
+    };
+
     kite.binaryCaches = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
@@ -42,6 +48,12 @@
     kite.healthCheckHook = mkOption {
       type = types.string;
       description = "Script to run when kite wants to run a health check on this application";
+    };
+
+    kite.permsHook = mkOption {
+      type = types.nullOr types.string;
+      description = "Script to run to get information on app permissions";
+      default = null;
     };
 
     kite.bindMounts = mkOption {
@@ -182,20 +194,26 @@
     ];
 
     kite.toplevel =
-      let startScript = pkgs.writeScript "start-script" ''
+      let startScript = pkgs.writeScript "${config.kite.meta.slug}-start-script" ''
             #!/bin/sh
+            source /etc/profile
             ${config.kite.startHook}
           '';
-          healthCheckScript = pkgs.writeScript "health-check" ''
+          healthCheckScript = pkgs.writeScript "${config.kite.meta.slug}-health-check" ''
             #!/bin/sh
+            source /etc/profile
             ${config.kite.healthCheckHook}
           '';
+          permsScript = if config.kite.permsHook == null
+                        then pkgs.writeScript "${config.kite.meta.slug}-perms" ''
+                          #!/bin/sh
+                          exit 10
+                        ''
+                        else config.kite.permsHook;
 
           cmpPrio = a: b: a.priority < b.priority;
           mkPermission = perm: with perm;
-             let base = { inherit description; } //
-                        (if verifyCmd != null
-                         then { verify = verifyCmd; } else {});
+             let base = { inherit description dynamic; };
              in if !(builtins.isNull perm.name)
                 then base // { inherit name; }
                 else if !(builtins.isNull perm.regex)
@@ -225,7 +243,13 @@
              chmod 777 $out/tmp
              ln -s ${healthCheckScript} $out/app/hc
              ln -s ${startScript} $out/app/start
+             ln -s ${permsScript} $out/app/perms
              ln -s ${kitePermissions} $out/permissions.json
+
+             cat >$out/etc/profile <<EOF
+             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: val: "export ${name}=\"${val}\"") config.kite.environment)}
+             EOF
+             chmod +x $out/etc/profile
 
              cat >$out/etc/passwd <<EOF
              root:x:0:0:System administrator:/kite:${pkgs.bash}/bin/bash
@@ -237,9 +261,7 @@
              kite:x:100:
              EOF
 
-             cat >$out/etc/hosts <<EOF
-             127.0.0.1 localhost
-             EOF
+             ln -s /run/hosts $out/etc/hosts
 
              cat >$out/etc/resolv.conf <<EOF
              # Only admin apps can access the internet

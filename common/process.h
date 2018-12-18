@@ -19,6 +19,9 @@ struct pssubopts {
   size_t pso_argc, pso_args_size;
   char **pso_args;
   argfreefn *pso_arg_free;
+
+  size_t pso_envc, pso_envs_size;
+  char **pso_env;
 };
 
 #define PSSUBOPT_FLAG_ERROR 0x00000001
@@ -36,6 +39,7 @@ int pssubopts_pipe_to_fd(struct pssubopts *pso, int which, int fd);
 
 void pssubopts_set_command(struct pssubopts *pso, const char *cmd, argfreefn fn);
 int pssubopts_push_arg(struct pssubopts *pso, const char *arg, argfreefn fn);
+int pssubopts_push_env(struct pssubopts *pso, const char *var, const char *val);
 
 struct pssub {
   int ps_op;

@@ -345,6 +345,11 @@ int container_start(struct container *c) {
 
   c->c_init_process = child;
 
+  if ( c->c_control(c, CONTAINER_CTL_AFTER_RUN_HOOK, 0, 0) == -1 ) {
+    fprintf(stderr, "container_start: after run hook failed\n");
+    goto error;
+  }
+
   SAFE_ASSERT( pssub_attach(&c->c_bridge->br_appstate->as_eventloop, &c->c_on_init_exit, child) == 0 );
 
   return 0;
@@ -584,6 +589,74 @@ static int container_start_child(void *c_) {
   perror("execv");
 
   return EXIT_FAILURE;
+}
+
+int container_mod_host_entry(struct container *c, int direction,
+                             const char *app_domain, const char *target) {
+  int err;
+  struct stkinitmsg msg;
+  struct iovec iov[3];
+  struct msghdr skmsg =
+    { .msg_flags = 0,
+      .msg_name = NULL,
+      .msg_namelen = 0,
+      .msg_iov = iov,
+      .msg_iovlen = 3,
+      .msg_control = NULL,
+      .msg_controllen = 0 };
+
+  if ( strlen(app_domain) > 0xFFFF )
+    return -1;
+
+  if ( strlen(target) > 0xFFFF )
+    return -1;
+
+  msg.sim_req = STK_REQ_MOD_HOST_ENTRY;
+  msg.sim_flags = 0;
+  msg.un.modhost.dir = direction == 0 ? 0 : (direction / abs(direction));
+  msg.un.modhost.dom_len = strlen(app_domain);
+  msg.un.modhost.tgt_len = strlen(target);
+  fprintf(stderr, "Do mod host entry: %d %d\n", msg.un.modhost.dom_len, msg.un.modhost.tgt_len);
+
+  iov[0].iov_base = &msg;
+  iov[0].iov_len = sizeof(msg);
+  iov[1].iov_base = (void *) app_domain;
+  iov[1].iov_len = strlen(app_domain);
+  iov[2].iov_base = (void *) target;
+  iov[2].iov_len = strlen(target);
+
+  if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
+    int sts;
+
+    err = sendmsg(c->c_init_comm, &skmsg, 0);
+    if ( err < 0 ) {
+      perror("container_mod_host_entry: sendmsg");
+      pthread_mutex_unlock(&c->c_mutex);
+      return -1;
+    }
+
+    skmsg.msg_iovlen = 1;
+    iov[0].iov_base = &msg;
+    iov[0].iov_len = sizeof(msg);
+
+    err = recv(c->c_init_comm, &sts, sizeof(sts), 0);
+    if ( err < 0 ) {
+      perror("container_mod_host_entry: recv");
+      pthread_mutex_unlock(&c->c_mutex);
+      return -1;
+    }
+
+    if ( err != sizeof(sts) ) {
+      fprintf(stderr, "container_mod_host_entry: did not receive enough in response\n");
+      sts = -100;
+    }
+
+    pthread_mutex_unlock(&c->c_mutex);
+    return sts;
+  } else {
+    fprintf(stderr, "container_mod_host_entry: could not lock mutex\n");
+    return -1;
+  }
 }
 
 int container_execute(struct container *c, uint32_t exec_flags, const char *path,

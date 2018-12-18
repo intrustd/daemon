@@ -25,10 +25,10 @@ let permissionsType = with lib; types.submodule {
           description = "Priority";
         };
 
-        verifyCmd = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "A command to run, with optional substitutions from the regex field, using python's regex syntax";
+        dynamic = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Whether or not this permission can be inferred from others we may have";
         };
       };
     };

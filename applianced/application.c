@@ -16,6 +16,7 @@
 #define OP_APPINSTANCE_RESET_REQUEST EVT_CTL_CUSTOM
 #define OP_APPINSTANCE_RESET_COMPLETE (EVT_CTL_CUSTOM + 1)
 #define OP_APPINSTANCE_FORCE_RESET (EVT_CTL_CUSTOM + 2)
+#define OP_APPINSTANCE_AFTER_RUN (EVT_CTL_CUSTOM + 3)
 
 static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
                                                     jsmntok_t *tokens, int tokencnt,
@@ -23,6 +24,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
 static void freemanifest(const struct shared *sh, int level);
 
 static int appinstance_setup(struct container *c, struct appinstance *ai);
+static int appinstance_host_setup(struct container *c, struct appinstance *ai);
 static int appinstance_container_ctl(struct container *c, int op, void *argp, ssize_t argl);
 static void appinstfn(struct eventloop *el, int op, void *arg);
 static void freeinstfn(const struct shared *sh, int level);
@@ -551,6 +553,7 @@ struct appinstance *launch_app_instance(struct appstate *as, struct persona *p, 
 
   qdevtsub_init(&ret->inst_reset, OP_APPINSTANCE_RESET_REQUEST, appinstfn);
   qdevtsub_init(&ret->inst_reset_complete, OP_APPINSTANCE_RESET_COMPLETE, appinstfn);
+  qdevtsub_init(&ret->inst_after_run, OP_APPINSTANCE_AFTER_RUN, appinstfn);
   timersub_init_default(&ret->inst_force_reset_timeout, OP_APPINSTANCE_FORCE_RESET, appinstfn);
   ret->inst_flags = 0;
 
@@ -669,6 +672,13 @@ static void appinstfn(struct eventloop *el, int op, void *arg) {
 
       pthread_mutex_unlock(&ai->inst_mutex);
       APPINSTANCE_UNREF(ai);
+    }
+    break;
+
+  case OP_APPINSTANCE_AFTER_RUN:
+    ai = STRUCT_FROM_BASE(struct appinstance, inst_after_run, evt->qde_sub);
+    if ( appinstance_host_setup(&ai->inst_container, ai) < 0 ) {
+      fprintf(stderr, "appinstfn: host setup fails\n");
     }
     break;
 
@@ -792,6 +802,10 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
   case CONTAINER_CTL_DO_SETUP:
     return appinstance_setup(c, ai);
 
+  case CONTAINER_CTL_AFTER_RUN_HOOK:
+    eventloop_queue(&ai->inst_appstate->as_eventloop, &ai->inst_after_run);
+    return 0;
+
   default:
     fprintf(stderr, "appinstance_container_ctl: unrecognized op %d\n", op);
     return -2;
@@ -875,12 +889,11 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
     fprintf(stderr, "Could not read /etc/ssl/certs/ca-certificates.crt\n");
     return -1;
   }
-  fprintf(stderr, "Read link : %s\n", app_data_path);
+
   // This should lead somewhere in the nix store
   DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_RDONLY, "");
 
   FORMAT_PATH("%s/etc/resolv.conf", image_path);
-  fprintf(stderr, "Mount %s as /etc/resolv.conf\n", ai->inst_appstate->as_resolv_conf);
   DO_MOUNT(ai->inst_appstate->as_resolv_conf, path, "bind", MS_BIND | MS_RDONLY, "");
 
   FORMAT_PATH("%s/run", image_path);
@@ -959,7 +972,6 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
         fprintf(stderr, "appinstance_setup: while bind mounting %s (making %s)\n", cur_mf->am_bind_mounts[i], path);
       }
 
-      fprintf(stderr, "Do bind mount %s to %s\n", cur_mf->am_bind_mounts[i], path);
       DO_MOUNT(cur_mf->am_bind_mounts[i], path, "bind", MS_BIND | MS_REC, "");
     }
 
@@ -983,4 +995,55 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
 
   // the app-instance-init will change the root directory
   return 0;
+}
+
+static int appinstance_host_setup(struct container *c, struct appinstance *ai) {
+  int ret = 0;
+  struct app *app, *tmp_app;
+  struct appstate *as = ai->inst_appstate;
+
+  // For each admin app, send a message to the init container to add a
+  // host entry.
+
+  SAFE_RWLOCK_RDLOCK(&as->as_applications_mutex);
+  HASH_ITER(app_hh, as->as_apps, app, tmp_app) {
+    const char *domain = NULL;
+    struct in_addr other_addr;
+    char ip[INET_ADDRSTRLEN];
+
+    if ( app == ai->inst_app ) continue;
+
+    SAFE_MUTEX_LOCK(&app->app_mutex);
+    if ( app->app_flags & APP_FLAG_RUN_AS_ADMIN ) {
+      domain = app->app_domain;
+
+      if ( app->app_flags & APP_FLAG_SINGLETON ) {
+        if ( app->app_singleton ) {
+          memcpy(&other_addr, &app->app_singleton->inst_container.c_ip, sizeof(other_addr));
+        } else
+          domain = NULL;
+      } else {
+        struct appinstance *other;
+        HASH_FIND(inst_app_hh, app->app_instances, ai->inst_persona->p_persona_id, PERSONA_ID_LENGTH, other);
+        if ( other ) {
+          memcpy(&other_addr, &other->inst_container.c_ip, sizeof(other_addr));
+        } else
+          domain = NULL;
+      }
+    }
+    pthread_mutex_unlock(&app->app_mutex);
+
+    if ( domain ) {
+      inet_ntop(AF_INET, &other_addr, ip, sizeof(ip));
+      fprintf(stderr, "Would add host entry %s %s\n", domain, ip);
+
+      if ( container_mod_host_entry(&ai->inst_container, 0, domain, ip) < 0 ) {
+        ret = -1;
+        break;
+      }
+    }
+  }
+  pthread_rwlock_unlock(&as->as_applications_mutex);
+
+  return ret;
 }

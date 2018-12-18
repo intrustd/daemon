@@ -924,6 +924,7 @@ static void localsock_get_app(struct localapi *api, struct eventloop *el,
   fprintf(stderr, "Looking up %.*s\n", (int)app_uri_sz, app_uri);
   app = appstate_get_app_by_url_ex(api->la_app_state, app_uri, app_uri_sz);
   if ( !app ) {
+    fprintf(stderr, "App not found\n");
     localsock_return_not_found(api, el, msg);
   } else {
     struct appmanifest *mf;
@@ -1014,8 +1015,8 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
       break;
 
     case KLA_STDOUT:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(int) ) {
-        int fdix;
+      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(uint8_t) ) {
+        uint8_t fdix;
         memcpy(&fdix, KLA_DATA_UNSAFE(attr, void*), sizeof(fdix));
         if ( fdix < nfds ) {
           progress = fds[fdix];
@@ -1129,7 +1130,7 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
     int err;
     char str[INET_ADDRSTRLEN + 1];
     struct arpdesc desc;
-    fprintf(stderr, "Going to lookup infermation for %s\n", inet_ntop(AF_INET, &addr, str, sizeof(str)));
+    fprintf(stderr, "Going to lookup information for %s\n", inet_ntop(AF_INET, &addr, str, sizeof(str)));
 
     err = bridge_describe_arp(&api->la_app_state->as_bridge, &addr, &desc, sizeof(desc));
     if ( err == 0 )
@@ -1158,6 +1159,7 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
 
       switch ( desc.ad_container_type ) {
       case ARP_DESC_PERSONA:
+        fprintf(stderr, "Remote is a persona connection\n");
         attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
         attr->kla_name = htons(KLA_CONTAINER_TYPE);
@@ -1221,8 +1223,10 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
           KLM_SIZE_ADD_ATTR(rspsz, attr);
 
           // Each pconn may have one or more tokens
+          fprintf(stderr, "Looking up tokens\n");
           HASH_ITER(pct_hh, desc.ad_persona.ad_pconn->pc_tokens, cur_tok, tmp_tok) {
             struct token *tok = cur_tok->pct_token;
+            fprintf(stderr, "Got one token %p\n", tok);
             attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
             if ( !attr ) {
               fprintf(stderr, "Not enough space for tokens\n");
@@ -1290,6 +1294,8 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
                                     struct kitelocalmsg *msg, int msgsz,
                                     int *fds, int nfds) {
   struct kitelocalattr *attr;
+  struct persona *persona = NULL;
+  struct app *app = NULL;
 
   struct in_addr addr;
   addr.s_addr = 0;
@@ -1298,8 +1304,6 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
   uint8_t fdix;
 
   struct buffer args;
-
-  struct arpdesc desc;
 
   buffer_init(&args);
 
@@ -1312,16 +1316,27 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
     case KLA_ADDR:
       if ( KLA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
         memcpy(&addr.s_addr, KLA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
+      }
+      break;
 
-        err = bridge_describe_arp(&api->la_app_state->as_bridge,
-                                  &addr, &desc, sizeof(desc));
-        if ( err == 0 ) {
-          fprintf(stderr, "COuld not find this address\n");
+    case KLA_PERSONA_ID:
+      if ( KLA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH && !persona ) {
+        // Look up this persona. If we have this persona, and this
+        // application ID, attempt to launch the application instance
+        err = appstate_lookup_persona(api->la_app_state, KLA_DATA_UNSAFE(attr, const char *), &persona);
+        if ( err < 0 ) {
           localsock_return_not_found(api, el, msg);
-          return;
-        } else if ( err < 0 ) {
-          localsock_return_internal_error(api, el, msg);
-          return;
+          goto done;
+        }
+      }
+      break;
+
+    case KLA_APP_URL:
+      if ( !app ) {
+        app = appstate_get_app_by_url_ex(api->la_app_state, KLA_DATA_UNSAFE(attr, const char*), KLA_PAYLOAD_SIZE(attr));
+        if ( !app ) {
+          localsock_return_not_found(api, el, msg);
+          goto done;
         }
       }
       break;
@@ -1357,35 +1372,53 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
 
   fprintf(stderr, "Continuing to check address\n");
 
-  if ( addr.s_addr == 0 ) {
+  if ( addr.s_addr == 0 && !persona && !app ) {
     buffer_release(&args);
     localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg),
                                    KLA_ADDR, -1);
+  } else if ( addr.s_addr != 0 && (persona || app) ) {
+    buffer_release(&args);
+    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+  } else if ( persona && !app ) {
+    buffer_release(&args);
+    localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg),
+                                   KLA_APP_URL, -1);
   } else {
-    struct container *target = NULL;
-    const char *argv[4] = { "sh", "-c", NULL, NULL };
+    struct appinstance *ai = NULL;
+    const char *argv[4] = { "-sh", "-c", NULL, NULL };
     int child_pid;
 
-    fprintf(stderr, "Got arp type %d\n", desc.ad_container_type);
+    if ( addr.s_addr != 0 ) {
+      struct arpdesc desc;
 
-    switch ( desc.ad_container_type ) {
-    case ARP_DESC_PERSONA:
-      // In general, we do not allow running commands in personas
-      localsock_return_not_allowed(api, el, msg);
-      break;
+      err = bridge_describe_arp(&api->la_app_state->as_bridge,
+                                &addr, &desc, sizeof(desc));
+      if ( err == 0 ) {
+        localsock_return_not_found(api, el, msg);
+        goto done;
+      } else if ( err < 0 ) {
+        localsock_return_internal_error(api, el, msg);
+        goto done;
+      }
 
-    case ARP_DESC_APP_INSTANCE:
-      target = &desc.ad_app_instance.ad_app_instance->inst_container;
-      break;
-
-    default:
-      fprintf(stderr, "Invalid container type: %d\n", desc.ad_container_type);
-      localsock_return_internal_error(api, el, msg);
-      break;
+      if ( desc.ad_container_type != ARP_DESC_APP_INSTANCE ) {
+        arpdesc_release(&desc, sizeof(desc));
+        localsock_return_not_allowed(api, el, msg);
+        goto done;
+      } else {
+        ai = desc.ad_app_instance.ad_app_instance;
+        APPINSTANCE_REF(ai);
+        arpdesc_release(&desc, sizeof(desc));
+      }
+    } else if ( app ) {
+      ai = launch_app_instance(api->la_app_state, persona, app);
+      if ( !ai ) {
+        localsock_return_not_found(api, el, msg);
+        goto done;
+      }
     }
 
-    if ( !target ) {
-      arpdesc_release(&desc, sizeof(desc));
+    if ( !ai ) {
       buffer_release(&args);
     } else {
       struct containerexecinfo exec_options;
@@ -1411,7 +1444,7 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
         exec_options.cei_stderr_fd = stderr_fd;
       }
 
-      child_pid = container_execute_ex(target, &exec_options);
+      child_pid = container_execute_ex(&ai->inst_container, &exec_options);
       if ( child_pid < 0 ) {
         fprintf(stderr, "There was an error running the child\n");
         localsock_return_internal_error(api, el, msg);
@@ -1431,9 +1464,17 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
                 api->la_outgoing_sz);
       }
 
-      arpdesc_release(&desc, sizeof(desc));
+      APPINSTANCE_UNREF(ai);
     }
   }
+
+ done:
+  if ( stdin_fd > 0 ) close(stdin_fd);
+  if ( stdout_fd > 0 ) close(stdout_fd);
+  if ( stderr_fd > 0 ) close(stderr_fd);
+
+  if ( persona ) PERSONA_UNREF(persona);
+  if ( app ) APPLICATION_UNREF(app);
 }
 
 static void localsock_crud_container(struct localapi *api, struct eventloop *el,

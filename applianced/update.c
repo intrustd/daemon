@@ -462,9 +462,10 @@ static void appupdater_error(struct appupdater *au, int sts) {
 }
 
 static void appupdater_build_from_manifest(struct appupdater *au) {
-  char log_path[PATH_MAX], cache_path[PATH_MAX], mf_digest[SHA256_DIGEST_LENGTH * 2 + 1];
+  char log_path[PATH_MAX], cache_path[PATH_MAX], home_path[PATH_MAX], mf_digest[SHA256_DIGEST_LENGTH * 2 + 1];
   FILE *stdout_log = NULL, *stderr_log = NULL, *caches = NULL;
   struct pssubopts ps;
+  int err;
 
   if ( au->au_application )
     application_set_flags(au->au_application, APP_FLAG_UPDATING);
@@ -553,6 +554,16 @@ static void appupdater_build_from_manifest(struct appupdater *au) {
   pssubopts_push_arg(&ps, "--caches", NULL);
   pssubopts_push_arg(&ps, cache_path, NULL);
   pssubopts_push_arg(&ps, au->au_manifest->am_nix_closure, NULL);
+
+  err = snprintf(home_path, sizeof(home_path), "%s/nix-cache", au->au_appstate->as_conf_dir);
+  if ( err >= sizeof(home_path) ) {
+    pssubopts_release(&ps);
+    fprintf(stderr, "appupdater_build_from_manifest: path overflow\n");
+    appupdater_error(au, AU_STATUS_ERROR);
+    return;
+  }
+
+  pssubopts_push_env(&ps, "HOME", home_path);
 
   if ( pssubopts_error(&ps) ) {
     pssubopts_release(&ps);

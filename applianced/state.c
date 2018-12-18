@@ -1053,6 +1053,7 @@ void appstate_clear(struct appstate *as) {
 }
 
 int appstate_setup(struct appstate *as, struct appconf *ac) {
+  char path[PATH_MAX];
   uid_t our_uid = geteuid();
   int err;
 
@@ -1094,6 +1095,17 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
   as->as_resolv_conf = ac->ac_resolv_conf;
 
   err = mkdir_recursive(ac->ac_conf_dir);
+  if ( err < 0 ) {
+    perror("appconf_setup: mkdir_recursive");
+    return -1;
+  }
+
+  err = snprintf(path, sizeof(path), "%s/nix-cache", ac->ac_conf_dir);
+  if ( err >= sizeof(path) ) {
+    fprintf(stderr, "appconf_setup: path overflow\n");
+    return -1;
+  }
+  err = mkdir_recursive(path);
   if ( err < 0 ) {
     perror("appconf_setup: mkdir_recursive");
     return -1;
@@ -1668,6 +1680,7 @@ struct app *appstate_get_app_by_url(struct appstate *as, const char *domain) {
 struct app *appstate_get_app_by_url_ex(struct appstate *as, const char *domain, size_t cansz) {
   if ( pthread_rwlock_rdlock(&as->as_applications_mutex) == 0 ) {
     struct app *a;
+    fprintf(stderr, "appstate lookup app %.*s\n", (int)cansz, domain);
     HASH_FIND(app_hh, as->as_apps, domain, cansz, a);
     if ( a )
       APPLICATION_REF(a);

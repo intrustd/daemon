@@ -22,7 +22,8 @@ struct appinstance {
 
   // A mutex controlling access to the init process
   pthread_mutex_t inst_mutex;
-  // A socket we can use to communicate with the init daemon (or 0) if the instance is not running
+  // A socket we can use to communicate with the init daemon (or 0) if
+  // the instance is not running
   int    inst_init_comm;
 
   struct container inst_container;
@@ -33,7 +34,7 @@ struct appinstance {
   UT_hash_handle inst_persona_hh;
 
   uint32_t        inst_flags;
-  struct qdevtsub inst_reset, inst_reset_complete;
+  struct qdevtsub inst_reset, inst_reset_complete, inst_after_run;
   struct timersub inst_force_reset_timeout;
 };
 

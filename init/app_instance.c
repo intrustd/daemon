@@ -12,9 +12,12 @@
 
 #include "init_proto.h"
 #include "init_common.h"
+#include "util.h"
 
 #define START_SCRIPT_PATH "/app/start"
 #define HC_SCRIPT_PATH    "/app/hc"
+
+extern char **environ;
 
 char *g_persona_id;
 char *g_app_url;
@@ -24,6 +27,14 @@ pid_t g_start_pid = 0;
 pid_t g_hc_pid = 0;
 int g_hc_retries = 0; // The number of times the health check errored
 sig_atomic_t g_alarm_rung = 0; // Set to 1 on SIGALRM
+
+struct host {
+  const char *domain;
+  const char *target;
+  DLIST(struct host) ls;
+};
+
+DLIST_HEAD(struct host) g_hosts;
 
 enum {
   NOT_STARTED,
@@ -48,30 +59,111 @@ void dbg_printf(const char *format, ...) {
   vfprintf(stderr, format, ap);
   va_end(ap);
 }
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <sys/socket.h>
-#include <linux/prctl.h>
 
-#include "init_common.h"
-#include "init_proto.h"
+void update_hosts() {
+  struct host *h, *tmp;
+  FILE *f;
 
-char *g_persona_id;
+  dbg_printf("update_host: open /run/hosts.tmp\n");
+  f = fopen("/run/hosts.tmp", "wt");
+  if ( !f ) {
+    dbg_printf("Error opening /run/hosts.tmp: %s\n", strerror(errno));
+    return;
+  }
+
+  fprintf(f, "127.0.0.1 localhost\n");
+  fprintf(f, "::1 localhost\n");
+  fprintf(f, "127.0.0.1 %s.kite.local\n", g_app_url);
+  fprintf(f, "::1 %s.kite.local\n", g_app_url);
+
+  DLIST_ITER(&g_hosts, ls, h, tmp) {
+    dbg_printf("update_host: got host %p\n", h);
+    fprintf(f, "%s %s.kite.local\n", h->target, h->domain);
+  }
+
+  fclose(f);
+  dbg_printf("Done editing hosts\n");
+
+  if ( rename("/run/hosts.tmp", "/run/hosts") < 0 ) {
+    perror("update_hosts: rename(\"/run/hosts.tmp\", \"/run/hosts\")");
+  }
+}
+
+int modhost(int dir, const char *dom, size_t dom_sz, const char *tgt, size_t tgt_sz) {
+  struct host *h, *tmp;
+  int found = 0;
+
+  DLIST_ITER(&g_hosts, ls, h, tmp) {
+    if ( strncmp(h->domain, dom, dom_sz) == 0 ) {
+      found = 1;
+      if ( dir < 0 ) {
+        DLIST_REMOVE(&g_hosts, ls, h);
+        free(h);
+      } else {
+        char *new_tgt;
+
+        new_tgt = realloc((char *) h->target, tgt_sz + 1);
+        if ( !new_tgt ) {
+          dbg_printf("Could not reallocate target\n");
+          return -1;
+        }
+
+        memcpy(new_tgt, tgt, tgt_sz);
+        new_tgt[tgt_sz] = '\0';
+        h->target = new_tgt;
+      }
+      break;
+    }
+  }
+
+  if ( dir >= 0 && !found ) {
+    char *new_dom, *new_tgt;
+    // Add a new entry
+    h = malloc(sizeof(*h));
+    if ( !h ) {
+      dbg_printf("Could not allocate host entry\n");
+      return -1;
+    }
+
+    DLIST_ENTRY_CLEAR(&h->ls);
+
+    h->domain = new_dom = malloc(dom_sz + 1);
+    if ( !new_dom ) {
+      free(h);
+      dbg_printf("Could not allocate new domain\n");
+      return -1;
+    }
+
+    h->target = new_tgt = malloc(tgt_sz + 1);
+    if ( !new_tgt ) {
+      free(new_dom);
+      free(h);
+      dbg_printf("Could not allocate new target\n");
+      return -1;
+    }
+
+    memcpy(new_dom, dom, dom_sz);
+    new_dom[dom_sz] = '\0';
+
+    memcpy(new_tgt, tgt, tgt_sz);
+    new_tgt[tgt_sz] = '\0';
+
+    DLIST_INSERT(&g_hosts, ls, h);
+  }
+
+  return found;
+}
 
 // Perform the run stork init command
 pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
   char *args, *end;
   char **argv = NULL, **envv = NULL;
-  int i, err, fdix = 0, fstdin = -1, fstdout = -1, fstderr = -1;
+  int i, err, fdix = 0, fstdin = -1, fstdout = -1, fstderr = -1, cur_envc = 0;
   pid_t child_pid, wait_pid;
 
   int kite_pipe[2], wait_pipe[2];
+
+  for ( ; environ[cur_envc]; ++cur_envc);
 
   args = STK_ARGS(pkt);
   end = ((char *) pkt) + sz;
@@ -81,7 +173,7 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
   argv = malloc(sizeof(char *) * (pkt->un.run.argc + 1));
   if ( !argv ) goto err;
 
-  envv = malloc(sizeof(char *) * (pkt->un.run.envc + 1));
+  envv = malloc(sizeof(char *) * (cur_envc + pkt->un.run.envc + 1));
   if ( !envv ) goto err;
 
   for ( i = 0; i < pkt->un.run.argc; ++i ) {
@@ -92,7 +184,9 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
   }
   argv[i] = NULL;
 
-  for ( i = 0; i < pkt->un.run.envc; ++i ) {
+  memcpy(envv, environ, sizeof(char *) * cur_envc);
+
+  for ( i = cur_envc; (i - cur_envc) < pkt->un.run.envc; ++i ) {
     if ( args >= end ) goto err;
 
     envv[i] = args;
@@ -135,18 +229,20 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     fstderr = fds[fdix++];
   }
 
-  fprintf(stderr, "[Persona %s] Running command\n", g_persona_id);
-
   child_pid = fork();
   if ( child_pid < 0 ) goto err;
   else if ( child_pid == 0 ) {
+    int i;
     sigset_t unblocked;
     sigfillset(&unblocked);
 
     if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
       close(kite_pipe[0]);
 
-    fprintf(stderr, "[Persona %s] Going to run %s\n", g_persona_id, argv[0]);
+    dbg_printf("Going to run");
+    for ( i = 0; i < pkt->un.run.argc; ++i )
+      fprintf(stderr, " %s", argv[i]);
+    fprintf(stderr, "\n");
 
     close(COMM);
     if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
@@ -246,7 +342,11 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     } else
       *waitfd = -1;
 
-    fprintf(stderr, "[Persona %s] launched with pid %d\n", g_persona_id, child_pid);
+    dbg_printf("launched with pid %d\n", child_pid);
+
+    if ( fstdin > 0 ) close(fstdin);
+    if ( fstdout > 0 ) close(fstdout);
+    if ( fstderr > 0 ) close(fstderr);
 
     if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
       err = read(kite_pipe[0], &sts, 1);
@@ -265,7 +365,7 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
   return child_pid;
 
  not_enough_fds:
-  fprintf(stderr, "[Persona %s] Not enough file descriptors in init message (got %d)\n", g_persona_id, nfds);
+  dbg_printf("Not enough file descriptors in init message (got %d)\n", nfds);
 
  err:
   child_pid = -errno;
@@ -385,6 +485,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  DLIST_INIT(&g_hosts);
+
   g_persona_id = argv[1];
   g_app_url = argv[2];
   g_nix_closure = argv[3];
@@ -404,6 +506,8 @@ int main(int argc, char **argv) {
     perror("app_instance_init: chroot");
     return 2;
   }
+
+  update_hosts();
 
   // Set cwd to /kite
   if ( chdir("/kite/") < 0 ) {
@@ -463,7 +567,7 @@ int main(int argc, char **argv) {
   while ( 1 ) {
     pid_t child_pid;
     char cbuf[128];
-    int fds[3], nfds = 0, i, waitfd = -1;
+    int fds[3], nfds = 0, i, waitfd = -1, err;
     struct cmsghdr *cmsg;
     struct iovec iov = { .iov_base = buf,
                          .iov_len = STK_MAX_PKT_SZ };
@@ -528,6 +632,7 @@ int main(int argc, char **argv) {
 
         cmsg = CMSG_FIRSTHDR(&msg);
         cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
         memcpy(CMSG_DATA(cmsg), &waitfd, sizeof(waitfd));
       } else {
@@ -546,6 +651,32 @@ int main(int argc, char **argv) {
 
       if ( waitfd >= 0 )
         close(waitfd);
+
+      break;
+
+    case STK_REQ_MOD_HOST_ENTRY:
+      if ( n < sizeof(*pkt) + pkt->un.modhost.dom_len + pkt->un.modhost.tgt_len ) {
+        dbg_printf("Not enough data in mod host (%d, %ld, %d, %d)\n",
+                   n, sizeof(*pkt) + pkt->un.modhost.dom_len + pkt->un.modhost.tgt_len,
+                   pkt->un.modhost.dom_len, pkt->un.modhost.tgt_len);
+        err = -1;
+      } else {
+        err = modhost(pkt->un.modhost.dir,
+                      pkt->after, pkt->un.modhost.dom_len,
+                      pkt->after + pkt->un.modhost.dom_len,
+                      pkt->un.modhost.tgt_len);
+      }
+
+      do {
+        n = send(COMM, &err, sizeof(err), 0);
+      } while ( n < 0 && errno == EINTR );
+
+      if ( n < 0 ) {
+        perror("send");
+        return 1;
+      }
+
+      update_hosts();
 
       break;
 
