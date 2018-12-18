@@ -75,7 +75,7 @@ int register_app(int argc, char **argv) {
   }
 
   if ( show_progress ) {
-    int fdidx = 0;
+    uint8_t fdidx = 0;
 
     attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
     assert(attr);

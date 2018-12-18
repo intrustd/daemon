@@ -40,6 +40,7 @@ typedef int(*containerctlfn)(struct container *, int, void *, ssize_t);
 #define CONTAINER_CTL_DESCRIBE        11
 
 #define CONTAINER_CTL_INIT_EXITS      12
+#define CONTAINER_CTL_AFTER_RUN_HOOK   13
 
 struct container {
   struct brstate *c_bridge;
@@ -102,6 +103,8 @@ struct containerexecinfo {
   int cei_stdin_fd, cei_stdout_fd, cei_stderr_fd, cei_wait_fd;
 };
 
+int container_mod_host_entry(struct container *c, int direction,
+                             const char *app_domain, const char *target);
 int container_execute(struct container *c, uint32_t exec_flags, const char *path,
                       const char **argv, const char **envp);
 int container_execute_ex(struct container *c, struct containerexecinfo *opts);

@@ -61,7 +61,6 @@ struct appstate {
   // Apps that we have loaded
   pthread_rwlock_t as_applications_mutex;
   struct app *as_apps;
-  DLIST_HEAD(struct appinstance) as_app_instances;
   struct appupdater *as_updates;
 
   pthread_mutex_t as_dtls_cookies_mutex;
