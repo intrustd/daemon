@@ -108,9 +108,7 @@ int container_ensure_running(struct container *c, struct eventloop *el) {
   if ( pthread_mutex_lock(&c->c_mutex) == 0 ) {
     int ret = 0;
     if ( c->c_running_refs == 0 ) {
-      fprintf(stderr, "clear container timeout start\n");
       eventloop_cancel_timer(el, &c->c_timeout);
-      fprintf(stderr, "clear container timeout done\n");
 
       if ( c->c_init_process < 0 ) {
         ret = container_start(c);

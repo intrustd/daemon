@@ -1945,7 +1945,7 @@ static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int net
     return -1;
   }
 
-  fprintf(stderr, "bridge_move_if_to_ns: index of iface %s is %d\n", if_name, ifr.ifr_ifindex);
+  // fprintf(stderr, "bridge_move_if_to_ns: index of iface %s is %d\n", if_name, ifr.ifr_ifindex);
 
   // Set up netlink message
 

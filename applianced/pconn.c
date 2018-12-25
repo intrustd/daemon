@@ -890,7 +890,6 @@ static void pconn_delayed_start(struct pconn *pc) {
   struct flock *cur_flock, *tmp_flock;
   int err;
 
-  fprintf(stderr, "pconn_delayed_start: start\n");
   pc->pc_ice_gathering_state = PCONN_ICE_GATHERING_STATE_GATHERING;
   // Collect all flocks and personas
   SAFE_RWLOCK_RDLOCK(&app->as_flocks_mutex);
@@ -973,8 +972,6 @@ static void pconn_delayed_start(struct pconn *pc) {
   } else
     fprintf(stderr, "pconn_delayed_start: out of memory to store flocks\n");
   pthread_rwlock_unlock(&app->as_flocks_mutex);
-
-  fprintf(stderr, "pconn_delayed_start: finished\n");
 }
 
 static void pconn_fn(struct eventloop *el, int op, void *arg) {
@@ -1002,7 +999,7 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
   case OP_PCONN_STARTS:
     pc = STRUCT_FROM_BASE(struct pconn, pc_start_evt, evt->qde_sub);
     if ( PCONN_LOCK(pc) == 0 ) {
-      fprintf(stderr, "pconn_fn: Starting... %p %d\n", pc, pc->pc_state);
+      //fprintf(stderr, "pconn_fn: Starting... %p %d\n", pc, pc->pc_state);
       pconn_delayed_start(pc);
       PCONN_UNREF(pc);
     } else
@@ -1012,7 +1009,7 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
     cs = STRUCT_FROM_BASE(struct candsrc, cs_retransmit, evt->qde_sub);
     pc = cs->cs_pconn;
     if ( PCONN_LOCK(pc) == 0 ) {
-      fprintf(stderr, "Scheduling retransmission\n");
+      //fprintf(stderr, "Scheduling retransmission\n");
       candsrc_retransmit(cs);
       PCONN_UNREF(pc);
     }
@@ -1659,14 +1656,11 @@ static void pconn_auth_fails(struct pconn *pc) {
 void pconn_process_sdp_answer(struct pconn *pc, const char *buf, size_t bytes) {
   int err;
 
-  fprintf(stderr, "process_sdp_answer: %.*s\n", (int)bytes, buf);
-
   err = sdp_parse(&pc->pc_answer_parser, buf, bytes);
   if ( err != SPS_SUCCESS && err != SPS_PARSE_MORE ) {
     fprintf(stderr, "SDP parser fails with (%d:%d): %d\n", pc->pc_answer_parser.sps_line_num, pc->pc_answer_parser.sps_column_pos, err);
     pc->pc_state = PCONN_STATE_ERROR_BAD_ANSWER;
-  } else
-    fprintf(stderr, "Sdp buffer parsed successfully\n");
+  }
 }
 
 void pconn_recv_sendoffer(struct pconn *pc, int line,
@@ -1965,7 +1959,6 @@ static int pconn_form_candidate_pairs(struct pconn *pc, struct icecand *cand, in
       partners_to_add++;
 
   if ( partners_to_add == 0 ) {
-    fprintf(stderr, "pconn_form_candidate_pairs: no pairs to add\n");
     return 0;
   }
 
@@ -2454,10 +2447,11 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
         fprintf(stderr, "could not parse fingerprint\n");
         return -1;
       }
-    } else {
-      fprintf(stderr, "Skipping session attribute %.*s\n",
-              (int) (nme - nms), nms);
     }
+    // else {
+    //   fprintf(stderr, "Skipping session attribute %.*s\n",
+    //           (int) (nme - nms), nms);
+    // }
   } else if ( (pc->pc_answer_flags & PCONN_ANSWER_DAT_CHAN_CREATD) &&
               (pc->pc_answer_flags & PCONN_ANSWER_IN_DATA_CHANNEL) == 0 ) {
     fprintf(stderr, "Skipping attribute %.*s because we've already processed the data channel\n",

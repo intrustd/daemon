@@ -114,8 +114,6 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
 
   pc = SSL_get_pconn(ssl);
   if ( pc ) {
-    fprintf(stderr, "Verifying certificate for pconn %p\n", pc);
-
     if ( pc->pc_answer_flags & PCONN_ANSWER_HAS_FINGERPRINT ) {
       if ( pc->pc_remote_cert_fingerprint_digest &&
            EVP_MD_size(pc->pc_remote_cert_fingerprint_digest) <= sizeof(pc->pc_remote_cert_fingerprint) )  {
@@ -134,7 +132,6 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
         }
 
         if ( memcmp(exp_digest, pc->pc_remote_cert_fingerprint, digest_size) == 0 ) {
-          fprintf(stderr, "appstate_verify_callback (pconn): verified certificate based on digest\n");
           return 1;
         } else {
           fprintf(stderr, "appstate_verify_callback (pconn): fingerprint verification failed for pconn\n");

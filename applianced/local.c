@@ -110,7 +110,6 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
     api = STRUCT_FROM_BASE(struct localapi, la_socket_sub, fde->fde_sub);
 
     if ( FD_WRITE_AVAILABLE(fde) ) {
-      fprintf(stderr, "write available\n");
       err = localsock_flush(api, el);
       if ( err < 0 ) {
         fprintf(stderr, "localapi_flush: failed\n");
@@ -190,7 +189,7 @@ struct localapi *localapi_alloc(struct appstate *as, int sk) {
   qdevtsub_init(&ret->la_update_completion, OP_LOCALAPI_UPDATE_COMPLETE, localsockfn);
   eventloop_subscribe_fd(&as->as_eventloop, ret->la_socket, FD_SUB_READ, &ret->la_socket_sub);
 
-  fprintf(stderr, "Opened local connection %p\n", ret);
+  //  fprintf(stderr, "Opened local connection %p\n", ret);
   return ret;
 
  error:
@@ -239,7 +238,7 @@ static void localsock_free_listing(struct localapi *api) {
 }
 
 static void localsock_hup(struct localapi *api, struct eventloop *el) {
-  fprintf(stderr, "Local connection (%p) closing\n", api);
+  //fprintf(stderr, "Local connection (%p) closing\n", api);
 
   if ( api->la_socket ) {
     eventloop_unsubscribe_fd(el, api->la_socket, FD_SUB_ALL, &api->la_socket_sub);
@@ -1501,7 +1500,7 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
   struct cmsghdr *cmsg;
   int fds[10], nfds = 0, i;
 
-  fprintf(stderr, "Received local message of size %d (control " CMSGLEN_LD ")\n", buf_sz, skmsg->msg_controllen);
+  //fprintf(stderr, "Received local message of size %d (control " CMSGLEN_LD ")\n", buf_sz, skmsg->msg_controllen);
 
   if ( buf_sz < sizeof(*msg) ) {
     // Ignore message
