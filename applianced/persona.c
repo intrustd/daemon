@@ -393,8 +393,6 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
 
   unsigned char expected_sha256[SHA256_DIGEST_LENGTH];
 
-  fprintf(stderr, "pauth_verify: %.*s\n", (int) cred_sz, cred);
-
   switch ( p->pa_type ) {
   case PAUTH_TYPE_SHA256:
     if ( cred_sz > sizeof(pwd_prefix) &&
@@ -434,10 +432,19 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
       if ( token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
            (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) &&
            memcmp(tok->tok_persona_id, persona->p_persona_id, PERSONA_ID_LENGTH) == 0 ) {
-        // Save token and return
-        if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
-          TOKEN_UNREF(tok);
-          return 1;
+        time_t now = time(NULL);
+
+        // Verify that the token expires in the future
+        if ( (tok->tok_flags & TOKEN_FLAG_NEVER_EXPIRES) ||
+             (difftime(tok->tok_expiration, now) > 0 ) ){
+          // Save token and return
+          if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
+            TOKEN_UNREF(tok);
+            return 1;
+          } else {
+            TOKEN_UNREF(tok);
+                 return 0;
+          }
         } else {
           TOKEN_UNREF(tok);
           return 0;
