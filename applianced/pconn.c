@@ -1813,11 +1813,10 @@ static int dbgprintf(const char *format, ...) {
 }
 
 static void pconn_candpair_activated(struct pconn *pc) {
-  fprintf(stderr, "pconn_candpair_activated: TODO\n");
-
-  // What should happen here is that we transfer all candidate sources to an established
-  // connection, unset the pc_timeout. Get rid of pc_personaset, pc_answer_parser,
-  // pc_candidate_pairs, pc_local_ice_candidates, pc_remote_ice_candidates. All
+  // TODO What should happen here is that we transfer all candidate
+  // sources to an established connection, unset the pc_timeout. Get
+  // rid of pc_personaset, pc_answer_parser, pc_candidate_pairs,
+  // pc_local_ice_candidates, pc_remote_ice_candidates. All
   // pc_candidate_sources except the active one, etc.
   if ( eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_timeout) )
     PCONN_WUNREF(pc);
@@ -1880,7 +1879,7 @@ static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix
 
     stun_random_tx_id(&pair->icp_tx_id); // Generate new TX id
 
-    fprintf(stderr, "Connectivity check succeeds on candidate pair %d: %08x\n", cand_pair_ix, flag);
+    dbgprintf("Connectivity check succeeds on candidate pair %d: %08x\n", cand_pair_ix, flag);
     pair->icp_flags |= flag;
 
     if ( ICECANDPAIR_SUCCESS(pair) ) {
@@ -2688,8 +2687,6 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       return;
     }
 
-    fprintf(stderr, "Running DTLSv1_listen, SSL_accept\n");
-
     errno = 0;
     BIO_ADDR_clear(addr);
     err = DTLSv1_listen(pc->pc_dtls, addr);
@@ -2698,12 +2695,10 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       switch ( err ) {
       case SSL_ERROR_WANT_READ:
         pc->pc_dtls_needs_read = 1;
-        fprintf(stderr, "DTLSv1_listen wants read\n");
         BIO_ADDR_free(addr);
         return;
       case SSL_ERROR_WANT_WRITE:
         pc->pc_dtls_needs_write = 1;
-        fprintf(stderr, "DTLSv1_listen wants write\n");
         CANDSRC_SUBSCRIBE_WRITE(src);
         BIO_ADDR_free(addr);
         return;
@@ -2716,7 +2711,6 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       }
     } else {
       BIO_ADDR_free(addr);
-      fprintf(stderr, "DTLSv1_listen returns success\n");
       pc->pc_state = PCONN_STATE_DTLS_ACCEPTING;
     }
 
@@ -2727,11 +2721,9 @@ static void pconn_dtls_handshake(struct pconn *pc) {
       switch ( err ) {
       case SSL_ERROR_WANT_READ:
         pc->pc_dtls_needs_read = 1;
-        fprintf(stderr, "SSL_acccept wants read\n");
         return;
       case SSL_ERROR_WANT_WRITE:
         pc->pc_dtls_needs_write = 1;
-        fprintf(stderr, "SSL_accept wants write\n");
         CANDSRC_SUBSCRIBE_WRITE(src);
         return;
       default:
@@ -2740,7 +2732,6 @@ static void pconn_dtls_handshake(struct pconn *pc) {
         return;
       }
     } else {
-      fprintf(stderr, "SSL_accept returns success\n");
       pc->pc_state = PCONN_STATE_ESTABLISHED;
     }
 
@@ -2786,7 +2777,7 @@ static void pconn_on_established(struct pconn *pc) {
 
   switch ( pc->pc_type ) {
   case PCONN_TYPE_WEBRTC:
-    fprintf(stderr, "pconn_on_established: launching webrtc proxy in persona on port %d\n", pc->pc_answer_sctp);
+    //fprintf(stderr, "pconn_on_established: launching webrtc proxy in persona on port %d\n", pc->pc_answer_sctp);
 
     if ( !pc->pc_persona ) {
       fprintf(stderr, "pconn_on_established: no persona!!\n");

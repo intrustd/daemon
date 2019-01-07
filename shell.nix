@@ -84,7 +84,7 @@ in pkgs.stdenv.mkDerivation {
 
     (python3.withPackages (ps: [
        ps.flask ps.sqlalchemy ps.pyopenssl ps.pyudev ps.celery ps.redis
-       ps.kombu ps.pytest ps.requests
+       ps.kombu ps.pytest ps.requests ps.pillow
      ]))
   ];
 

@@ -115,13 +115,17 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
     PARSING_ST_NIX_CLOSURE,
     PARSING_ST_SINGLETON,
     PARSING_ST_RUN_AS_ADMIN,
-    PARSING_ST_BIND_MOUNTS
+    PARSING_ST_BIND_MOUNTS,
+
+    PARSING_ST_VERSION
   } state = PARSING_ST_INITIAL;
   int main_obj_end = -1;
 
   struct appmanifest *ret;
   char *name = NULL, *domain = NULL, *nix_closure = NULL;
   char **bind_mounts = NULL;
+
+  unsigned int major = 0, minor = 0, revision = 0;
 
   size_t bind_mount_count = 0;
   uint32_t flags = 0;
@@ -157,6 +161,8 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
           state = PARSING_ST_RUN_AS_ADMIN;
         } else if ( strncmp(data + token->start, "bind-mounts", token->end - token->start) == 0 ) {
           state = PARSING_ST_BIND_MOUNTS;
+        } else if ( strncmp(data + token->start, "version", token->end - token->start) == 0 ) {
+          state = PARSING_ST_VERSION;
         } else {
           int end = -1;
           for ( ; i < tokencnt && (end < 0 || tokens[i].start < end); ++i ) {
@@ -263,6 +269,24 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
       }
       break;
 
+    case PARSING_ST_VERSION:
+      if ( token->type != JSMN_STRING ) {
+        EXPECT("string (major.minor.revision)");
+      } else {
+        char version_str[63];
+
+        strncpy_fixed(version_str, sizeof(version_str),
+                      data + token->start, token->end - token->start);
+
+        if ( sscanf(version_str, "%u.%u.%u", &major, &minor, &revision) != 3 ) {
+          fprintf(stderr, "Invalid version string %s\n", version_str);
+          goto error;
+        }
+
+        state = PARSING_ST_MAIN_OBJECT_KEY;
+      }
+      break;
+
     case PARSING_ST_BIND_MOUNTS:
       if ( token->type != JSMN_ARRAY ) {
         EXPECT("list");
@@ -341,6 +365,10 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
   ret->am_domain = domain;
   ret->am_name = name;
   ret->am_nix_closure = nix_closure;
+
+  ret->am_major = major;
+  ret->am_minor = minor;
+  ret->am_revision = revision;
 
   ret->am_bin_caches_count = 0;
   ret->am_bin_caches = NULL;
@@ -856,8 +884,6 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
     cur_mf = ai->inst_app->app_current_manifest;
     image_path = ai->inst_app->app_current_manifest->am_nix_closure;
 
-    fprintf(stderr, "appinstance: using closure %s (manifest %p)\n", image_path,
-            ai->inst_app->app_current_manifest);
     pthread_mutex_unlock(&ai->inst_app->app_mutex);
   } else
     return -1;
@@ -899,8 +925,17 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   FORMAT_PATH("%s/run", image_path);
   DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=700,size=16384k");
 
+  FORMAT_PATH("%s/personas/%s/tmp/%s", ai->inst_appstate->as_conf_dir,
+              persona_id_str, ai->inst_app->app_domain);
+  err = mkdir_recursive(path);
+  if ( err < 0 ) {
+    perror("appinstance_setup: mkdir_recursive");
+    fprintf(stderr, "appinstance_setup: while making %s\n", path);
+  }
+
+  strcpy(app_data_path, path);
   FORMAT_PATH("%s/tmp", image_path);
-  DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=777,size=16384k");
+  DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_REC, "");
 
   FORMAT_PATH("%s/dev/pts", image_path);
   DO_MKDIR(path);

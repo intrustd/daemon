@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #define flock __unused_flock
 #include <fcntl.h>
@@ -1108,6 +1109,17 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
     return -1;
   }
 
+  err = snprintf(path, sizeof(path), "%s/nix-roots", ac->ac_conf_dir);
+  if ( err >= sizeof(path) ) {
+    fprintf(stderr, "appconf_setup: path overflow\n");
+    return -1;
+  }
+  err = mkdir_recursive(path);
+  if ( err < 0 ) {
+    perror("appconf_setup: mkdir_recursive");
+    return -1;
+  }
+
   // Open key file. Generate one if necessary
   if ( appstate_open_keys(as, ac) < 0 )
     goto error;
@@ -1677,7 +1689,6 @@ struct app *appstate_get_app_by_url(struct appstate *as, const char *domain) {
 struct app *appstate_get_app_by_url_ex(struct appstate *as, const char *domain, size_t cansz) {
   if ( pthread_rwlock_rdlock(&as->as_applications_mutex) == 0 ) {
     struct app *a;
-    fprintf(stderr, "appstate lookup app %.*s\n", (int)cansz, domain);
     HASH_FIND(app_hh, as->as_apps, domain, cansz, a);
     if ( a )
       APPLICATION_REF(a);
@@ -1880,7 +1891,72 @@ static int appstate_can_run_as_admin(struct appstate *as, struct app *a) {
   return 0;
 }
 
+static void appstate_update_root(struct appstate *as, struct appmanifest *am) {
+  char path[PATH_MAX], closure_path[PATH_MAX];
+  int err;
+  pid_t child;
+
+  err = snprintf(path, sizeof(path), "%s/nix-roots/%s",
+                 as->as_conf_dir, am->am_domain);
+  if ( err >= sizeof(path) ) {
+    fprintf(stderr, "appstate_update_root: path overflow (for app %s)\n",
+            am->am_domain);
+    return ;
+  }
+
+  // Assume this is a link, or non-existent
+  err = readlink(path, closure_path, sizeof(closure_path) - 1);
+  if ( err < 0 ) {
+    if ( errno != ENOENT ) {
+      perror("appstate_update_root: readlink");
+      return;
+    }
+  } else {
+    SAFE_ASSERT(err < sizeof(closure_path));
+    closure_path[err] = '\0';
+
+    if ( strncmp(am->am_nix_closure, closure_path, err) == 0 ) {
+      // Already okay
+      return;
+    } else {
+      err = unlink(path);
+      if ( err < 0 && errno != ENOENT ) {
+        perror("appstate_update_root: unlink");
+        return;
+      }
+    }
+  }
+
+  child = vfork();
+  if ( child < 0 ) {
+    perror("appstate_update_root: fork");
+    return;
+  }
+
+  if ( child == 0 ) {
+    execlp("nix-store", "nix-store", "--realise", am->am_nix_closure,
+           "--add-root", path, "--indirect", NULL);
+    exit(128);
+  } else {
+    int sts;
+
+    err = waitpid(child, &sts, 0);
+    if ( err <= 0 ) {
+      perror("appstate_update_root: waitpid");
+      return;
+    }
+
+    if ( sts != 0 ) {
+      fprintf(stderr,
+              "appstate_update_root: 'nix-store --realise %s --add-root %s --indirect' exited with %d\n",
+             am->am_nix_closure, path, sts);
+    }
+  }
+}
+
 void appstate_update_application_state(struct appstate *as, struct app *a) {
+  struct appmanifest *am;
+
   SAFE_MUTEX_LOCK(&a->app_mutex);
   a->app_flags &= ~(APP_FLAG_RUN_AS_ADMIN | APP_FLAG_SINGLETON | APP_FLAG_SIGNED);
   if ( a->app_current_manifest->am_flags &
@@ -1901,7 +1977,15 @@ void appstate_update_application_state(struct appstate *as, struct app *a) {
       }
     }
   }
+
+  am = a->app_current_manifest;
+  APPMANIFEST_REF(am);
+
   pthread_mutex_unlock(&a->app_mutex);
+
+  appstate_update_root(as, am);
+
+  APPMANIFEST_UNREF(am);
 }
 
 int appstate_log_path(struct appstate *as, const char *mf_digest_str, const char *extra,

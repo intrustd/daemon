@@ -59,6 +59,8 @@ void flock_release(struct flock *f) {
     f->f_flags &= ~FLOCK_FLAG_INITIALIZED;
   }
 
+  fprintf(stderr, "flock_release called\n");
+
   switch ( f->f_flock_state ) {
   case FLOCK_STATE_PENDING:
     dnssub_release(&f->f_resolver);
@@ -246,6 +248,27 @@ static void flock_update_registration_message(struct flock *f, struct appstate *
     fprintf(stderr, "flock_update_registration_message: WARNING: message is invalid\n");
 }
 
+static const char *ssl_error_str(int err) {
+  switch (err) {
+  case SSL_ERROR_NONE: return "SSL_ERROR_NONE";
+  case SSL_ERROR_ZERO_RETURN: return "SSL_ERROR_ZERO_RETURN";
+  case SSL_ERROR_WANT_READ: return "SSL_ERROR_WANT_READ";
+  case SSL_ERROR_WANT_WRITE: return "SSL_ERROR_WANT_WRITE";
+  case SSL_ERROR_WANT_CONNECT: return "SSL_ERROR_WANT_CONNECT";
+  case SSL_ERROR_WANT_ACCEPT: return "SSL_ERROR_WANT_ACCEPT";
+  case SSL_ERROR_WANT_X509_LOOKUP: return "SSL_ERROR_WANT_X509_LOOKUP";
+  case SSL_ERROR_SYSCALL: return "SSL_ERROR_SYSCALL";
+  case SSL_ERROR_SSL: return "SSL_ERROR_SSL";
+  default: return "SSL error";
+  }
+}
+
+static void print_ssl_error(int err, int old_errno) {
+  fprintf(stderr, "print_ssl_error: %s\n", ssl_error_str(err));
+  if ( err == SSL_ERROR_SYSCALL )
+    fprintf(stderr, "errno was %d(%s)\n", old_errno, strerror(old_errno));
+}
+
 static void flock_send_registration(struct flock *f, struct appstate *as) {
   int err;
 
@@ -254,8 +277,11 @@ static void flock_send_registration(struct flock *f, struct appstate *as) {
   err = SSL_write(f->f_dtls_client, (const void *) &f->f_registration_msg,
                   STUN_MSG_LENGTH(&f->f_registration_msg));
   if ( err <= 0 ) {
+    int old_errno = errno;
+    err = SSL_get_error(f->f_dtls_client, err);
     fprintf(stderr, "SSL error: could not write message\n");
     ERR_print_errors_fp(stderr);
+    print_ssl_error(err, old_errno);
     goto retry;
   } else {
     if ( err != STUN_MSG_LENGTH(&f->f_registration_msg) ) {
@@ -675,7 +701,7 @@ static int flock_receive_response(struct flock *f, struct appstate *as, uint16_t
 }
 
 static void flock_refresh_registration(struct flock *f) {
-  dbgprintf("Refreshed registration\n");
+  fprintf(stderr, "Refreshed registration\n");
   stun_random_tx_id(&f->f_last_registration_tx);
 }
 

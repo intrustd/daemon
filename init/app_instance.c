@@ -1,3 +1,5 @@
+#define _XOPEN_SOURCE 600
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -5,6 +7,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -469,6 +472,41 @@ void setup_custom_signals() {
   }
 }
 
+static int clean_tmp_ent(const char *path, struct stat *info,
+                         int flags, struct FTW *d) {
+  int err;
+
+  if ( strcmp(path, "/tmp") == 0 ) return 0;
+
+  if ( flags & FTW_D ) {
+    if ( flags & FTW_DP ) {
+      err = rmdir(path);
+      if ( err < 0 ) {
+        fprintf(stderr, "Could not delete %s: %s\n", path, strerror(errno));
+      }
+    } else {
+      fprintf(stderr, "Skipping %s because it was not visited\n", path);
+    }
+  } else if ( flags & FTW_DNR ) {
+    fprintf(stderr, "Could not read directory %s\n", path);
+  } else {
+    err = unlink(path);
+    if ( err < 0 ) {
+      fprintf(stderr, "Could not delete %s: %s\n", path, strerror(errno));
+    }
+  }
+  return 0;
+}
+
+static void clear_tmp() {
+  int err = nftw("/tmp", clean_tmp_ent, PATH_MAX, FTW_CHDIR | FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+  if ( err < 0 ) {
+    perror("clear_tmp: nftw");
+  } else if ( err > 0 ) {
+    fprintf(stderr, "clear_tmp: clean_tmp_ent returned %d\n", err);
+  }
+}
+
 void usage() {
   fprintf(stderr, "app-instance-init - stork init process for app instance containers\n");
   fprintf(stderr, "usage: app-instance-init <persona-id> <app-name> <app-domain>\n");
@@ -507,6 +545,8 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  dbg_printf("clearing /tmp\n");
+  clear_tmp();
   update_hosts();
 
   // Set cwd to /kite
@@ -515,7 +555,7 @@ int main(int argc, char **argv) {
     return 3;
   }
 
-  dbg_printf("Changed directory to /stork\n");
+  dbg_printf("Changed directory to /kite\n");
 
   setup_signals();
   setup_custom_signals();
@@ -548,7 +588,6 @@ int main(int argc, char **argv) {
   // The health check timeout is achieved through the use of alarm(2)
   // function.
 
-  fprintf(stderr, "Going to run start script\n");
   run_start_script();
 
   buf = malloc(STK_MAX_PKT_SZ);
