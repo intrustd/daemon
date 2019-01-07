@@ -98,11 +98,8 @@ static int b64decchunk(char *out_buf, const char *in) {
   if ( b64val(in[0], &v) < 0 ) return -1;
   u.out |= v << 18;
 
-  fprintf(stderr, "b64decchunk: 1\n");
-
   if ( b64val(in[1], &v) < 0 ) return -1;
   u.out |= v << 12;
-  fprintf(stderr, "b64decchunk: 2\n");
 
   if ( in[2] == '=' ) {
     if ( in[3] != '=' ) return -1;
@@ -111,15 +108,12 @@ static int b64decchunk(char *out_buf, const char *in) {
     if ( b64val(in[2], &v) < 0 ) return -1;
     u.out |= v << 6;
 
-    fprintf(stderr, "b64decchunk: 3\n");
-
     if ( in[3] == '=' )
       sz = 2;
     else {
       if ( b64val(in[3], &v) < 0 ) return -1;
       u.out |= v;
     }
-    fprintf(stderr, "b64decchunk: 4\n");
   }
 
   u.out = htonl(u.out);
