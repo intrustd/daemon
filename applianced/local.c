@@ -72,24 +72,20 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
     fde = arg;
     api = STRUCT_FROM_BASE(struct localapi, la_container_completion, fde->fde_sub);
 
-    fprintf(stderr, "Got cmd complete\n");
     if ( FD_READ_PENDING(fde) ) {
       int sts = 0;
 
-      fprintf(stderr, "Got read pending\n");
       // Read status
       err = read(api->la_container_sts_fd, &sts, sizeof(sts));
       if ( err < sizeof(sts) )  {
         perror("localsockfn(OP_LOCALAPI_CONTAINER_CMD_COMPLETE): recv");
         localsock_respond_simple(api, el, ntohs(KLM_REQ_SUB | KLM_REQ_ENTITY_CONTAINER), KLE_SYSTEM_ERROR);
       } else {
-        fprintf(stderr, "Responding success\n");
         localsock_cmd_completes(api, sts);
       }
 
       close(api->la_container_sts_fd);
     } else if ( FD_ERROR_PENDING(fde) ) {
-      fprintf(stderr, "Got error pending\n");
       close(api->la_container_sts_fd);
       localsock_respond_simple(api, el, ntohs(KLM_REQ_SUB | KLM_REQ_ENTITY_CONTAINER), KLE_SYSTEM_ERROR);
     }
@@ -930,8 +926,6 @@ static void localsock_get_app(struct localapi *api, struct eventloop *el,
     int is_signed = 0;
     char mf_str[sizeof(mf->am_digest) * 2 + 1];
 
-    fprintf(stderr, "Found app %p\n", app);
-
     if ( pthread_mutex_lock(&app->app_mutex) == 0 ) {
       mf = app->app_current_manifest;
       is_signed = !!(app->app_flags & APP_FLAG_SIGNED);
@@ -1127,9 +1121,7 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
                                    KLA_ADDR, -1);
   } else {
     int err;
-    char str[INET_ADDRSTRLEN + 1];
     struct arpdesc desc;
-    fprintf(stderr, "Going to lookup information for %s\n", inet_ntop(AF_INET, &addr, str, sizeof(str)));
 
     err = bridge_describe_arp(&api->la_app_state->as_bridge, &addr, &desc, sizeof(desc));
     if ( err == 0 )
@@ -1158,7 +1150,6 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
 
       switch ( desc.ad_container_type ) {
       case ARP_DESC_PERSONA:
-        fprintf(stderr, "Remote is a persona connection\n");
         attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
         attr->kla_name = htons(KLA_CONTAINER_TYPE);
@@ -1222,10 +1213,8 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
           KLM_SIZE_ADD_ATTR(rspsz, attr);
 
           // Each pconn may have one or more tokens
-          fprintf(stderr, "Looking up tokens\n");
           HASH_ITER(pct_hh, desc.ad_persona.ad_pconn->pc_tokens, cur_tok, tmp_tok) {
             struct token *tok = cur_tok->pct_token;
-            fprintf(stderr, "Got one token %p\n", tok);
             attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
             if ( !attr ) {
               fprintf(stderr, "Not enough space for tokens\n");
@@ -1306,8 +1295,6 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
 
   buffer_init(&args);
 
-  fprintf(stderr, "localssock_sub_container\n");
-
   for ( attr = KLM_FIRSTATTR(msg, msgsz);
         attr;
         attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
@@ -1368,8 +1355,6 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
     default: break;
     };
   };
-
-  fprintf(stderr, "Continuing to check address\n");
 
   if ( addr.s_addr == 0 && !persona && !app ) {
     buffer_release(&args);
@@ -1476,12 +1461,91 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
   if ( app ) APPLICATION_UNREF(app);
 }
 
+static void localsock_update_container(struct localapi *api, struct eventloop *el,
+                                       struct kitelocalmsg *msg, int msgsz) {
+  struct kitelocalattr *attr;
+  const char *cred = NULL;
+  size_t credsz = 0;
+  int err;
+  struct arpdesc desc;
+
+  struct in_addr addr;
+  addr.s_addr = 0;
+
+  for ( attr = KLM_FIRSTATTR(msg, msgsz);
+        attr;
+        attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( KLA_NAME(attr) ) {
+    case KLA_CRED:
+      if ( cred ) {
+        localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY_CONTAINER, KLM_REQ_UPDATE);
+        return;
+      } else {
+        cred = KLA_DATA_UNSAFE(attr, const char *);
+        credsz = KLA_PAYLOAD_SIZE(attr);
+      }
+      break;
+
+    case KLA_ADDR:
+      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
+        memcpy(&addr.s_addr, KLA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
+      }
+      break;
+
+    default:
+      break;
+    }
+  }
+
+  if ( addr.s_addr == 0 ) {
+    localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY_CONTAINER, KLM_REQ_UPDATE, KLA_ADDR, -1);
+    return;
+  }
+
+  if ( !cred ) {
+    localsock_return_simple(api, el, msg, KLE_SUCCESS);
+    return;
+  }
+
+  err = bridge_describe_arp(&api->la_app_state->as_bridge, &addr, &desc, sizeof(desc));
+  if ( err == 0 ) {
+    localsock_return_not_found(api, el, msg);
+  } else if ( err < 0 )
+    localsock_return_internal_error(api, el, msg);
+  else {
+    switch ( desc.ad_container_type ) {
+    case ARP_DESC_PERSONA:
+      if ( pthread_mutex_lock(&desc.ad_persona.ad_pconn->pc_mutex) == 0 ) {
+        err = persona_credential_validates(desc.ad_persona.ad_pconn->pc_persona,
+                                           desc.ad_persona.ad_pconn,
+                                           cred, credsz);
+        pthread_mutex_unlock(&desc.ad_persona.ad_pconn->pc_mutex);
+        if ( err <= 0 ) {
+          localsock_return_simple(api, el, msg, KLE_NOT_ALLOWED);
+        } else {
+          localsock_return_simple(api, el, msg, KLE_SUCCESS);
+        }
+      } else
+        localsock_return_internal_error(api, el, msg);
+      break;
+
+    default:
+      localsock_return_simple(api, el, msg, KLE_BAD_ENTITY);
+    }
+    arpdesc_release(&desc, sizeof(desc));
+  }
+}
+
 static void localsock_crud_container(struct localapi *api, struct eventloop *el,
                                      struct kitelocalmsg *msg, int msgsz,
                                      int *fds, int nfds) {
   switch ( KLM_REQ_OP(msg) ) {
   case KLM_REQ_GET:
     localsock_get_container(api, el, msg, msgsz);
+    break;
+
+  case KLM_REQ_UPDATE:
+    localsock_update_container(api, el, msg, msgsz);
     break;
 
   case KLM_REQ_SUB:

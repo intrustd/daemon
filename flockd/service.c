@@ -392,7 +392,7 @@ static void fscs_subscribe(struct flocksvcclientstate *st, struct eventloop *el)
 
 static void fscs_touch_timeout(struct flocksvcclientstate *st, struct eventloop *el) {
   FSCS_WREF(st);
-  
+
   if ( eventloop_cancel_timer(el, &st->fscs_client_timeout) ) {
     FSCS_WUNREF(st);
   }
@@ -884,8 +884,6 @@ static void flock_service_accept(struct flockservice *st, struct eventloop *even
   struct BIO_static outgoing_bio;
   char pkt_out[PKT_BUF_SZ];
 
-  fprintf(stderr, "flock_service_accept\n");
-
   ssl = SSL_new(st->fs_ssl_ctx);
   if ( !ssl ) {
     fprintf(stderr, "flock_service_accept: Could not create SSL object\n");
@@ -940,6 +938,7 @@ static void flock_service_accept(struct flockservice *st, struct eventloop *even
   } else if ( err == 0 ) {
     // A non-fatal error means this wrote something out
     fprintf(stderr, "Non-fatal error on socket\n");
+    ERR_print_errors_fp(stderr);
     goto flush;
   }
   fprintf(stderr, "DTLSv1Listen suceeds\n");

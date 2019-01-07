@@ -972,7 +972,6 @@ static int setup_user_namespace(struct brstate *br, int proc_dir) {
   } else {
     SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n", br->br_uid) < sizeof(buf) );
   }
-  fprintf(stderr, "uid map is \n%s%d", buf, geteuid());
   err = write(uid_map, buf, strlen(buf));
   if ( err < 0 ) {
     perror("write(uid_map)");
@@ -991,8 +990,6 @@ static int open_proc_dir(pid_t new_proc) {
     errno = ENOMEM;
     return -1;
   }
-
-  fprintf(stderr, "Opening %d\n", new_proc);
 
   return open(path_dir, O_CLOEXEC);
 }
@@ -1458,8 +1455,6 @@ static int bridge_setup_main(void *br_ptr) {
       if ( errno == EAGAIN || errno == EINTR ) continue;
       return 1;
     }
-
-    fprintf(stderr, "bridge: received message\n");
 
     if ( msgsz < sizeof(rcvbuf.msg) ) {
       fprintf(stderr, "bridge: not enough space in buffer\n");
@@ -2664,8 +2659,6 @@ int bridge_setup_container(struct brstate *br, int port_ix,
   struct brctlrsp rsp;
 
   memcpy(&msg.bcm_ip, this_addr, sizeof(msg.bcm_ip));
-
-  fprintf(stderr, "bridge_setup_container: going to send message\n");
 
   if ( pthread_mutex_lock(&br->br_comm_mutex) == 0 ) {
     err = send(br->br_comm_fd[1], &msg, sizeof(msg), 0);

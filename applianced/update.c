@@ -443,7 +443,7 @@ static void appupdater_parse_manifest(struct appupdater *au) {
         au->au_sts = AU_STATUS_UPDATING;
         appupdater_build_from_manifest(au);
       } else {
-        fprintf(stderr, "Marking done\n");
+        //        fprintf(stderr, "Marking done\n");
         appupdater_error(au, AU_STATUS_DONE);
       }
 

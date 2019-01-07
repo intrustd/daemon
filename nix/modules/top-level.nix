@@ -7,6 +7,23 @@
       description = "App domain URI";
     };
 
+    kite.version.major = mkOption {
+      type = types.ints.unsigned;
+      description = "Major version number";
+      default = 0;
+    };
+
+    kite.version.minor = mkOption {
+      type = types.ints.unsigned;
+      description = "Minor version number";
+      default = 0;
+    };
+
+    kite.version.revision = mkOption {
+      type = types.ints.unsigned;
+      description = "Revision version number";
+    };
+
     kite.environment = mkOption {
       type = types.attrsOf types.string;
       description = "Environment variables shared between all running processes in this container";
@@ -192,6 +209,8 @@
         type = "system";
         priority = 1000000; }
     ];
+
+    kite.version.revision = builtins.currentTime;
 
     kite.toplevel =
       let startScript = pkgs.writeScript "${config.kite.meta.slug}-start-script" ''

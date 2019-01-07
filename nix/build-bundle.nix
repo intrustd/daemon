@@ -5,29 +5,7 @@ in { kite-app-module
    , systems ? defaultSystems
    , pure-build ? false }:
 
-let kite-config = { config, pkgs, lib, ... }: {
-      imports = [ ./kite.nix (builtins.toPath kite-app-module) ];
-
-      config = with lib; {
-        boot.isContainer = true;
-        networking.firewall.enable = false;
-        services.openssh.startWhenNeeded = false;
-        environment.noXlibs = mkDefault true;
-
-        environment.systemPackages = [ config.kite.app ];
-      };
-
-      options = with lib; {
-        kite.app = lib.mkOption {
-          type = lib.types.package;
-          description = ''
-          A nix derivation providing the package that is used to launch the kite application
-          '';
-        };
-      };
-    };
-
-    evalInPlatform = pkgs: import <nixpkgs/nixos/lib/eval-config.nix> {
+let evalInPlatform = pkgs: import <nixpkgs/nixos/lib/eval-config.nix> {
       inherit pkgs;
       system = pkgs.stdenv.targetPlatform.system;
       modules = [ ./modules/top-level.nix (builtins.toPath kite-app-module) ];
@@ -50,6 +28,8 @@ in ((import <nixpkgs> {}).writeText "${config.kite.meta.slug}-manifest"
         nix-closure = closures;
         run-as-admin = config.kite.runAsAdmin;
         singleton = config.kite.singleton;
+
+        version = "${builtins.toString config.kite.version.major}.${builtins.toString config.kite.version.minor}.${builtins.toString config.kite.version.revision}";
 
         bind-mounts = config.kite.bindMounts;
       })) // { toplevels = closures; }

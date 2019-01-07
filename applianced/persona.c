@@ -393,6 +393,8 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
 
   unsigned char expected_sha256[SHA256_DIGEST_LENGTH];
 
+  fprintf(stderr, "pauth_verify: cred: %.*s\n", (int) cred_sz, cred);
+
   switch ( p->pa_type ) {
   case PAUTH_TYPE_SHA256:
     if ( cred_sz > sizeof(pwd_prefix) &&
@@ -408,7 +410,6 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
       return 0;
 
   case PAUTH_TYPE_TOKEN:
-    fprintf(stderr, "Verify token\n");
     // Check tokens
     if ( cred_sz > sizeof(token_prefix) &&
          memcmp(cred, token_prefix, sizeof(token_prefix)) == 0 ) {
@@ -462,7 +463,7 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
   }
 }
 
-// pc mutex is locked
+// pc mutex should be locked
 int persona_credential_validates(struct persona *p, struct pconn *pc,
                                  const char *cred, size_t cred_sz) {
   int ret = -1;
