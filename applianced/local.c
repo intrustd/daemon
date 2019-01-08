@@ -83,14 +83,15 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
       } else {
         localsock_cmd_completes(api, sts);
       }
-
-      close(api->la_container_sts_fd);
     } else if ( FD_ERROR_PENDING(fde) ) {
-      close(api->la_container_sts_fd);
       localsock_respond_simple(api, el, ntohs(KLM_REQ_SUB | KLM_REQ_ENTITY_CONTAINER), KLE_SYSTEM_ERROR);
     }
+
     api->la_busy = 0;
+
+    close(api->la_container_sts_fd);
     api->la_container_sts_fd = -1;
+
     LOCALAPI_SUBSCRIBE(el, api);
     break;
 
@@ -1407,7 +1408,12 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
       buffer_release(&args);
     } else {
       struct containerexecinfo exec_options;
-      buffer_finalize_str(&args, argv + 2);
+      const char *final_arg;
+
+      buffer_finalize_str(&args, &final_arg);
+      argv[2] = final_arg;
+
+      fprintf(stderr, "local_api: got argument: %s\n", final_arg);
 
       exec_options.cei_flags = CONTAINER_EXEC_ENABLE_WAIT;
       exec_options.cei_exec = "/bin/sh";
@@ -1432,8 +1438,10 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
       child_pid = container_execute_ex(&ai->inst_container, &exec_options);
       if ( child_pid < 0 ) {
         fprintf(stderr, "There was an error running the child\n");
+        free((void *)final_arg);
         localsock_return_internal_error(api, el, msg);
       } else {
+        free((void *)final_arg);
         fprintf(stderr, "Launched container child with pid %d\n", child_pid);
         // Wait for the child to complete
         api->la_container_sts_fd = exec_options.cei_wait_fd;
