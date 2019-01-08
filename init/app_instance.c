@@ -67,7 +67,6 @@ void update_hosts() {
   struct host *h, *tmp;
   FILE *f;
 
-  dbg_printf("update_host: open /run/hosts.tmp\n");
   f = fopen("/run/hosts.tmp", "wt");
   if ( !f ) {
     dbg_printf("Error opening /run/hosts.tmp: %s\n", strerror(errno));
@@ -80,12 +79,10 @@ void update_hosts() {
   fprintf(f, "::1 %s.kite.local\n", g_app_url);
 
   DLIST_ITER(&g_hosts, ls, h, tmp) {
-    dbg_printf("update_host: got host %p\n", h);
     fprintf(f, "%s %s.kite.local\n", h->target, h->domain);
   }
 
   fclose(f);
-  dbg_printf("Done editing hosts\n");
 
   if ( rename("/run/hosts.tmp", "/run/hosts") < 0 ) {
     perror("update_hosts: rename(\"/run/hosts.tmp\", \"/run/hosts\")");
@@ -478,16 +475,12 @@ static int clean_tmp_ent(const char *path, struct stat *info,
 
   if ( strcmp(path, "/tmp") == 0 ) return 0;
 
-  if ( flags & FTW_D ) {
-    if ( flags & FTW_DP ) {
-      err = rmdir(path);
-      if ( err < 0 ) {
-        fprintf(stderr, "Could not delete %s: %s\n", path, strerror(errno));
-      }
-    } else {
-      fprintf(stderr, "Skipping %s because it was not visited\n", path);
+  if ( flags == FTW_DP ) {
+    err = rmdir(path);
+    if ( err < 0 ) {
+      fprintf(stderr, "Could not delete %s: %s\n", path, strerror(errno));
     }
-  } else if ( flags & FTW_DNR ) {
+  } else if ( flags == FTW_DNR ) {
     fprintf(stderr, "Could not read directory %s\n", path);
   } else {
     err = unlink(path);
