@@ -1350,6 +1350,7 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
     case KLA_ARG:
       buffer_write(&args, KLA_DATA_UNSAFE(attr, void *), KLA_PAYLOAD_SIZE(attr));
       buffer_write(&args, " ", 1);
+      fprintf(stderr, "local: got arg %.*s\n", (int) (KLA_PAYLOAD_SIZE(attr)), KLA_DATA_UNSAFE(attr, const char *));
       break;
 
     default: break;

@@ -716,6 +716,7 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
 
   buf = alloca(buf_size);
   assert(buf);
+  memset(buf, 0, buf_size); // Since this is allocated on the stack, make sure we don't accidentally expose any information
 
   msg.sim_req = STK_REQ_RUN;
   msg.sim_flags = 0;
