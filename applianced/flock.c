@@ -13,6 +13,7 @@
 #define OP_FLOCK_SOCKET_EVENT (EVT_CTL_CUSTOM + 1)
 #define OP_FLOCK_REGISTRATION_TIMEOUT (EVT_CTL_CUSTOM + 2)
 #define OP_FLOCK_REFRESH (EVT_CTL_CUSTOM + 3)
+#define OP_FLOCK_RETRY_CONNECTION (EVT_CTL_CUSTOM + 4)
 
 // #define FLOCK_DEBUG 1
 #ifdef FLOCK_DEBUG
@@ -184,6 +185,15 @@ static void flock_shutdown_connection(struct flock *f, struct eventloop *el) {
     close(f->f_socket);
     f->f_socket = 0;
   }
+}
+
+static void flock_on_dns_failure(struct flock *f, struct eventloop *el) {
+  f->f_flock_state = FLOCK_STATE_NM_NOT_RES;
+  dnssub_release(&f->f_resolver);
+
+  timersub_init_from_now(&f->f_resolve_timer, FLOCK_RETRY_RESOLUTION_INTERVAL,
+                         OP_FLOCK_RETRY_CONNECTION, flock_fn);
+  eventloop_subscribe_timer(el, &f->f_resolve_timer);
 }
 
 static int flock_handle_ssl_error(struct flock *f, struct eventloop *el, int err) {
@@ -763,8 +773,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
         if ( !RAND_bytes((unsigned char *)&which_cand, sizeof(which_cand)) ) {
           fprintf(stderr, "Could not choose random candidate: ");
           ERR_print_errors_fp(stderr);
-          f->f_flock_state = FLOCK_STATE_NM_NOT_RES;
-          dnssub_release(&f->f_resolver);
+          flock_on_dns_failure(f, el);
         } else {
           char cand_addr_buf[INET_ADDRSTRLEN];
           uint16_t old_port = f->f_cur_addr.sin_port;
@@ -791,9 +800,9 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
           }
         }
       } else {
-        fprintf(stderr, "Could not resolve flock DNS: %s\n", dnssub_strerror(&f->f_resolver));
-        f->f_flock_state = FLOCK_STATE_NM_NOT_RES;
-        dnssub_release(&f->f_resolver);
+        fprintf(stderr, "Could not resolve flock %s: %s\n", f->f_hostname,
+                dnssub_strerror(&f->f_resolver));
+        flock_on_dns_failure(f, el);
       }
       pthread_mutex_unlock(&f->f_mutex);
     } else
@@ -953,6 +962,13 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     eventloop_subscribe_fd(el, f->f_socket, FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
     break;
 
+  case OP_FLOCK_RETRY_CONNECTION:
+    tmr_ev = (struct qdevent *) arg;
+    f = STRUCT_FROM_BASE(struct flock, f_resolve_timer, tmr_ev->qde_timersub);
+    fprintf(stderr, "Retrying resolving flock %s\n", f->f_hostname);
+    flock_start_service(f, el);
+    break;
+
   default:
     fprintf(stderr, "flock_fn: Unknown op %d\n", op);
   }
@@ -984,6 +1000,15 @@ void flock_start_service(struct flock *f, struct eventloop *el) {
     int err = 0;
     struct addrinfo hints;
 
+    switch ( f->f_flock_state ) {
+    case FLOCK_STATE_NM_NOT_RES:
+      eventloop_unsubscribe_timer(el, &f->f_resolve_timer);
+      break;
+
+    default:
+      break;
+    }
+
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_flags = AI_ADDRCONFIG | AI_V4MAPPED | AI_NUMERICSERV;
@@ -994,11 +1019,10 @@ void flock_start_service(struct flock *f, struct eventloop *el) {
     dnssub_init(&f->f_resolver, OP_FLOCK_RESOLVE_NAME, flock_fn);
 
     err = dnssub_start_resolution(&f->f_resolver, el, f->f_hostname, "0",
-                                  DNSSUB_FLAG_FREE_NODE, &hints);
+                                  0, &hints);
     if ( err < 0 ) {
       fprintf(stderr, "dnssub_start_resolution: failed\n");
-      f->f_flock_state = FLOCK_STATE_NM_NOT_RES;
-      dnssub_release(&f->f_resolver);
+      flock_on_dns_failure(f, el);
       goto error;
     }
 

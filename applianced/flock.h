@@ -25,6 +25,7 @@
 #define FLOCK_FLAG_TRY_AGAIN_INTERVAL  1000
 #define FLOCK_SEND_REGISTRATION_INTERVAL (2 * 60000) // Send a new registration every two minutes
 #define FLOCK_MAX_RETRIES              7
+#define FLOCK_RETRY_RESOLUTION_INTERVAL 60000
 
 #define FLOCK_TIMEOUT(f, initial) (initial << (f)->f_retries)
 #define FLOCK_HAS_FAILED(f) ((f)->f_flock_state >= FLOCK_STATE_SUSPENDED)
@@ -67,6 +68,7 @@ struct flock {
 
   union {
     struct dnssub f_resolver;
+    struct timersub f_resolve_timer;
     struct {
       int  f_socket;
       struct fdsub f_socket_sub;
