@@ -774,6 +774,7 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
   for ( i = 0; info->cei_argv && info->cei_argv[i]; ++i ) {
     size_t sz = strlen(info->cei_argv[i]);
     memcpy(out, info->cei_argv[i], sz + 1);
+    fprintf(stderr, "container_execute_ex: got arg %s\n", out);
     out += sz + 1;
   }
 
