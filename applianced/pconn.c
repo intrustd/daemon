@@ -2702,6 +2702,10 @@ static void pconn_dtls_handshake(struct pconn *pc) {
         CANDSRC_SUBSCRIBE_WRITE(src);
         BIO_ADDR_free(addr);
         return;
+      case SSL_ERROR_SYSCALL:
+        fprintf(stderr, "dtlsv1_listen: system error: %s\n", strerror(errno));
+        BIO_ADDR_free(addr);
+        return;
       default:
         perror("dtlsv1_listen");
         fprintf(stderr, "Error running DTLSv1_listen: %d\n", err);
