@@ -29,8 +29,9 @@ void buffer_finalize(struct buffer *b, const char **data, size_t *data_sz) {
 }
 
 void buffer_finalize_str(struct buffer *b, const char **d) {
+  static const char null_char[1] = { 0 };
   size_t sz;
-  assert( buffer_write(b, "\0", 1) >= 0 );
+  buffer_write(b, null_char, 1);
   buffer_finalize(b, d, &sz);
 }
 
