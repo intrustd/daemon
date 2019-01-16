@@ -1187,6 +1187,14 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
             KLM_SIZE_ADD_ATTR(rspsz, attr);
           }
 
+          if ( desc.ad_persona.ad_pconn->pc_is_guest ) {
+            attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+            assert(attr);
+            attr->kla_name = htons(KLA_GUEST);
+            attr->kla_length = htons(KLA_SIZE(0));
+            KLM_SIZE_ADD_ATTR(rspsz, attr);
+          }
+
           // Site ID
           hash_type_nid = EVP_MD_type(desc.ad_persona.ad_pconn->pc_remote_cert_fingerprint_digest);
           assert(hash_type_nid != NID_undef);
@@ -1623,7 +1631,8 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
     close(fds[i]);
 }
 
-static int localsock_list_current(struct localapi *api, struct eventloop *el) {
+static int localsock_list_current( struct localapi *api, struct eventloop *el,
+                                   int is_empty ) {
   struct shared *cur = api->la_listing[api->la_listing_offs];
   struct persona *p;
 
@@ -1641,7 +1650,7 @@ static int localsock_list_current(struct localapi *api, struct eventloop *el) {
   msg->klm_req = htons(KLM_RESPONSE | api->la_listing_ent | KLM_REQ_GET);
   msg->klm_req_flags = KLM_RETURN_MULTIPLE;
 
-  if ( (api->la_listing_offs + 1) >= api->la_listing_count ||
+  if ( is_empty || (api->la_listing_offs + 1) >= api->la_listing_count ||
        !api->la_listing[api->la_listing_offs + 1] )
     msg->klm_req_flags |= KLM_IS_LAST;
 
@@ -1652,22 +1661,25 @@ static int localsock_list_current(struct localapi *api, struct eventloop *el) {
   memcpy(KLA_DATA_UNSAFE(attr, void *), &return_code, sizeof(uint16_t));
   KLM_SIZE_ADD_ATTR(sz, attr);
 
-  switch ( api->la_listing_ent ) {
-  case KLM_REQ_ENTITY_PERSONA:
-    p = STRUCT_FROM_BASE(struct persona, p_shared, cur);
+  if ( !is_empty ) {
+    switch ( api->la_listing_ent ) {
+    case KLM_REQ_ENTITY_PERSONA:
+      p = STRUCT_FROM_BASE(struct persona, p_shared, cur);
 
-    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
-    attr->kla_name = htons(KLA_PERSONA_ID);
-    attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
-    memcpy(KLA_DATA_UNSAFE(attr, void*), p->p_persona_id, PERSONA_ID_LENGTH);
-    KLM_SIZE_ADD_ATTR(sz, attr);
+      attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+      attr->kla_name = htons(KLA_PERSONA_ID);
+      attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
+      memcpy(KLA_DATA_UNSAFE(attr, void*), p->p_persona_id, PERSONA_ID_LENGTH);
+      KLM_SIZE_ADD_ATTR(sz, attr);
 
+      return localsock_respond(api, el, buf, sz);
+
+    default:
+      fprintf(stderr, "localsock_list_current: unknown entity %d\n", api->la_listing_ent);
+      return 0;
+    }
+  } else
     return localsock_respond(api, el, buf, sz);
-
-  default:
-    fprintf(stderr, "localsock_list_current: unknown entity %d\n", api->la_listing_ent);
-    return 0;
-  }
 }
 
 static void localsock_do_list(struct localapi *api, struct eventloop *el) {
@@ -1675,12 +1687,17 @@ static void localsock_do_list(struct localapi *api, struct eventloop *el) {
     struct shared *cur = api->la_listing[api->la_listing_offs];
     if ( !cur ) break; // Done
 
-    if ( localsock_list_current(api, el) < 0 ) {
+    if ( localsock_list_current(api, el, 0) < 0 ) {
       return;
     } else {
       SHARED_UNREF(cur);
       api->la_listing[api->la_listing_offs] = NULL;
     }
+  }
+
+  if ( api->la_listing_count == 0 ) {
+    // Empty response
+    localsock_list_current(api, el, 1);
   }
 
   api->la_busy = 0;
