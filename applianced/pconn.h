@@ -119,6 +119,7 @@ struct pconn {
   int pc_dtls_needs_write : 1;
   int pc_dtls_needs_read : 1;
   int pc_is_logged_in : 1; // Whether or not this pconn was authenticated using username/password
+  int pc_is_guest : 1; // Whether or not this is a hosted connection
 
   // An event that is triggered to start action on this PCONN (ICE
   // candidate collection and other delayed initialization)

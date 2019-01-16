@@ -18,6 +18,12 @@
 // DTLS packets start with 21, 22, 23 or 25
 #define IS_DTLS_PACKET(c) ((c) == 21 || (c) == 22 || (c) == 23 || (c) == 25)
 
+static const char guest_persona_id[PERSONA_ID_LENGTH] =
+  { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
 // A candidate source. This information is taken from the full set of
 // flocks when the pconn is started
 struct candsrc {
@@ -546,7 +552,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
     if ( pconn_ensure_dtls(cs->cs_pconn) < 0 ) {
       fprintf(stderr, "Ignoring DTLS packet, because we could not create DTLS context\n");
     } else {
-      BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
+      (void) BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
       BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, pkt_sz);
       //fprintf(stderr, "Accepting DTLS packet of size %d\n", pkt_sz);
       if ( cs->cs_pconn->pc_state == PCONN_STATE_ESTABLISHED ) {
@@ -670,7 +676,7 @@ static void candsrc_send_outgoing(struct candsrc *cs) {
     next_offs = ((next_offs + 3) / 4) * 4;
     next_offs %= sizeof(pc->pc_outgoing_pkt);
 
-    BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
+    (void) BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
     BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, 0);
 //    fprintf(stderr, "candsrc_send_outgoing: send packet of size %u (cs idx %d)\nfrom address",
 //            pconn_cs_idx(cs->cs_pconn, cs), sz);
@@ -1180,6 +1186,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_dtls = NULL;
   ret->pc_dtls_needs_write = ret->pc_dtls_needs_read = 0;
   ret->pc_is_logged_in = 0;
+  ret->pc_is_guest = 0;
 
   // Generate user fragment and password
   if ( !random_printable_string(ret->pc_our_ufrag, sizeof(ret->pc_our_ufrag)) ||
@@ -1732,7 +1739,32 @@ void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
 
     // Ensure the IDs match (not useful for looking up in hash table,
     // but necessary for an already established persona).
-    if ( p ) {
+
+    // Guest personas are handled first. If this is a guest, verify
+    // the credential, and verify that the host persona is what we
+    // have.
+    if ( memcmp(persona_id, guest_persona_id, PERSONA_ID_LENGTH) == 0 ) {
+      struct persona *guest_persona;
+      if ( persona_lookup_guest_credential(&guest_persona, pc,
+                                           credential, cred_sz) != 1 ) {
+        pconn_auth_fails(pc);
+      } else {
+        pc->pc_state = PCONN_STATE_START_OFFER;
+
+        if ( p && p != guest_persona ) {
+          pc->pc_persona = NULL;
+          PERSONA_UNREF(guest_persona);
+          guest_persona = NULL;
+          PERSONA_UNREF(p);
+          p = NULL;
+          pconn_auth_fails(pc);
+        } else {
+          pc->pc_state = PCONN_STATE_START_OFFER;
+          pc->pc_persona = guest_persona;
+          pc->pc_is_guest = 1;
+        }
+      }
+    } else if ( p ) {
       if ( memcmp(p->p_persona_id, persona_id, PERSONA_ID_LENGTH) != 0 ) {
         pc->pc_persona = NULL;
         PERSONA_UNREF(p);
@@ -1748,9 +1780,8 @@ void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
           pc->pc_persona = p;
         }
       }
-    } else {
+    } else
       pconn_auth_fails(pc);
-    }
   }
 
   flock_request_pconn_write_unlocked(pc->pc_flock, pc);

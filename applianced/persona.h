@@ -82,6 +82,9 @@ int persona_write_as_vcard(struct persona *p, struct buffer *b);
 // pc->pc_mutex must be held!!
 int persona_credential_validates(struct persona *p, struct pconn *pc,
                                  const char *cred, size_t cred_sz);
+// pc->pc_mutex must be held!
+int persona_lookup_guest_credential(struct persona **p, struct pconn *pc,
+                                    const char *cred, size_t cred_sz);
 
 // int persona_allocate_port(struct persona *p, uint16_t *port);
 // void persona_release_port(struct persona *p, uint16_t port);

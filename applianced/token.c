@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <openssl/sha.h>
 #include <openssl/err.h>
 
 #include "jsmn.h"
@@ -10,6 +11,7 @@ static pthread_mutex_t g_perms_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct perm * g_perms = NULL;
 
 #define TM_YEAR_EPOCH 1900
+#define TOKEN_MIN_SECRET_LENGTH 128
 
 static void permfreefn(const struct shared *sh, int lvl) {
   struct perm *p = STRUCT_FROM_BASE(struct perm, perm_shared, sh);
@@ -119,7 +121,7 @@ struct token *token_new_from_file(FILE *fl) {
   const char *buf;
   size_t buf_sz;
   jsmn_parser p;
-  int ret, i, token_count = 16, app_count = 0, perm_count = 0;
+  int ret, i, token_count = 16, app_count = 0, perm_count = 0, has_secret = 0;
 
   struct tm expiration;
   char microsecs[7] = { 0 };
@@ -133,6 +135,7 @@ struct token *token_new_from_file(FILE *fl) {
     TOKEN_STATE_MAIN_OBJECT_PERSONA,
     TOKEN_STATE_MAIN_OBJECT_SITE,
     TOKEN_STATE_MAIN_OBJECT_EXPIRATION,
+    TOKEN_STATE_MAIN_OBJECT_SECRET,
     TOKEN_STATE_MAIN_OBJECT_IN_PERMISSIONS,
     TOKEN_STATE_MAIN_OBJECT_IN_APPLICATIONS
   } state = TOKEN_STATE_START;
@@ -225,6 +228,8 @@ struct token *token_new_from_file(FILE *fl) {
           state = TOKEN_STATE_MAIN_OBJECT_SITE;
         } else if ( strncmp("expiration", buf + token->start, token->end - token->start) == 0 ) {
           state = TOKEN_STATE_MAIN_OBJECT_EXPIRATION;
+        } else if ( strncmp("secret", buf + token->start, token->end - token->start) == 0 ) {
+          state = TOKEN_STATE_MAIN_OBJECT_SECRET;
         } else {
           fprintf(stderr, "token_new_from_file: invalid key in top-level object: %.*s\n",
                   token->end - token->start, buf + token->start);
@@ -358,6 +363,21 @@ struct token *token_new_from_file(FILE *fl) {
       }
       break;
 
+    case TOKEN_STATE_MAIN_OBJECT_SECRET:
+      if ( token->type == JSMN_STRING ) {
+        if ( (token->end - token->start) < TOKEN_MIN_SECRET_LENGTH ) {
+          fprintf(stderr, "token_new_from_file: not enough entroy in secret\n");
+          goto error;
+        } else {
+          state = TOKEN_STATE_MAIN_OBJECT_KEY;
+          has_secret = 1;
+        }
+      } else {
+        fprintf(stderr, "token_new_from_file: expected random string in 'secret'\n");
+        goto error;
+      }
+      break;
+
     case TOKEN_STATE_MAIN_OBJECT_EXPIRATION:
       state = TOKEN_STATE_MAIN_OBJECT_KEY;
       ((char *)buf)[token->end] = '\0';
@@ -433,6 +453,11 @@ struct token *token_new_from_file(FILE *fl) {
     }
   }
 
+  if ( !has_secret ) {
+    fprintf(stderr, "token_new_from_file: no 'secret' key in token\n");
+    goto error;
+  }
+
   if ( new_token->tok_perm_count == 0 ) {
     fprintf(stderr, "token_new_from_file: no permissions in token\n");
     goto error;
@@ -465,60 +490,56 @@ int token_check_permission_ex(struct token *tok, const char *perm, size_t perm_s
     return -1;
 }
 
-int token_verify_signature(FILE *fl, EVP_PKEY *pkey, const char *sign_hex, size_t hex_sz) {
-  size_t pkey_sz = EVP_PKEY_size(pkey) + 2;
-
-  if ( hex_sz > (pkey_sz * 2) ) {
-    fprintf(stderr, "token_verify_signature: invalid signature size, expected %zu, got %zu\n",
-            pkey_sz * 2, hex_sz);
-    fprintf(stderr, "signature is %.*s\n", (int) hex_sz, sign_hex);
-    return -1;
-  } else {
-    unsigned char exp_bytes[hex_sz / 2];
+int token_verify_hash(FILE *fl, const char *hash_hex, size_t hash_sz) {
+  if ( hash_sz == (SHA256_DIGEST_LENGTH * 2)) {
+    SHA256_CTX ctx;
+    unsigned char hash[SHA256_DIGEST_LENGTH], act_hash[SHA256_DIGEST_LENGTH];
     char chunk[32];
-    int bytes_read;
-    EVP_MD_CTX *sign_ctx;
+    size_t bytes_read;
 
-    if ( !parse_hex_str(sign_hex, exp_bytes, hex_sz / 2) ) {
-      fprintf(stderr, "token_verify_signature: token signature must be a hex string\n");
+    if ( !parse_hex_str(hash_hex, hash, hash_sz / 2) ) {
+      fprintf(stderr, "token_verify_hash: token hash must be a hex string\n");
       return -1;
     }
 
-    sign_ctx = EVP_MD_CTX_new();
-    if ( !sign_ctx ) {
-      fprintf(stderr, "token_verify_signature: could not create EVP_MD_CTX\n");
+    if ( !SHA256_Init(&ctx) ) {
+      fprintf(stderr, "token_verify_hash: could not initialize context\n");
       return -1;
     }
 
-    if ( !EVP_VerifyInit(sign_ctx, EVP_sha256()) ) {
-      fprintf(stderr, "token_verify_signature: could not initialize signing context\n");
-      ERR_print_errors_fp(stderr);
-      EVP_MD_CTX_free(sign_ctx);
-      return -1;
-    }
-
-    while ( (bytes_read = fread(chunk, 1, sizeof(chunk), fl)) ) {
-      if ( !EVP_VerifyUpdate(sign_ctx, chunk, bytes_read) ) {
-        fprintf(stderr, "token_verify_signature: could not sign chunk\n");
+    while ( (bytes_read = fread(chunk, 1, sizeof(chunk), fl) ) ) {
+      if ( !SHA256_Update(&ctx, chunk, bytes_read) ) {
+        fprintf(stderr, "token_verify_hash: could not hash chunk\n");
         ERR_print_errors_fp(stderr);
-        EVP_MD_CTX_free(sign_ctx);
         return -1;
       }
     }
 
     if ( ferror(fl) ) {
-      fprintf(stderr, "token_verify_signature: could not read file\n");
-      EVP_MD_CTX_free(sign_ctx);
+      fprintf(stderr, "token_verify_hash: could not read file\n");
       return -1;
     }
+
     assert(feof(fl));
 
-    if ( !EVP_VerifyFinal(sign_ctx, exp_bytes, hex_sz / 2, pkey) ) {
-      EVP_MD_CTX_free(sign_ctx);
+    if ( !SHA256_Final(act_hash, &ctx) ) {
+      fprintf(stderr, "token_verify_hash: could not finalize hash\n");
       return -1;
-    } else {
-      EVP_MD_CTX_free(sign_ctx);
-      return 0;
     }
+
+    if ( memcmp(hash, act_hash, SHA256_DIGEST_LENGTH) == 0 ) {
+      return 0;
+    } else
+      return -1;
+  } else
+    return -1;
+}
+
+int token_is_valid_now(struct token *tok) {
+  if ( tok->tok_flags & TOKEN_FLAG_NEVER_EXPIRES )
+    return 1;
+  else {
+    time_t now = time(NULL);
+    return difftime(tok->tok_expiration, now) > 0;
   }
 }

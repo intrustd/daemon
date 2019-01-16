@@ -264,9 +264,7 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
     WSC_SUBSCRIBE_READ(wsc);
     return 0;
   case WSC_PROTO_LOGIN:
-    if ( next_newline != (sizeof(persona_id) * 2) ) {
-      wsconnection_respond_line(wsc, el, "400 Not enough characters in persona");
-    } else {
+    if ( next_newline == (sizeof(persona_id) * 2) ) {
       if ( parse_hex_str(buf, persona_id, sizeof(persona_id)) < 0 ) {
           wsconnection_respond_line(wsc, el, "400 Invalid persona id");
       } else {
@@ -277,6 +275,16 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
         }
         wsc->wsc_proto_mode = WSC_PROTO_GET_CREDENTIAL;
       }
+    } else if ( next_newline == 0 ) { // Guest login
+      memset(persona_id, 0xFF, sizeof(persona_id));
+      if ( connection_set_persona(&wsc->wsc_conn, persona_id) < 0 ) {
+        wsconnection_respond_line(wsc, el, "500 Internal Server Error");
+        connection_complete_unlocked(&wsc->wsc_conn);
+        return -1;
+      }
+      wsc->wsc_proto_mode = WSC_PROTO_GET_CREDENTIAL;
+    } else {
+      wsconnection_respond_line(wsc, el, "400 Not enough characters in persona");
     }
     WSC_SUBSCRIBE_READ(wsc);
     return 0;

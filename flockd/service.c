@@ -251,8 +251,8 @@ static void fscs_client_fn(struct flockservice *svc, struct flockclientstate *st
     // Since we got an event, we retouch the client timeout
     fscs_touch_timeout(st, &flockst->fs_eventloop);
 
-    BIO_reset(SSL_get_rbio(st->fscs_dtls));
-    BIO_reset(SSL_get_wbio(st->fscs_dtls));
+    (void) BIO_reset(SSL_get_rbio(st->fscs_dtls));
+    (void) BIO_reset(SSL_get_wbio(st->fscs_dtls));
     // Handle receiving this packet
     err = SSL_read(st->fscs_dtls, pkt_buf, sizeof(pkt_buf));
     if ( err <= 0 ) {

@@ -128,7 +128,6 @@ int appstate_update_app_from_manifest(struct appstate *as, struct app *a, struct
 void appstate_update_application_state(struct appstate *as, struct app *a);
 
 struct token *appstate_open_token_ex(struct appstate *as,
-                                     const char *token_hex, size_t token_sz,
-                                     const char *signature_hex, size_t signature_sz);
+                                     const char *token_hex, size_t token_sz);
 
 #endif

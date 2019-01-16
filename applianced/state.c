@@ -2003,8 +2003,7 @@ int appstate_log_path(struct appstate *as, const char *mf_digest_str, const char
 }
 
 struct token *appstate_open_token_ex(struct appstate *as,
-                                     const char *token_hex, size_t token_sz,
-                                     const char *sign_hex, size_t hex_sz) {
+                                     const char *token_hex, size_t token_sz) {
   unsigned char exp_digest[TOKEN_ID_LENGTH];
 
   if ( token_sz != sizeof(exp_digest) * 2 ) {
@@ -2037,8 +2036,8 @@ struct token *appstate_open_token_ex(struct appstate *as,
           perror("appstate_open_token_ex: fopen");
           ret = NULL;
         } else {
-          if ( token_verify_signature(token_file, as->as_privkey, sign_hex, hex_sz) != 0 ) {
-            fprintf(stderr, "appstate_open_token_ex: invalid signature\n");
+          if ( token_verify_hash(token_file, token_hex, token_sz) != 0 ) {
+            fprintf(stderr, "appstate_open_token_ex: invalid hash\n");
             ret = NULL;
             fclose(token_file);
           } else {

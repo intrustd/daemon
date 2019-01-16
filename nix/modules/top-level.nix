@@ -223,12 +223,17 @@
             source /etc/profile
             ${config.kite.healthCheckHook}
           '';
-          permsScript = if config.kite.permsHook == null
-                        then pkgs.writeScript "${config.kite.meta.slug}-perms" ''
-                          #!/bin/sh
-                          exit 10
-                        ''
-                        else config.kite.permsHook;
+          permsScript = pkgs.writeScript "${config.kite.meta.slug}-perms"
+            (if config.kite.permsHook == null
+             then ''
+               #!/bin/sh
+               exit 10
+             ''
+             else ''
+               #!/bin/sh
+               source /etc/profile
+               exec ${config.kite.permsHook} "$@"
+             '');
 
           cmpPrio = a: b: a.priority < b.priority;
           mkPermission = perm: with perm;

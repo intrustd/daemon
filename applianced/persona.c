@@ -386,14 +386,15 @@ struct personaset *personaset_from_buf(const char *data, size_t sz) {
   return ret;
 }
 
+static const char pwd_prefix[] = { 'p', 'w', 'd', ':' };
+static const char token_prefix[] = { 't', 'o', 'k', 'e', 'n', ':' };
+
 static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth *p,
                         const char *cred, size_t cred_sz) {
-  static const char pwd_prefix[] = { 'p', 'w', 'd', ':' };
-  static const char token_prefix[] = { 't', 'o', 'k', 'e', 'n', ':' };
 
   unsigned char expected_sha256[SHA256_DIGEST_LENGTH];
 
-  fprintf(stderr, "pauth_verify: cred: %.*s\n", (int) cred_sz, cred);
+  //  fprintf(stderr, "pauth_verify: cred: %.*s\n", (int) cred_sz, cred);
 
   switch ( p->pa_type ) {
   case PAUTH_TYPE_SHA256:
@@ -416,42 +417,26 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
       // A token is represented by <sha256sum>.<token signature>
       struct token *tok;
       const char *cred_start = cred + sizeof(token_prefix);
-      const char *sign_start =
-        memchr(cred_start, '.', cred_sz - sizeof(token_prefix));
-      if ( !sign_start ) {
-        fprintf(stderr, "pauth_verify: no signature in token\n");
-        return 0;
-      }
+
 
       tok = appstate_open_token_ex(persona->p_appstate,
-                                   cred_start, sign_start - cred_start,
-                                   sign_start + 1,
-                                   cred + cred_sz - sign_start - 1);
+                                   cred_start, cred_sz - sizeof(token_prefix));
       if ( !tok ) return 0;
 
-      // Check that the token has the login permission
-      if ( token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
+      // Check that the token has the login permission and is still valid
+      if ( token_is_valid_now(tok) &&
+           token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
            (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) &&
            memcmp(tok->tok_persona_id, persona->p_persona_id, PERSONA_ID_LENGTH) == 0 ) {
-        time_t now = time(NULL);
-
-        // Verify that the token expires in the future
-        if ( (tok->tok_flags & TOKEN_FLAG_NEVER_EXPIRES) ||
-             (difftime(tok->tok_expiration, now) > 0 ) ){
-          // Save token and return
-          if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
-            TOKEN_UNREF(tok);
-            return 1;
-          } else {
-            TOKEN_UNREF(tok);
-                 return 0;
-          }
+        // Save token and return
+        if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
+          TOKEN_UNREF(tok);
+          return 1;
         } else {
           TOKEN_UNREF(tok);
           return 0;
         }
       } else {
-        fprintf(stderr, "Could not find login permission\n");
         TOKEN_UNREF(tok);
         return 0;
       }
@@ -481,6 +466,43 @@ int persona_credential_validates(struct persona *p, struct pconn *pc,
   } else
     ret = -1;
   return ret;
+}
+
+// pc->pc_mutex must be held!
+int persona_lookup_guest_credential(struct persona **p, struct pconn *pc,
+                                    const char *cred, size_t cred_sz) {
+  struct appstate *as = pc->pc_appstate;
+
+  *p = NULL;
+
+  if ( cred_sz > sizeof(token_prefix) &&
+       memcmp(cred, token_prefix, sizeof(token_prefix)) == 0 ) {
+    const char *cred_start = cred + sizeof(token_prefix);
+    struct token *tok = appstate_open_token_ex(as, cred_start, cred_sz - sizeof(token_prefix));
+    if ( !tok ) return 0;
+
+    if ( token_is_valid_now(tok) &&
+         token_check_permission(tok, TOKEN_GUEST_PERM_URL) == 0 &&
+         (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) ) {
+      // Lookup persona
+      if ( appstate_lookup_persona(as, tok->tok_persona_id, p) == 0 ) {
+        if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
+          TOKEN_UNREF(tok);
+          return 1;
+        } else {
+          TOKEN_UNREF(tok);
+          return 0;
+        }
+      } else {
+        TOKEN_UNREF(tok);
+        return 0;
+      }
+    } else {
+      TOKEN_UNREF(tok);
+      return 0;
+    }
+  } else
+    return 0;
 }
 
 // static int personacontainerfn(struct container *c, int op, void *argp, ssize_t argl) {

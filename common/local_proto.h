@@ -74,6 +74,7 @@ struct kitelocalattr {
 #define KLA_SYSTEM_TYPE        0x001E
 #define KLA_APP_SIGNATURE_URL  0x001F
 #define KLA_CRED               0x0020
+#define KLA_GUEST              0x0021
 
 #define KLE_SUCCESS            0x0000
 #define KLE_NOT_IMPLEMENTED    0x0001

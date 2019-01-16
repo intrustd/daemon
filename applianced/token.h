@@ -8,6 +8,7 @@
 #include "persona.h"
 
 #define TOKEN_LOGIN_PERM_URL "kite+perm://admin.flywithkite.com/login"
+#define TOKEN_GUEST_PERM_URL "kite+perm://admin.flywithkite.com/guest"
 
 #define TOKEN_ID_LENGTH 32
 #define SITE_ID_MAX_LENGTH 32
@@ -89,6 +90,8 @@ struct token *token_new_from_file(FILE *fl);
 int token_check_permission(struct token *tok, const char *perm);
 int token_check_permission_ex(struct token *tok, const char *perm, size_t perm_sz);
 
-int token_verify_signature(FILE *fl, EVP_PKEY *pkey, const char *sign_hex, size_t hex_sz);
+int token_verify_hash(FILE *fl, const char *hash_hex, size_t hash_sz);
+
+int token_is_valid_now(struct token *tok);
 
 #endif
