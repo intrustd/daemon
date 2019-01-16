@@ -200,20 +200,19 @@ static int localsock_start_list(struct localapi *api, uint16_t ent, unsigned int
   localsock_free_listing(api);
 
   if ( count > 0 ) {
-    fprintf(stderr, "Starting list\n");
-
     new_buf = malloc(sizeof(*api->la_listing) * count);
     if ( !new_buf ) return -1;
 
     api->la_listing = new_buf;
     memset(new_buf, 0, sizeof(*api->la_listing) * count);
+  } else
+    api->la_listing = NULL;
 
-    api->la_is_listing = 1;
-    api->la_busy = 1;
-    api->la_listing_ent = ent;
-    api->la_listing_offs = 0;
-    api->la_listing_count = count;
-  }
+  api->la_is_listing = 1;
+  api->la_busy = 1;
+  api->la_listing_ent = ent;
+  api->la_listing_offs = 0;
+  api->la_listing_count = count;
 
   return 0;
 }
@@ -1633,7 +1632,6 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
 
 static int localsock_list_current( struct localapi *api, struct eventloop *el,
                                    int is_empty ) {
-  struct shared *cur = api->la_listing[api->la_listing_offs];
   struct persona *p;
 
   char buf[KITE_MAX_LOCAL_MSG_SZ];
@@ -1662,6 +1660,9 @@ static int localsock_list_current( struct localapi *api, struct eventloop *el,
   KLM_SIZE_ADD_ATTR(sz, attr);
 
   if ( !is_empty ) {
+    struct shared *cur;
+    cur = api->la_listing[api->la_listing_offs];
+
     switch ( api->la_listing_ent ) {
     case KLM_REQ_ENTITY_PERSONA:
       p = STRUCT_FROM_BASE(struct persona, p_shared, cur);
