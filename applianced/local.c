@@ -114,7 +114,7 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
         return;
       }
 
-      if ( api->la_outgoing_sz < 4 ) {
+      if ( api->la_outgoing_sz < 4 && api->la_is_listing ) {
         localsock_do_list(api, el);
       }
     }
