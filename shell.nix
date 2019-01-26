@@ -57,7 +57,7 @@ let stdenv = pkgs.stdenv;
        '';
    };
 
-   curl-kite = pkgs.curl.override {
+   curl-intrustd = pkgs.curl.override {
      c-aresSupport = true; sslSupport = true; idnSupport = true;
      scpSupport = false; gssSupport = true;
      brotliSupport = true; openssl = pkgs.openssl_1_1_0;
@@ -66,7 +66,7 @@ let stdenv = pkgs.stdenv;
    lksctp-tools-1-0-18 = pkgs.callPackage ./deploy/pkgs/lksctp-tools.nix { };
 
 in pkgs.stdenv.mkDerivation {
-  name = "stork-cpp";
+  name = "intrustd-cpp";
 
   buildInputs = with pkgs; [
     pkgconfig cmake gdb openssl_1_1_0.dev
@@ -78,7 +78,7 @@ in pkgs.stdenv.mkDerivation {
     valgrind stun graphviz awscli
 
     lksctp-tools-1-0-18 libnl thrift
-    curl-kite curl-kite.dev
+    curl-intrustd curl-intrustd.dev
 
     nginx jq redis
 

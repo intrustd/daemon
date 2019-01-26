@@ -26,7 +26,7 @@ struct token;
 struct appstate {
   uint32_t as_mutexes_initialized;
 
-  char     as_appliance_name[KITE_APPLIANCE_NAME_MAX];
+  char     as_appliance_name[INTRUSTD_APPLIANCE_NAME_MAX];
 
   const char *as_conf_dir;
   const char *as_webrtc_proxy_path;

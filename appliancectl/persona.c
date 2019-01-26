@@ -22,10 +22,10 @@ int create_persona(int argc, char **argv) {
     {0, 0, 0, 0}
   };
 
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg = (struct kitelocalmsg *) buf;
-  struct kitelocalattr *attr = KLM_FIRSTATTR(msg, sizeof(buf));
-  int optind = 0, c, sz = KLM_SIZE_INIT, sk, err;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg = (struct applocalmsg *) buf;
+  struct applocalattr *attr = ALM_FIRSTATTR(msg, sizeof(buf));
+  int optind = 0, c, sz = ALM_SIZE_INIT, sk, err;
 
   char *display_name = NULL;
   char *password = NULL;
@@ -54,30 +54,30 @@ int create_persona(int argc, char **argv) {
   if ( !display_name || !password )
     return create_persona_usage();
 
-  msg->klm_req = ntohs(KLM_REQ_CREATE | KLM_REQ_ENTITY_PERSONA);
-  msg->klm_req_flags = 0;
+  msg->alm_req = ntohs(ALM_REQ_CREATE | ALM_REQ_ENTITY_PERSONA);
+  msg->alm_req_flags = 0;
 
-  attr->kla_name = ntohs(KLA_PERSONA_DISPLAYNM);
-  attr->kla_length = ntohs(KLA_SIZE(strlen(display_name)));
-  memcpy(KLA_DATA_UNSAFE(attr, char *), display_name, strlen(display_name));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = ntohs(ALA_PERSONA_DISPLAYNM);
+  attr->ala_length = ntohs(ALA_SIZE(strlen(display_name)));
+  memcpy(ALA_DATA_UNSAFE(attr, char *), display_name, strlen(display_name));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
-  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+  attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
   assert(attr);
-  attr->kla_name = ntohs(KLA_PERSONA_PASSWORD);
-  attr->kla_length = ntohs(KLA_SIZE(strlen(password)));
-  memcpy(KLA_DATA_UNSAFE(attr, char *), password, strlen(password));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = ntohs(ALA_PERSONA_PASSWORD);
+  attr->ala_length = ntohs(ALA_SIZE(strlen(password)));
+  memcpy(ALA_DATA_UNSAFE(attr, char *), password, strlen(password));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   if ( flags ) {
-    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
     assert(attr);
-    attr->kla_name = ntohs(KLA_PERSONA_FLAGS);
-    attr->kla_length = ntohs(KLA_SIZE(sizeof(uint32_t) * 2));
-    memset(KLA_DATA_UNSAFE(attr, void *), 0, sizeof(uint32_t) * 2);
+    attr->ala_name = ntohs(ALA_PERSONA_FLAGS);
+    attr->ala_length = ntohs(ALA_SIZE(sizeof(uint32_t) * 2));
+    memset(ALA_DATA_UNSAFE(attr, void *), 0, sizeof(uint32_t) * 2);
     flags = ntohl(flags);
-    memcpy(KLA_DATA_UNSAFE(attr, void *), &flags, sizeof(flags));
-    KLM_SIZE_ADD_ATTR(sz, attr);
+    memcpy(ALA_DATA_UNSAFE(attr, void *), &flags, sizeof(flags));
+    ALM_SIZE_ADD_ATTR(sz, attr);
   }
 
   sk = mk_api_socket();
@@ -100,7 +100,7 @@ int create_persona(int argc, char **argv) {
     return 2;
   }
 
-  display_stork_response(buf, err, "Successfully created persona");
+  display_intrustd_response(buf, err, "Successfully created persona");
 
   return 0;
 }

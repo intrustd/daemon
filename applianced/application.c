@@ -969,7 +969,7 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   }
   strcpy(app_data_path, path);
 
-  FORMAT_PATH("%s/kite", image_path);
+  FORMAT_PATH("%s/intrustd", image_path);
   DO_MOUNT(app_data_path, path, "bind", MS_BIND | MS_RDONLY | MS_REC, "");
 
   FORMAT_PATH("%s/personas/%s/log/%s", ai->inst_appstate->as_conf_dir,
@@ -988,7 +988,7 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   if ( app_flags & APP_FLAG_RUN_AS_ADMIN ) {
     size_t i;
 
-    FORMAT_PATH("%s/kite/appliance", image_path);
+    FORMAT_PATH("%s/intrustd/appliance", image_path);
     err = mkdir_recursive(path);
     if ( err < 0 ) {
       perror("appinstance_setup: mkdir_recursive");

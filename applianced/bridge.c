@@ -30,9 +30,10 @@
 #include "persona.h"
 #include "application.h"
 #include "state.h"
-#include "storkd_proto.h"
+#include "intrustd_proto.h"
 
-#define KITE_APPLIANCED_APP_PORT 9998
+#define APPLIANCED_APP_PORT 9998
+#define INET_LINK_NAME "intrustd-inet"
 
 #define INTERNET_GATEWAY "10.254.254.254"
 
@@ -437,7 +438,7 @@ static void bridge_process_udp(struct brstate *br, struct eventloop *el, int sz,
     buf += sizeof(hdr_udp);
 
     switch ( ntohs(hdr_udp.uh_dport) ) {
-    case KITE_APPLIANCED_APP_PORT:
+    case APPLIANCED_APP_PORT:
       if ( sz < 4 ) {
         fprintf(stderr, "bridge_process_udp: not enough bytes in open app request\n");
         return;
@@ -1109,25 +1110,25 @@ static void bridge_create_bridge(struct brstate *br, const char *tap_nm) {
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -N KITE -P RETURN", br->br_ebroute_path);
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -N INTRUSTD -P RETURN", br->br_ebroute_path);
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A KITE --destination %s -j ACCEPT",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A INTRUSTD --destination %s -j ACCEPT",
                  br->br_ebroute_path, mac_ntop(br->br_tap_mac, mac_buf, sizeof(mac_buf)));
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
   // TODO may want to prevent ARPing between containers
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A KITE -p ARP -j ACCEPT",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A INTRUSTD -p ARP -j ACCEPT",
                  br->br_ebroute_path);
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A FORWARD -j KITE", br->br_ebroute_path);
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -A FORWARD -j INTRUSTD", br->br_ebroute_path);
   if ( err >= sizeof(cmd_buf) ) goto nospc;
   err = system(cmd_buf);
   if ( err != 0 ) goto cmdfailed;
@@ -1314,7 +1315,7 @@ static void bridge_do_mark_as_admin(struct brstate *br, struct brctlmsg *_msg) {
   err = system(cmd_buf);
   if ( err != 0 ) goto cmd_error;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I KITE -1 --destination %s -j ACCEPT",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s -I INTRUSTD -1 --destination %s -j ACCEPT",
                  br->br_ebroute_path,
                  mac_ntop(msg->bcm_arp.ae_mac, mac_dbg, sizeof(mac_dbg)));
   if ( err >= sizeof(cmd_buf) ) goto overflow;
@@ -1373,7 +1374,7 @@ static int bridge_setup_main(void *br_ptr) {
 
   fprintf(stderr, "Creating internet link\n");
 
-  err = bridge_create_veth(br, "internet", "kitelink", 1);
+  err = bridge_create_veth(br, "internet", INET_LINK_NAME, 1);
   if ( err < 0 ) {
     fprintf(stderr, "bridge_setup_main: bridge_create_veth failed");
     return 1;
@@ -1387,7 +1388,7 @@ static int bridge_setup_main(void *br_ptr) {
 
   fprintf(stderr, "got parent net ns %d\n", parent_netns);
 
-  err = bridge_move_if_to_ns(br, "kitelink", parent_netns);
+  err = bridge_move_if_to_ns(br, INET_LINK_NAME, parent_netns);
   if ( err < 0 ) {
     fprintf(stderr, "bridge_setup_main: bridge_move_if_to_ns failed\n");
     close(parent_netns);
@@ -1395,7 +1396,7 @@ static int bridge_setup_main(void *br_ptr) {
   }
   close(parent_netns);
 
-  fprintf(stderr, "Moved kitelink to parent\n");
+  fprintf(stderr, "Moved " INET_LINK_NAME " to parent\n");
 
   err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY "/8 dev internet", br->br_iproute_path);
   if ( err >= sizeof(cmd_buf) ) {
@@ -1569,14 +1570,14 @@ static int bridge_setup_ns(struct brstate *br) {
   if ( set_socket_nonblocking(br->br_tapfd) < 0 )
     fprintf(stderr, "Could not set TAP non blocking\n");
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY "/8 dev kitelink",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY "/8 dev " INET_LINK_NAME,
                  br->br_iproute_path);
   if ( err >= sizeof(cmd_buf) ) goto overflow;
 
   err = system(cmd_buf);
   if ( err != 0 ) goto cmd_error;
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set dev kitelink up",
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s link set dev " INET_LINK_NAME " up",
                  br->br_iproute_path);
   if ( err >= sizeof(cmd_buf) ) goto overflow;
 
@@ -1586,7 +1587,7 @@ static int bridge_setup_ns(struct brstate *br) {
   return 0;
 
  overflow:
-  fprintf(stderr, "bridge_setup_ns: command overflow while setting up kitelink\n");
+  fprintf(stderr, "bridge_setup_ns: command overflow while setting up " INET_LINK_NAME "\n");
   return -1;
 
  cmd_error:
@@ -1921,7 +1922,7 @@ static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int net
     struct ifinfomsg ifi;
     struct rtattr ns_fd_a;
     int ns_fd;
-  } KITE_PACKED nl_msg;
+  } INTRUSTD_PACKED nl_msg;
   struct nlmsghdr rsp;
   struct nlmsgerr nl_err;
   char recv_buf[512];
@@ -2329,7 +2330,7 @@ static void bpr_release(struct brpermrequest *bpr) {
 }
 
 static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
-                           struct stkdmsg *rsp, size_t rspsz) {
+                           struct appdmsg *rsp, size_t rspsz) {
   struct ethhdr rsp_eth;
   struct iphdr rsp_ip;
   struct udphdr rsp_udp;
@@ -2360,7 +2361,7 @@ static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
   rsp_ip.check = htons(ip_checksum(&rsp_ip, sizeof(rsp_ip)));
 
   memset(&rsp_udp, 0, sizeof(rsp_udp));
-  rsp_udp.uh_sport = htons(KITE_APPLIANCED_APP_PORT);
+  rsp_udp.uh_sport = htons(APPLIANCED_APP_PORT);
   rsp_udp.uh_dport = bpr->bpr_srcaddr.sin_port;
   rsp_udp.uh_ulen = htons(sizeof(rsp_udp) + rspsz);
 
@@ -2368,23 +2369,23 @@ static void bridge_respond(struct brstate *br, struct brpermrequest *bpr,
 }
 
 static void bridge_respond_bpr_error(struct brstate *br, struct brpermrequest *bpr, int err) {
-  struct stkdmsg rsp;
-  rsp.sm_flags = STKD_MKFLAGS(STKD_RSP | STKD_ERROR, STKD_OPEN_APP_REQUEST);
-  rsp.sm_data.sm_error = htonl(err);
+  struct appdmsg rsp;
+  rsp.am_flags = APPD_MKFLAGS(APPD_RSP | APPD_ERROR, APPD_OPEN_APP_REQUEST);
+  rsp.am_data.am_error = htonl(err);
 
-  bridge_respond(br, bpr, &rsp, STKD_ERROR_MSG_SZ);
+  bridge_respond(br, bpr, &rsp, APPD_ERROR_MSG_SZ);
 }
 
 static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest *bpr) {
   if ( bpr->bpr_sts < 0 ) {
     fprintf(stderr, "bridge_handle_bpr_response: brpermrequest fails with %d\n", bpr->bpr_sts);
-    bridge_respond_bpr_error(br, bpr, STKD_ERROR_SYSTEM_ERROR);
+    bridge_respond_bpr_error(br, bpr, APPD_ERROR_SYSTEM_ERROR);
   } else {
     switch ( bpr->bpr_perm.bp_type ) {
     case BR_PERM_APPLICATION:
       if ( !bpr->bpr_persona ) {
         fprintf(stderr, "bridge_handle_bpr_response: expected bpr_persona to be filled for BR_PERM_APPLICATION\n");
-        bridge_respond_bpr_error(br, bpr, STKD_ERROR_PERSONA_DOES_NOT_EXIST);
+        bridge_respond_bpr_error(br, bpr, APPD_ERROR_PERSONA_DOES_NOT_EXIST);
       } else {
         struct app *a = appstate_get_app_by_url_ex(br->br_appstate,
                                                    (const char *)bpr->bpr_perm.bp_data,
@@ -2392,7 +2393,7 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
         if ( !a ) {
           fprintf(stderr, "bridge_handle_bpr_response: could not find app %.*s\n",
                   bpr->bpr_perm_size, bpr->bpr_perm.bp_data);
-          bridge_respond_bpr_error(br, bpr, STKD_ERROR_APP_DOES_NOT_EXIST);
+          bridge_respond_bpr_error(br, bpr, APPD_ERROR_APP_DOES_NOT_EXIST);
         } else {
           struct appinstance *ai = launch_app_instance(bpr->bpr_persona->p_appstate,
                                                        bpr->bpr_persona, a);
@@ -2400,16 +2401,16 @@ static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest 
           if ( !ai ) {
             fprintf(stderr, "bridge_handle_bpr_response: could not launch app instance\n");
           } else {
-            struct stkdmsg rsp;
+            struct appdmsg rsp;
             container_release_running(&ai->inst_container, bpr->bpr_el);
             APPINSTANCE_UNREF(ai);
 
             fprintf(stderr, "bridge_handle_bpr_response: launched application %s\n", ai->inst_app->app_domain);
 
-            rsp.sm_flags = STKD_MKFLAGS(STKD_RSP, STKD_OPEN_APP_REQUEST);
-            rsp.sm_data.sm_opened_app.sm_family = htonl(AF_INET);
-            rsp.sm_data.sm_opened_app.sm_addr = ai->inst_container.c_ip.s_addr;
-            bridge_respond(br, bpr, &rsp, STKD_OPENED_APP_RSP_SZ);
+            rsp.am_flags = APPD_MKFLAGS(APPD_RSP, APPD_OPEN_APP_REQUEST);
+            rsp.am_data.am_opened_app.am_family = htonl(AF_INET);
+            rsp.am_data.am_opened_app.am_addr = ai->inst_container.c_ip.s_addr;
+            bridge_respond(br, bpr, &rsp, APPD_OPENED_APP_RSP_SZ);
           }
         }
       }

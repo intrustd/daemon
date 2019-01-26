@@ -248,7 +248,7 @@ int parse_address(const char *str, size_t str_sz, uint16_t port,
       return -1;
   }
 
-  STATIC_ASSERT(sizeof(kite_sock_addr) >= sizeof(struct sockaddr_in6), "kite_sock_addr is not big enough");
+  STATIC_ASSERT(sizeof(intrustd_sock_addr) >= sizeof(struct sockaddr_in6), "intrustd_sock_addr is not big enough");
   fprintf(stderr, "Attempt to parse ipv6 %d\n", inet_pton(AF_INET6, nt_addr, in6.s6_addr));
   if ( inet_pton(AF_INET6, nt_addr, in6.s6_addr) ) {
     if ( *sa_sz >= sizeof(struct sockaddr_in6) ) {
@@ -274,21 +274,21 @@ void dump_address(FILE *out, void *addr, socklen_t addr_sz) {
     fprintf(out, "%s:%u", addr_out, port);
 }
 
-int kite_sock_addr_equal(kite_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz) {
-  if ( a->sa_family == ksa->ksa.sa_family ) {
+int intrustd_sock_addr_equal(intrustd_sock_addr *sa, struct sockaddr *a, socklen_t a_sz) {
+  if ( a->sa_family == sa->sa.sa_family ) {
     switch ( a->sa_family ) {
     case AF_INET6:
-      if ( a_sz >= sizeof(ksa->ksa_ipv6) ) {
+      if ( a_sz >= sizeof(sa->sa_ipv6) ) {
         struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)a;
-        return memcmp(a6->sin6_addr.s6_addr, ksa->ksa_ipv6.sin6_addr.s6_addr, 16) == 0 &&
-          a6->sin6_port == ksa->ksa_ipv6.sin6_port;
+        return memcmp(a6->sin6_addr.s6_addr, sa->sa_ipv6.sin6_addr.s6_addr, 16) == 0 &&
+          a6->sin6_port == sa->sa_ipv6.sin6_port;
       } else
         return 0;
     case AF_INET:
-      if ( a_sz >= sizeof(ksa->ksa_ipv4) ) {
+      if ( a_sz >= sizeof(sa->sa_ipv4) ) {
         struct sockaddr_in *a4 = (struct sockaddr_in *)a;
-        return a4->sin_addr.s_addr == ksa->ksa_ipv4.sin_addr.s_addr &&
-          a4->sin_port == ksa->ksa_ipv4.sin_port;
+        return a4->sin_addr.s_addr == sa->sa_ipv4.sin_addr.s_addr &&
+          a4->sin_port == sa->sa_ipv4.sin_port;
       } else
         return 0;
       break;

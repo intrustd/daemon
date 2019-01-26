@@ -2,35 +2,35 @@
   imports = [ ./supervisord.nix ./permissions.nix ] ; # ./activation.nix ];
 
   options = with lib; {
-    kite.identifier = mkOption {
+    app.identifier = mkOption {
       type = types.string;
       description = "App domain URI";
     };
 
-    kite.version.major = mkOption {
+    app.version.major = mkOption {
       type = types.ints.unsigned;
       description = "Major version number";
       default = 0;
     };
 
-    kite.version.minor = mkOption {
+    app.version.minor = mkOption {
       type = types.ints.unsigned;
       description = "Minor version number";
       default = 0;
     };
 
-    kite.version.revision = mkOption {
+    app.version.revision = mkOption {
       type = types.ints.unsigned;
       description = "Revision version number";
     };
 
-    kite.environment = mkOption {
+    app.environment = mkOption {
       type = types.attrsOf types.string;
       description = "Environment variables shared between all running processes in this container";
       default = {};
     };
 
-    kite.binaryCaches = mkOption {
+    app.binaryCaches = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
           url = mkOption {
@@ -57,23 +57,23 @@
       description = "List of binary caches";
     };
 
-    kite.startHook = mkOption {
+    app.startHook = mkOption {
       type = types.string;
-      description = "Script to run when kite wants to start this application";
+      description = "Script to run when applianced wants to start this application";
     };
 
-    kite.healthCheckHook = mkOption {
+    app.healthCheckHook = mkOption {
       type = types.string;
-      description = "Script to run when kite wants to run a health check on this application";
+      description = "Script to run when applianced wants to run a health check on this application";
     };
 
-    kite.permsHook = mkOption {
+    app.permsHook = mkOption {
       type = types.nullOr types.string;
       description = "Script to run to get information on app permissions";
       default = null;
     };
 
-    kite.bindMounts = mkOption {
+    app.bindMounts = mkOption {
       type = types.listOf types.string;
       default = [];
       description = ''
@@ -81,7 +81,7 @@
       '';
     };
 
-    kite.runAsAdmin = mkOption {
+    app.runAsAdmin = mkOption {
       type = types.bool;
       default = false;
       description = ''
@@ -95,7 +95,7 @@
       '';
     };
 
-    kite.singleton = mkOption {
+    app.singleton = mkOption {
       type = types.bool;
       default = false;
       description = ''
@@ -105,7 +105,7 @@
       '';
     };
 
-    kite.systemPackages = mkOption {
+    app.systemPackages = mkOption {
       type = types.listOf types.package;
       default = [];
       example = literalExample "[ pkgs.bind ]";
@@ -116,27 +116,27 @@
       '';
     };
 
-    kite.pathsToLink = mkOption {
+    app.pathsToLink = mkOption {
       type = types.listOf types.str;
       default = [];
       example = [ "/" ];
       description = "The list of paths to link under the root directory";
     };
 
-    kite.extraOutputsToInstall = mkOption {
+    app.extraOutputsToInstall = mkOption {
       type = types.listOf types.str;
       default = [];
       example = [ "info" "dev" ];
       description = "List of additional derivation outputs to be linked to root directory";
     };
 
-    kite.toplevel = mkOption {
+    app.toplevel = mkOption {
       type = types.package;
       internal = true;
       description = "The top-level package";
     };
 
-    kite.meta = mkOption {
+    app.meta = mkOption {
       type = types.submodule {
         options = {
           slug = mkOption {
@@ -171,7 +171,7 @@
   };
 
   config = {
-    kite.systemPackages = with pkgs; [
+    app.systemPackages = with pkgs; [
       utillinux
       coreutils
       getconf
@@ -180,7 +180,7 @@
       iproute
     ];
 
-    kite.pathsToLink = [
+    app.pathsToLink = [
       "/bin"
       "/etc/xdg"
       "/etc/gtk-2.0"
@@ -203,28 +203,28 @@
       "/share/kxmlgui5"
     ];
 
-    kite.binaryCaches = [
-      { url = "https://hydra.flywithkite.com/cache";
-        signatures = [ "cache.flywithkite.com-1:7JJMfk9Vl5tetCyL8TnGSmo6IMvJypOlLv4Y7huDvDQ=" ];
+    app.binaryCaches = [
+      { url = "https://hydra.intrustd.com/cache";
+        signatures = [ "cache.intrustd.com-1:7JJMfk9Vl5tetCyL8TnGSmo6IMvJypOlLv4Y7huDvDQ=" ];
         type = "system";
         priority = 1000000; }
     ];
 
-    kite.version.revision = builtins.currentTime;
+    app.version.revision = builtins.currentTime;
 
-    kite.toplevel =
-      let startScript = pkgs.writeScript "${config.kite.meta.slug}-start-script" ''
+    app.toplevel =
+      let startScript = pkgs.writeScript "${config.app.meta.slug}-start-script" ''
             #!/bin/sh
             source /etc/profile
-            ${config.kite.startHook}
+            ${config.app.startHook}
           '';
-          healthCheckScript = pkgs.writeScript "${config.kite.meta.slug}-health-check" ''
+          healthCheckScript = pkgs.writeScript "${config.app.meta.slug}-health-check" ''
             #!/bin/sh
             source /etc/profile
-            ${config.kite.healthCheckHook}
+            ${config.app.healthCheckHook}
           '';
-          permsScript = pkgs.writeScript "${config.kite.meta.slug}-perms"
-            (if config.kite.permsHook == null
+          permsScript = pkgs.writeScript "${config.app.meta.slug}-perms"
+            (if config.app.permsHook == null
              then ''
                #!/bin/sh
                exit 10
@@ -232,7 +232,7 @@
              else ''
                #!/bin/sh
                source /etc/profile
-               exec ${config.kite.permsHook} "$@"
+               exec ${config.app.permsHook} "$@"
              '');
 
           cmpPrio = a: b: a.priority < b.priority;
@@ -243,13 +243,13 @@
                 else if !(builtins.isNull perm.regex)
                      then base // { inherit regex; }
                      else builtins.abort "Either name or regex must be specified in permission";
-          sortedPermissions = map mkPermission (lib.sort cmpPrio config.kite.permissions);
-          kitePermissions = pkgs.writeText "permissions.json" (builtins.toJSON sortedPermissions);
+          sortedPermissions = map mkPermission (lib.sort cmpPrio config.app.permissions);
+          appPermissions = pkgs.writeText "permissions.json" (builtins.toJSON sortedPermissions);
       in pkgs.buildEnv {
-           name = "kite-environment-${config.kite.meta.slug}";
+           name = "intrustd-environment-${config.app.meta.slug}";
            ignoreCollisions = true;
-           paths = config.kite.systemPackages;
-           inherit (config.kite) pathsToLink extraOutputsToInstall;
+           paths = config.app.systemPackages;
+           inherit (config.app) pathsToLink extraOutputsToInstall;
 
            postBuild = ''
              mkdir -p $out/dev
@@ -257,7 +257,7 @@
              mkdir -p $out/proc
              mkdir -p $out/dev
              mkdir -p $out/sys
-             mkdir -p $out/kite
+             mkdir -p $out/intrustd
              mkdir -p $out/app
              mkdir -p $out/run
              mkdir -p $out/etc
@@ -268,21 +268,21 @@
              ln -s ${healthCheckScript} $out/app/hc
              ln -s ${startScript} $out/app/start
              ln -s ${permsScript} $out/app/perms
-             ln -s ${kitePermissions} $out/permissions.json
+             ln -s ${appPermissions} $out/permissions.json
 
              cat >$out/etc/profile <<EOF
-             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: val: "export ${name}=\"${val}\"") config.kite.environment)}
+             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: val: "export ${name}=\"${val}\"") config.app.environment)}
              EOF
              chmod +x $out/etc/profile
 
              cat >$out/etc/passwd <<EOF
-             root:x:0:0:System administrator:/kite:${pkgs.bash}/bin/bash
-             kite:x:1000:100:Kite user:/kite:${pkgs.bash}/bin/bash
+             root:x:0:0:System administrator:/intrustd:${pkgs.bash}/bin/bash
+             intrustd:x:1000:100:Intrustd user:/intrustd:${pkgs.bash}/bin/bash
              EOF
 
              cat >$out/etc/group <<EOF
              root:x:0:
-             kite:x:100:
+             intrustd:x:100:
              EOF
 
              ln -s /run/hosts $out/etc/hosts

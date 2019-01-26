@@ -1,4 +1,4 @@
-# Stork flock protocol
+# Intrustd flock protocol
 
 Appliances connect to a flock using the flock protocol. The flock
 protocol is run over UDP. Reliability is ensured via retransmissions.

@@ -7,7 +7,7 @@
 static void usage(const char *msg) {
   if ( msg ) fprintf(stderr, "Error: %s\n", msg);
 
-  fprintf(stderr, "flockd - Flock server for stork/kite appliances\n");
+  fprintf(stderr, "flockd - Flock server for intrustd appliances\n");
   fprintf(stderr, "Usage: flockd [OPTION]...\n\n");
   fprintf(stderr, "Options:\n");
   fprintf(stderr,

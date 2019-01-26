@@ -36,8 +36,8 @@ int main(int argc, char **argv) {
   if ( appstate_setup(&state, &configuration) < 0 )
     return 2;
 
-  if ( configuration.ac_kite_packet_file )
-    bridge_enable_debug(&state.as_bridge, configuration.ac_kite_packet_file);
+  if ( configuration.ac_dump_packet_file )
+    bridge_enable_debug(&state.as_bridge, configuration.ac_dump_packet_file);
 
   //  eventloop_set_debug(&state.as_eventloop, EL_FLAG_DEBUG | EL_FLAG_DEBUG_VERBOSE);
 

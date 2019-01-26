@@ -7,7 +7,7 @@
 #include "util.h"
 #include "container.h"
 
-#define APP_SCHEME   "kite+app"
+#define APP_SCHEME   "intrustd+app"
 #define APP_MANIFEST_MAX_SIZE (64 * 1024)
 
 #define APP_FORCE_RESET_TIMEOUT (2 * 60 * 1000) // Allow two minutes before force restarting an app

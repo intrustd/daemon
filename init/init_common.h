@@ -1,5 +1,5 @@
-#ifndef __stork_init_common_H__
-#define __stork_init_common_H__
+#ifndef __intrustd_init_common_H__
+#define __intrustd_init_common_H__
 
 #define COMM 3
 

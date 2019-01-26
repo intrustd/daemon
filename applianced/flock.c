@@ -242,7 +242,7 @@ static void flock_update_registration_message(struct flock *f, struct appstate *
   struct stunattr *a;
   int sz, err;
 
-  STUN_INIT_MSG(&f->f_registration_msg, STUN_KITE_REGISTRATION);
+  STUN_INIT_MSG(&f->f_registration_msg, STUN_INTRUSTD_REGISTRATION);
   memcpy(&f->f_registration_msg.sm_tx_id, &f->f_last_registration_tx, sizeof(f->f_registration_msg.sm_tx_id));
 
   a = STUN_FIRSTATTR(&f->f_registration_msg);
@@ -368,13 +368,13 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, pkt_sz); attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
-    case STUN_ATTR_KITE_PERSONAS_HASH:
+    case STUN_ATTR_INTRUSTD_PERSONAS_HASH:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(personas_hash) ) {
         has_personas = 1;
         memcpy(personas_hash, STUN_ATTR_DATA(attr), sizeof(personas_hash));
       }
       break;
-    case STUN_ATTR_KITE_PERSONAS_OFFS:
+    case STUN_ATTR_INTRUSTD_PERSONAS_OFFS:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(offs) ) {
         offs = ntohl(*(uint32_t *) STUN_ATTR_DATA(attr));
       }
@@ -407,11 +407,11 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
     struct stunattr *next_attr;
 
     // If it is transfer as much as possible
-    STUN_INIT_MSG(&rsp, STUN_RESPONSE | STUN_KITE_GET_PERSONAS);
+    STUN_INIT_MSG(&rsp, STUN_RESPONSE | STUN_INTRUSTD_GET_PERSONAS);
     memcpy(&rsp.sm_tx_id, &msg->sm_tx_id, sizeof(rsp.sm_tx_id));
     attr = STUN_FIRSTATTR(&rsp);
     assert(STUN_IS_VALID(attr, &rsp, sizeof(rsp)));
-    STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_HASH, sizeof(personas_hash));
+    STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_HASH, sizeof(personas_hash));
     assert(STUN_ATTR_IS_VALID(attr, &rsp, sizeof(rsp)));
     memcpy(STUN_ATTR_DATA(attr), personas_hash, sizeof(personas_hash));
 
@@ -421,14 +421,14 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
 
     attr = STUN_NEXTATTR(attr);
     assert(STUN_IS_VALID(attr, &rsp, sizeof(rsp)));
-    STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_OFFS, sizeof(offs));
+    STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_OFFS, sizeof(offs));
     assert(STUN_ATTR_IS_VALID(attr, &rsp, sizeof(rsp)));
     *((uint32_t *) STUN_ATTR_DATA(attr)) = htonl(offs);
 
     // Set size
     attr = STUN_NEXTATTR(attr);
     assert(STUN_IS_VALID(attr, &rsp, sizeof(rsp)));
-    STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_SIZE, sizeof(uint32_t));
+    STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_SIZE, sizeof(uint32_t));
     assert(STUN_ATTR_IS_VALID(attr, &rsp, sizeof(rsp)));
     *((uint32_t *) STUN_ATTR_DATA(attr)) = htonl(personas->ps_buf_sz);
 
@@ -442,7 +442,7 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
     if ( chunk_sz > 0 ) {
       attr = next_attr;
       assert(STUN_IS_VALID(attr, &rsp, sizeof(rsp)));
-      STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_DATA, chunk_sz);
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_DATA, chunk_sz);
       memcpy(STUN_ATTR_DATA(attr), personas->ps_buf + offs, chunk_sz);
     }
 
@@ -451,10 +451,10 @@ static int flock_process_get_personas(struct flock *f, struct appstate *app,
     assert(err == 0);
     (void)err; // Prevent unused error on release
   } else {
-    STUN_INIT_MSG(&rsp, STUN_RESPONSE | STUN_ERROR | STUN_KITE_GET_PERSONAS);
+    STUN_INIT_MSG(&rsp, STUN_RESPONSE | STUN_ERROR | STUN_INTRUSTD_GET_PERSONAS);
     attr = STUN_FIRSTATTR(&rsp);
     assert(STUN_IS_VALID(attr, &rsp, sizeof(rsp)));
-    STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_HASH, sizeof(personas_hash));
+    STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_HASH, sizeof(personas_hash));
     assert(STUN_ATTR_IS_VALID(attr, &rsp, sizeof(rsp)));
     memcpy(STUN_ATTR_DATA(attr), personas_hash, sizeof(personas_hash));
 
@@ -486,17 +486,17 @@ static int flock_process_sendoffer(struct flock *f, struct appstate *app,
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, pkt_sz); attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
-    case STUN_ATTR_KITE_CONN_ID:
+    case STUN_ATTR_INTRUSTD_CONN_ID:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(conn_id) ) {
         conn_id = ntohll(*((uint64_t *) STUN_ATTR_DATA(attr)));
       }
       break;
-    case STUN_ATTR_KITE_SDP_LINE:
+    case STUN_ATTR_INTRUSTD_SDP_LINE:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(uint16_t) ) {
         line = ntohs(*((uint16_t *) STUN_ATTR_DATA(attr)));
       }
       break;
-    case STUN_ATTR_KITE_ANSWER:
+    case STUN_ATTR_INTRUSTD_ANSWER:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) > sizeof(answer_offs) ) {
         memcpy(&answer_offs, STUN_ATTR_DATA(attr), sizeof(answer_offs));
         answer_offs = ntohs(answer_offs);
@@ -550,7 +550,7 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, pkt_sz); attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
-    case STUN_ATTR_KITE_CONN_ID:
+    case STUN_ATTR_INTRUSTD_CONN_ID:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(conn_id) ) {
         conn_id = ntohll(*((uint64_t *) STUN_ATTR_DATA(attr)));
       }
@@ -628,11 +628,11 @@ static int flock_process_request(struct flock *f, struct appstate *app,
   }
 
   switch ( STUN_REQUEST_TYPE(msg) ) {
-  case STUN_KITE_STARTCONN:
+  case STUN_INTRUSTD_STARTCONN:
     return flock_process_startconn(f, app, msg, pkt_sz);
-  case STUN_KITE_GET_PERSONAS:
+  case STUN_INTRUSTD_GET_PERSONAS:
     return flock_process_get_personas(f, app, msg, pkt_sz);
-  case STUN_KITE_SENDOFFER:
+  case STUN_INTRUSTD_SENDOFFER:
     // We have requested more offer data
     return flock_process_sendoffer(f, app, msg, pkt_sz);
   default:
@@ -878,7 +878,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
 
       if ( FD_READ_PENDING(fd_ev) ) {
         dbgprintf("Read pending on flock socket\n");
-        err = flock_receive_response(f, as, STUN_KITE_REGISTRATION);
+        err = flock_receive_response(f, as, STUN_INTRUSTD_REGISTRATION);
         if ( err < 0 ) {
           fprintf(stderr, "Invalid binding response or request\n");
         } else if ( err == STUN_TOO_EARLY ) {

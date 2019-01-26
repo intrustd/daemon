@@ -10,17 +10,17 @@ struct dnshdr {
   uint16_t dh_ancount;
   uint16_t dh_nscount;
   uint16_t dh_arcount;
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 struct dnsqname {
   uint16_t dqn_len;
   char     dqn_data[];
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 struct dnsqdsuffix {
   uint16_t dqs_type;
   uint16_t dqs_class;
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 struct dnsansuffix {
   uint16_t das_type;
@@ -28,7 +28,7 @@ struct dnsansuffix {
   uint16_t das_ttl;
   uint16_t das_rdlength;
   char     das_rdata[];
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 #define DNS_TYPE_A    0x0001
 #define DNS_TYPE_AAAA 0x001C

@@ -31,7 +31,7 @@
 #define APPS_PATH_TEMPLATE "%s/apps"
 #define TMP_APPS_PATH_TEMPLATE "%s/.apps.tmp"
 
-#define KITE_ADMIN_URL "admin.flywithkite.com"
+#define ADMIN_APP_URL "admin.intrustd.com"
 
 int g_openssl_appstate_ix;
 int g_openssl_flock_data_ix;
@@ -484,7 +484,7 @@ static int appstate_open_local(struct appstate *as, struct appconf *ac) {
   }
 
   addr.sun_family = AF_UNIX;
-  err = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/" KITE_LOCAL_API_SOCK, ac->ac_conf_dir);
+  err = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/" APPLIANCED_LOCAL_API_SOCK, ac->ac_conf_dir);
   if ( err >= sizeof(addr.sun_path) ) {
     fprintf(stderr, "appstate_open_local: overflowed sockaddr_un sun_path\n");
     goto error;
@@ -1062,7 +1062,7 @@ int appstate_setup(struct appstate *as, struct appconf *ac) {
     //
     // The parent becomes the bridge controller.
     err = bridge_init(&as->as_bridge, as, our_uid,
-                      ac->ac_kite_user, ac->ac_kite_user_group,
+                      ac->ac_app_user, ac->ac_app_user_group,
                       ac->ac_daemon_user, ac->ac_daemon_group,
                       ac->ac_iproute_bin, ac->ac_ebroute_bin);
     if ( err < 0 ) {
@@ -1614,7 +1614,7 @@ int appstate_lookup_persona(struct appstate *as, const char *pid, struct persona
 }
 
 int appstate_get_personaset(struct appstate *as, struct personaset **ps) {
-  static const char *kite_personas_hdr = "KITE PERSONAS\n";
+  static const char *personas_hdr = "INTRUSTD PERSONAS\n";
   struct persona *cur_persona, *tmp_persona;
   int ret = 0;
 
@@ -1632,7 +1632,7 @@ int appstate_get_personaset(struct appstate *as, struct personaset **ps) {
 
     buffer_init(&b);
 
-    buffer_write(&b, kite_personas_hdr, strlen(kite_personas_hdr));
+    buffer_write(&b, personas_hdr, strlen(personas_hdr));
 
     HASH_ITER(p_hh, as->as_personas, cur_persona, tmp_persona) {
       if ( persona_write_as_vcard(cur_persona, &b) < 0 ) {
@@ -1971,7 +1971,7 @@ void appstate_update_application_state(struct appstate *as, struct app *a) {
         a->app_flags |= APP_FLAG_SINGLETON;
 
       // TODO manual autostart
-      if ( strcmp(a->app_domain, KITE_ADMIN_URL) == 0 ) {
+      if ( strcmp(a->app_domain, ADMIN_APP_URL) == 0 ) {
         fprintf(stderr, "Setting as autostart %s\n", a->app_domain);
         a->app_flags |= APP_FLAG_AUTOSTART;
       }

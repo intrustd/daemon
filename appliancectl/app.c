@@ -12,12 +12,12 @@ static int register_app_usage() {
 }
 
 int register_app(int argc, char **argv) {
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
   char *app_manifest;
   const char *signature = NULL;
-  struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
-  struct kitelocalattr *attr = KLM_FIRSTATTR(msg, sizeof(buf));
-  int sz = KLM_SIZE_INIT, sk, err, c, do_force = 0, show_progress = 0;
+  struct applocalmsg *msg = (struct applocalmsg *)buf;
+  struct applocalattr *attr = ALM_FIRSTATTR(msg, sizeof(buf));
+  int sz = ALM_SIZE_INIT, sk, err, c, do_force = 0, show_progress = 0;
 
   while ( (c = getopt(argc, argv, "hfPS:")) ) {
     if ( c == -1 ) break;
@@ -49,40 +49,40 @@ int register_app(int argc, char **argv) {
 
   app_manifest = argv[optind];
 
-  msg->klm_req = ntohs(KLM_REQ_CREATE | KLM_REQ_ENTITY_APP);
-  msg->klm_req_flags = 0;
+  msg->alm_req = ntohs(ALM_REQ_CREATE | ALM_REQ_ENTITY_APP);
+  msg->alm_req_flags = 0;
 
-  attr->kla_name = ntohs(KLA_APP_MANIFEST_URL);
-  attr->kla_length = ntohs(KLA_SIZE(strlen(app_manifest)));
-  memcpy(KLA_DATA_UNSAFE(attr, char*), app_manifest, strlen(app_manifest));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = ntohs(ALA_APP_MANIFEST_URL);
+  attr->ala_length = ntohs(ALA_SIZE(strlen(app_manifest)));
+  memcpy(ALA_DATA_UNSAFE(attr, char*), app_manifest, strlen(app_manifest));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   if ( do_force ) {
-    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
     assert(attr);
-    attr->kla_name = ntohs(KLA_FORCE);
-    attr->kla_length = ntohs(KLA_SIZE(0));
-    KLM_SIZE_ADD_ATTR(sz, attr);
+    attr->ala_name = ntohs(ALA_FORCE);
+    attr->ala_length = ntohs(ALA_SIZE(0));
+    ALM_SIZE_ADD_ATTR(sz, attr);
   }
 
   if ( signature ) {
-    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
     assert(attr);
-    attr->kla_name = ntohs(KLA_APP_SIGNATURE_URL);
-    attr->kla_length = ntohs(KLA_SIZE(strlen(signature)));
-    memcpy(KLA_DATA_UNSAFE(attr, char*), signature, strlen(signature));
-    KLM_SIZE_ADD_ATTR(sz, attr);
+    attr->ala_name = ntohs(ALA_APP_SIGNATURE_URL);
+    attr->ala_length = ntohs(ALA_SIZE(strlen(signature)));
+    memcpy(ALA_DATA_UNSAFE(attr, char*), signature, strlen(signature));
+    ALM_SIZE_ADD_ATTR(sz, attr);
   }
 
   if ( show_progress ) {
     uint8_t fdidx = 0;
 
-    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
     assert(attr);
-    attr->kla_name = ntohs(KLA_STDOUT);
-    attr->kla_length = ntohs(KLA_SIZE(sizeof(fdidx)));
-    memcpy(KLA_DATA_UNSAFE(attr, char*), &fdidx, sizeof(fdidx));
-    KLM_SIZE_ADD_ATTR(sz, attr);
+    attr->ala_name = ntohs(ALA_STDOUT);
+    attr->ala_length = ntohs(ALA_SIZE(sizeof(fdidx)));
+    memcpy(ALA_DATA_UNSAFE(attr, char*), &fdidx, sizeof(fdidx));
+    ALM_SIZE_ADD_ATTR(sz, attr);
   }
 
   sk = mk_api_socket();
@@ -110,7 +110,7 @@ int register_app(int argc, char **argv) {
     return 2;
   }
 
-  if ( display_stork_response(buf, err, "Successfully registered application\n") < 0 )
+  if ( display_intrustd_response(buf, err, "Successfully registered application\n") < 0 )
     return EXIT_FAILURE;
 
   return EXIT_SUCCESS;

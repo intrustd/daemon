@@ -368,15 +368,15 @@ static int aipf_write_pkt(struct fcspktwriter *pw, char *buf, int *sz) {
 
   if ( !STUN_IS_VALID(attr, msg, max_req_sz) ) return -1;
 
-  STUN_INIT_MSG(msg, STUN_KITE_GET_PERSONAS);
+  STUN_INIT_MSG(msg, STUN_INTRUSTD_GET_PERSONAS);
   memcpy(&msg->sm_tx_id, &aipf->aipf_tx_id, sizeof(msg->sm_tx_id));
-  STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_HASH, sizeof(aipf->aipf_fetcher.pf_hash));
+  STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_HASH, sizeof(aipf->aipf_fetcher.pf_hash));
   if ( !STUN_ATTR_IS_VALID(attr, msg, max_req_sz) ) return -1;
   memcpy((char *) STUN_ATTR_DATA(attr), aipf->aipf_fetcher.pf_hash, sizeof(aipf->aipf_fetcher.pf_hash));
 
   attr = STUN_NEXTATTR(attr);
   if ( !STUN_IS_VALID(attr, msg, max_req_sz) ) return -1;
-  STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_OFFS, sizeof(aipf->aipf_offset));
+  STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_OFFS, sizeof(aipf->aipf_offset));
   if ( !STUN_ATTR_IS_VALID(attr, msg, max_req_sz) ) return -1;
   *((uint32_t *) STUN_ATTR_DATA(attr)) = htonl(aipf->aipf_offset);
 
@@ -410,19 +410,19 @@ int applianceinfo_receive_persona_response(struct applianceinfo *info,
         STUN_IS_VALID(attr, msg, buf_sz);
         attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
-    case STUN_ATTR_KITE_PERSONAS_HASH:
+    case STUN_ATTR_INTRUSTD_PERSONAS_HASH:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == SHA256_DIGEST_LENGTH )
         rsp.grs_personas_hash = STUN_ATTR_DATA(attr);
       break;
-    case STUN_ATTR_KITE_PERSONAS_OFFS:
+    case STUN_ATTR_INTRUSTD_PERSONAS_OFFS:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(rsp.grs_offs) )
         rsp.grs_offs = ntohl(*((uint32_t *) STUN_ATTR_DATA(attr)));
       break;
-    case STUN_ATTR_KITE_PERSONAS_SIZE:
+    case STUN_ATTR_INTRUSTD_PERSONAS_SIZE:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(rsp.grs_length) )
         rsp.grs_length = ntohl(*((uint32_t *) STUN_ATTR_DATA(attr)));
       break;
-    case STUN_ATTR_KITE_PERSONAS_DATA:
+    case STUN_ATTR_INTRUSTD_PERSONAS_DATA:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) > 0 ) {
         rsp.grs_payload = STUN_ATTR_DATA(attr);
         rsp.grs_payload_length = STUN_ATTR_PAYLOAD_SZ(attr);

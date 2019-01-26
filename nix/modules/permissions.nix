@@ -34,14 +34,14 @@ let permissionsType = with lib; types.submodule {
     };
 in {
   options = with lib; {
-    kite.permissions = mkOption {
+    app.permissions = mkOption {
       type = types.listOf permissionsType;
       description = "Permissions for this application";
     };
   };
 
   config = {
-    kite.permissions = [
+    app.permissions = [
       { name = "admin";
         priority = 10000;
         description = "Have full admin rights"; }

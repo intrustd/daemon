@@ -45,7 +45,7 @@ let servicesType = with lib; {
 in {
 
   options = with lib; {
-    kite.services = mkOption {
+    app.services = mkOption {
       type = types.attrsOf (types.submodule servicesType);
       description = "Service configurations";
     };
@@ -96,13 +96,13 @@ in {
             stderr_logfile=/var/log/${name}-stderr.log
           '';
 
-        serviceConfigs = lib.mapAttrsToList mkServiceConfig config.kite.services;
+        serviceConfigs = lib.mapAttrsToList mkServiceConfig config.app.services;
     in {
-      kite.startHook = ''
+      app.startHook = ''
         exec ${pkgs.pythonPackages.supervisor}/bin/supervisord -c ${supervisorConfig} -n
       '';
 
-      kite.healthCheckHook = ''
+      app.healthCheckHook = ''
         exec ${pkgs.pythonPackages.supervisor}/bin/supervisorctl -c ${supervisorConfig} status
       '';
     };

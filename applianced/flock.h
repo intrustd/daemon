@@ -16,7 +16,7 @@
 #define FLOCK_MAX_CERT_DEPTH      16
 
 #define FLOCK_DEFAULT_PORT 6854
-#define FLOCK_URI_SCHEME "kite+flock"
+#define FLOCK_URI_SCHEME "intrustd+flock"
 #define STUN_URI_SCHEME  "stun"
 #define STUNS_URI_SCHEME "stuns"
 
@@ -119,8 +119,8 @@ struct flock {
 #define FLOCK_FLAG_VALIDATE_CERT      0x40
 // Only use STUN to connect to this flock
 #define FLOCK_FLAG_STUN_ONLY          0x80
-// Only use this flock for kite registration
-#define FLOCK_FLAG_KITE_ONLY          0x100
+// Only use this flock for intrustd registration
+#define FLOCK_FLAG_INTRUSTD_ONLY      0x100
 // The flock encountered a conflict during registration
 #define FLOCK_FLAG_CONFLICT           0x200
 

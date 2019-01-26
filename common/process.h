@@ -1,5 +1,5 @@
-#ifndef __kite_process_H__
-#define __kite_process_H__
+#ifndef __intrustd_process_H__
+#define __intrustd_process_H__
 
 #include <stdlib.h>
 #include <stdio.h>

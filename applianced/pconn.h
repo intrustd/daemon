@@ -58,8 +58,8 @@ struct icecand {
   int ic_type;
   uint32_t ic_priority;
 
-  kite_sock_addr ic_addr;
-  kite_sock_addr ic_raddr;
+  intrustd_sock_addr ic_addr;
+  intrustd_sock_addr ic_raddr;
 
   // If a local candidate, the index into the candidate_source array that generated this candidate.
   //
@@ -69,8 +69,8 @@ struct icecand {
 
 #define ICECAND_CAN_PAIR(a, b)                                          \
   (((a)->ic_component == (b)->ic_component) &&                          \
-   ((a)->ic_addr.ksa.sa_family == (b)->ic_addr.ksa.sa_family) &&        \
-   (a)->ic_addr.ksa.sa_family != AF_UNSPEC)
+   ((a)->ic_addr.sa.sa_family == (b)->ic_addr.sa.sa_family) &&        \
+   (a)->ic_addr.sa.sa_family != AF_UNSPEC)
 uint64_t icecand_pair_priority(struct pconn *pc, struct icecand *local, struct icecand *remote);
 int icecand_equivalent(struct icecand *a, struct icecand *b);
 

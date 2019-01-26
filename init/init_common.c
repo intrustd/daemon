@@ -35,7 +35,7 @@ void sigterm_handler(int sig) {
 }
 
 void sighup_handler(int sig) {
-  static const char msg[] = "Exiting due to storkd exit\n";
+  static const char msg[] = "Exiting due to applianced exit\n";
   write(STDERR_FILENO, msg, strlen(msg));
 
   exit(0);

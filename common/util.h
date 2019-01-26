@@ -38,9 +38,9 @@
 # endif
 #endif
 
-#define KITE_PACKED __attribute__((packed))
+#define INTRUSTD_PACKED __attribute__((packed))
 
-#define KITE_APPLIANCE_NAME_MAX 256
+#define INTRUSTD_APPLIANCE_NAME_MAX 256
 
 #define SWAP(a, b)                                                      \
   if (1) {                                                              \
@@ -347,12 +347,12 @@ void dump_address(FILE *f, void *addr, socklen_t addr_sz);
 
 // Our own custom socket address structure for all the types we're interested in
 typedef union {
-  struct sockaddr ksa;
-  struct sockaddr_in ksa_ipv4;
-  struct sockaddr_in6 ksa_ipv6;
-} kite_sock_addr;
+  struct sockaddr sa;
+  struct sockaddr_in sa_ipv4;
+  struct sockaddr_in6 sa_ipv6;
+} intrustd_sock_addr;
 
-int kite_sock_addr_equal(kite_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz);
+int intrustd_sock_addr_equal(intrustd_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz);
 
 void print_hex_dump_fp(FILE *fp, const unsigned char *data, int data_sz);
 

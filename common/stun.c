@@ -270,7 +270,7 @@ struct stunmappedaddress {
   uint16_t sma_type;
   uint16_t sma_port;
   char     sma_data[];
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 int stun_add_mapped_address_attr(struct stunattr *attr, struct stunmsg *msg, int max_msg_sz,
                                  uint16_t attr_type, unsigned char *xor_value,

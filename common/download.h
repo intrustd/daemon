@@ -1,5 +1,5 @@
-#ifndef __kite_download_H__
-#define __kite_download_H__
+#ifndef __intrustd_download_H__
+#define __intrustd_download_H__
 
 #include <uriparser/Uri.h>
 #include <curl/curl.h>

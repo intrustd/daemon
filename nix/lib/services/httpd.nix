@@ -1,7 +1,7 @@
 pkgs:
 { name ? "default",
   stateDir ? "/run/apache-${name}",
-  logDir ? "/kite/logs/apache-${name}",
+  logDir ? "/intrustd/logs/apache-${name}",
   apache ? pkgs.apacheHttpd,
   root,
   php ? pkgs.php,
@@ -49,8 +49,8 @@ let allDenied = ''
       ServerName localhost
       Listen ${toString port}
 
-      User kite
-      Group kite
+      User intrustd
+      Group intrustd
 
       DefaultRuntimeDir ${stateDir}/runtime
       PidFile ${stateDir}/apache.pid

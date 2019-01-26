@@ -1,4 +1,4 @@
-#define _XOPEN_SOURCE 600
+#define _XOPEN_SOURCE 800
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -75,11 +75,11 @@ void update_hosts() {
 
   fprintf(f, "127.0.0.1 localhost\n");
   fprintf(f, "::1 localhost\n");
-  fprintf(f, "127.0.0.1 %s.kite.local\n", g_app_url);
-  fprintf(f, "::1 %s.kite.local\n", g_app_url);
+  fprintf(f, "127.0.0.1 %s.app.local\n", g_app_url);
+  fprintf(f, "::1 %s.app.local\n", g_app_url);
 
   DLIST_ITER(&g_hosts, ls, h, tmp) {
-    fprintf(f, "%s %s.kite.local\n", h->target, h->domain);
+    fprintf(f, "%s %s.app.local\n", h->target, h->domain);
   }
 
   fclose(f);
@@ -154,18 +154,18 @@ int modhost(int dir, const char *dom, size_t dom_sz, const char *tgt, size_t tgt
   return found;
 }
 
-// Perform the run stork init command
-pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
+// Perform the run intrustd init command
+pid_t do_run(struct appinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
   char *args, *end;
   char **argv = NULL, **envv = NULL;
   int i, err, fdix = 0, fstdin = -1, fstdout = -1, fstderr = -1, cur_envc = 0;
   pid_t child_pid, wait_pid;
 
-  int kite_pipe[2], wait_pipe[2];
+  int intrustd_pipe[2], wait_pipe[2];
 
   for ( ; environ[cur_envc]; ++cur_envc);
 
-  args = STK_ARGS(pkt);
+  args = APPINIT_ARGS(pkt);
   end = ((char *) pkt) + sz;
 
   if ( pkt->un.run.argc <= 1 ) { errno = EINVAL; goto err; }
@@ -200,15 +200,15 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     goto err;
   }
 
-  if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
-    err = pipe(kite_pipe);
+  if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT ) {
+    err = pipe(intrustd_pipe);
     if ( err < 0 ) {
       perror("pipe");
       goto err;
     }
   }
 
-  if ( pkt->sim_flags & STK_RUN_FLAG_WAIT ) {
+  if ( pkt->aim_flags & APPINIT_RUN_FLAG_WAIT ) {
     err = pipe(wait_pipe);
     if ( err < 0 ) {
       perror("pipe(wait_pipe)");
@@ -216,15 +216,15 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     }
   }
 
-  if ( pkt->sim_flags & STK_RUN_FLAG_STDIN ) {
+  if ( pkt->aim_flags & APPINIT_RUN_FLAG_STDIN ) {
     if ( fdix >= nfds ) goto not_enough_fds;
     fstdin = fds[fdix++];
   }
-  if ( pkt->sim_flags & STK_RUN_FLAG_STDOUT ) {
+  if ( pkt->aim_flags & APPINIT_RUN_FLAG_STDOUT ) {
     if ( fdix >= nfds ) goto not_enough_fds;
     fstdout = fds[fdix++];
   }
-  if ( pkt->sim_flags & STK_RUN_FLAG_STDERR ) {
+  if ( pkt->aim_flags & APPINIT_RUN_FLAG_STDERR ) {
     if ( fdix >= nfds ) goto not_enough_fds;
     fstderr = fds[fdix++];
   }
@@ -236,8 +236,8 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     sigset_t unblocked;
     sigfillset(&unblocked);
 
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
-      close(kite_pipe[0]);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT )
+      close(intrustd_pipe[0]);
 
     dbg_printf("Going to run");
     for ( i = 0; i < pkt->un.run.argc; ++i )
@@ -245,14 +245,14 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     fprintf(stderr, "\n");
 
     close(COMM);
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
-      err = dup2(kite_pipe[1], COMM);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT ) {
+      err = dup2(intrustd_pipe[1], COMM);
       if ( err < 0 ) {
-        perror("dup2(kite_pipe[1], COMM)");
+        perror("dup2(intrustd_pipe[1], COMM)");
         exit(EXIT_FAILURE);
       }
 
-      close(kite_pipe[1]);
+      close(intrustd_pipe[1]);
     }
 
     if ( sigprocmask(SIG_UNBLOCK, &unblocked, NULL) < 0 ) {
@@ -287,7 +287,7 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
       }
     }
 
-    if ( pkt->sim_flags & STK_RUN_FLAG_WAIT ) {
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_WAIT ) {
       struct sigaction new_sigchld;
       new_sigchld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
       new_sigchld.sa_handler = SIG_DFL;
@@ -302,7 +302,7 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
       wait_pid = child_pid;
       child_pid = fork();
       if ( child_pid < 0 ) {
-        perror("fork for STK_RUN_FLAG_WAIT");
+        perror("fork for APPINIT_RUN_FLAG_WAIT");
         exit(EXIT_FAILURE);
       } else if ( child_pid > 0 ) {
         int child_sts;
@@ -334,9 +334,9 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
   } else {
     uint8_t sts;
 
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
-      close(kite_pipe[1]);
-    if ( pkt->sim_flags & STK_RUN_FLAG_WAIT ) {
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT )
+      close(intrustd_pipe[1]);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_WAIT ) {
       close(wait_pipe[1]);
       *waitfd = wait_pipe[0];
     } else
@@ -348,13 +348,13 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
     if ( fstdout > 0 ) close(fstdout);
     if ( fstderr > 0 ) close(fstderr);
 
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
-      err = read(kite_pipe[0], &sts, 1);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT ) {
+      err = read(intrustd_pipe[0], &sts, 1);
       if ( err != 1 ) {
-        perror("read(kite_pipe[0])");
+        perror("read(intrustd_pipe[0])");
       }
 
-      close(kite_pipe[0]);
+      close(intrustd_pipe[0]);
     }
   }
 
@@ -373,7 +373,7 @@ pid_t do_run(struct stkinitmsg *pkt, int sz, int *fds, int nfds, int *waitfd) {
 }
 
 void run_start_script() {
-  pid_t child = vfork();
+  pid_t child = fork();
   if ( child == 0 ) {
     execl(START_SCRIPT_PATH, "start", g_persona_id, NULL);
     exit(2);
@@ -386,9 +386,9 @@ void run_start_script() {
 
 void do_healthcheck() {
   if ( g_status == HC_HEALTHY || g_status == HC_ERRORING ) {
-    pid_t child = vfork();
+    pid_t child = fork();
     if ( child < 0 ) {
-      perror("vfork");
+      perror("fork");
       exit(4);
     } else if ( child == 0 ) {
       execl(HC_SCRIPT_PATH, "hc", g_persona_id, NULL);
@@ -501,13 +501,13 @@ static void clear_tmp() {
 }
 
 void usage() {
-  fprintf(stderr, "app-instance-init - stork init process for app instance containers\n");
+  fprintf(stderr, "app-instance-init - intrustd init process for app instance containers\n");
   fprintf(stderr, "usage: app-instance-init <persona-id> <app-name> <app-domain>\n");
 }
 
 int main(int argc, char **argv) {
   char *buf;
-  struct stkinitmsg *pkt;
+  struct appinitmsg *pkt;
   int n;
   int8_t sts = 1;
 
@@ -542,13 +542,13 @@ int main(int argc, char **argv) {
   clear_tmp();
   update_hosts();
 
-  // Set cwd to /kite
-  if ( chdir("/kite/") < 0 ) {
+  // Set cwd to /intrustd
+  if ( chdir("/intrustd/") < 0 ) {
     perror("app_instance_init: chdir");
     return 3;
   }
 
-  dbg_printf("Changed directory to /kite\n");
+  dbg_printf("Changed directory to /intrustd\n");
 
   setup_signals();
   setup_custom_signals();
@@ -583,13 +583,13 @@ int main(int argc, char **argv) {
 
   run_start_script();
 
-  buf = malloc(STK_MAX_PKT_SZ);
+  buf = malloc(APPINIT_MAX_PKT_SZ);
   if ( !buf ) {
-    perror("malloc(STK_MAX_PKT_SZ)");
+    perror("malloc(APPINIT_MAX_PKT_SZ)");
     return 1;
   }
 
-  pkt = (struct stkinitmsg *)buf;
+  pkt = (struct appinitmsg *)buf;
   n = send(COMM, &sts, 1, 0);
   if ( n == -1 ) {
     perror("send");
@@ -602,7 +602,7 @@ int main(int argc, char **argv) {
     int fds[3], nfds = 0, i, waitfd = -1, err;
     struct cmsghdr *cmsg;
     struct iovec iov = { .iov_base = buf,
-                         .iov_len = STK_MAX_PKT_SZ };
+                         .iov_len = APPINIT_MAX_PKT_SZ };
     struct msghdr msg = {
       .msg_flags = 0,
       .msg_name = NULL,
@@ -636,8 +636,8 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    switch ( pkt->sim_req ) {
-    case STK_REQ_RUN:
+    switch ( pkt->aim_req ) {
+    case APPINIT_REQ_RUN:
       for ( cmsg = CMSG_FIRSTHDR(&msg); cmsg;
             cmsg = CMSG_NXTHDR(&msg, cmsg) ) {
         if ( cmsg->cmsg_level == SOL_SOCKET &&
@@ -686,7 +686,7 @@ int main(int argc, char **argv) {
 
       break;
 
-    case STK_REQ_MOD_HOST_ENTRY:
+    case APPINIT_REQ_MOD_HOST_ENTRY:
       if ( n < sizeof(*pkt) + pkt->un.modhost.dom_len + pkt->un.modhost.tgt_len ) {
         dbg_printf("Not enough data in mod host (%d, %ld, %d, %d)\n",
                    n, sizeof(*pkt) + pkt->un.modhost.dom_len + pkt->un.modhost.tgt_len,
@@ -713,7 +713,7 @@ int main(int argc, char **argv) {
       break;
 
     default:
-      dbg_printf("Invalid init req: %d\n", pkt->sim_req);
+      dbg_printf("Invalid init req: %d\n", pkt->aim_req);
     }
 
     for ( i = 0; i < nfds; ++i )

@@ -34,7 +34,7 @@ typedef int (*appliancefn)(struct applianceinfo *, int, void *);
 struct aireconcile {
   struct applianceinfo *air_old;
 
-  char air_new_name[KITE_APPLIANCE_NAME_MAX];
+  char air_new_name[INTRUSTD_APPLIANCE_NAME_MAX];
   X509 *air_new_cert;
 };
 
@@ -71,7 +71,7 @@ struct aipersonasfetcher {
 
 struct applianceinfo {
   // Must be the first field, because it's cast directly to aih_name in appinfo hash
-  char               ai_name[KITE_APPLIANCE_NAME_MAX];
+  char               ai_name[INTRUSTD_APPLIANCE_NAME_MAX];
   struct shared      ai_shared;
 
   appliancefn        ai_appliance_fn;

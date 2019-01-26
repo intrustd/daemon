@@ -1,10 +1,10 @@
 let pkgs = import <nixpkgs> {};
 in with pkgs.lib;
 
-let kiteSystems = builtins.attrNames (import <system/systems.nix>);
+let systems = builtins.attrNames (import <system/systems.nix>);
 
     mkJobs = platform:
-      let pkgs = (import <system/kite-appliance.nix> {
+      let pkgs = (import <system/appliance.nix> {
                     inherit platform;
                     nixpkgs-path = <nixpkgs>;
                   }).pkgs;
@@ -12,8 +12,8 @@ let kiteSystems = builtins.attrNames (import <system/systems.nix>);
            value = pkgs; };
 
     manifest = import ./build-bundle.nix rec {
-       systems = builtins.listToAttrs (map mkJobs kiteSystems);
-       kite-app-module = <src/kite.nix>;
+       systems = builtins.listToAttrs (map mkJobs systems);
+       app-module = <src/app.nix>;
        pure-build = true;
     };
 

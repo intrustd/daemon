@@ -1,5 +1,5 @@
-#ifndef __kite_stun_H__
-#define __kite_stun_H__
+#ifndef __intrustd_stun_H__
+#define __intrustd_stun_H__
 
 #include <stdint.h>
 #include <zlib.h>
@@ -19,7 +19,7 @@ struct stuntxid {
     struct { uint32_t a, b, c; };
     char stx_raw_bytes[12];
   };
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 
 struct stunmsg {
@@ -28,16 +28,16 @@ struct stunmsg {
   uint32_t        sm_magic_cookie;
   struct stuntxid sm_tx_id;
   char            sm_attributes[STUN_MAX_ATTRIBUTES_SIZE];
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 #define STUN_MAGIC_COOKIE 0x2112a442
 
 #define STUN_INVALID_REQUEST   0x0000
 #define STUN_BINDING           0x0001
-#define STUN_KITE_REGISTRATION 0x0022
-#define STUN_KITE_STARTCONN    0x0023
-#define STUN_KITE_GET_PERSONAS 0x0024
-#define STUN_KITE_SENDOFFER    0x0025
+#define STUN_INTRUSTD_REGISTRATION 0x0022
+#define STUN_INTRUSTD_STARTCONN    0x0023
+#define STUN_INTRUSTD_GET_PERSONAS 0x0024
+#define STUN_INTRUSTD_SENDOFFER    0x0025
 
 #define STUN_RESPONSE          0x0100
 #define STUN_ERROR             0x0010
@@ -48,7 +48,7 @@ struct stunmsg {
 struct stunattr {
   uint16_t sa_name;
   uint16_t sa_length;
-} KITE_PACKED;
+} INTRUSTD_PACKED;
 
 #define STUN_IS_VALID(ptr, msg, sz) ((((uintptr_t) ptr) - ((uintptr_t) msg)) < sz)
 #define STUN_CAN_WRITE_ATTR(attr, msg, sz) (STUN_IS_VALID(((uintptr_t) attr) + sizeof(struct stunattr), msg, sz))
@@ -113,17 +113,17 @@ struct stunattr {
 #define STUN_ATTR_RESPONSE_ORIGIN    0x802B
 #define STUN_ATTR_OTHER_ADDRESS      0x802C
 
-#define STUN_ATTR_KITE_APPL_FPRINT   0x0040
-#define STUN_ATTR_KITE_ICE_CAND      0x0041
-#define STUN_ATTR_KITE_CONN_ID       0x0042
-#define STUN_ATTR_KITE_PERSONAS_HASH 0x0043
-#define STUN_ATTR_KITE_CANCELED      0x0044
-#define STUN_ATTR_KITE_SDP_LINE      0x0045
-#define STUN_ATTR_KITE_PERSONAS_OFFS 0x0046
-#define STUN_ATTR_KITE_PERSONAS_SIZE 0x0047
-#define STUN_ATTR_KITE_PERSONAS_DATA 0x0048
-#define STUN_ATTR_KITE_ANSWER        0x0049
-#define STUN_ATTR_KITE_ANSWER_OFFSET 0x004A
+#define STUN_ATTR_INTRUSTD_APPL_FPRINT   0x0040
+#define STUN_ATTR_INTRUSTD_ICE_CAND      0x0041
+#define STUN_ATTR_INTRUSTD_CONN_ID       0x0042
+#define STUN_ATTR_INTRUSTD_PERSONAS_HASH 0x0043
+#define STUN_ATTR_INTRUSTD_CANCELED      0x0044
+#define STUN_ATTR_INTRUSTD_SDP_LINE      0x0045
+#define STUN_ATTR_INTRUSTD_PERSONAS_OFFS 0x0046
+#define STUN_ATTR_INTRUSTD_PERSONAS_SIZE 0x0047
+#define STUN_ATTR_INTRUSTD_PERSONAS_DATA 0x0048
+#define STUN_ATTR_INTRUSTD_ANSWER        0x0049
+#define STUN_ATTR_INTRUSTD_ANSWER_OFFSET 0x004A
 
 #define STUN_ATTR_REQUIRED(attr)     (((attr) & 0x8000) == 0)
 #define STUN_ATTR_OPTIONAL(attr)     (((attr) & 0x8000) != 0)

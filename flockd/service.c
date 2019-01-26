@@ -25,7 +25,7 @@ struct flocksvcclientstate {
 
   struct flockservice *fscs_svc;
 
-  kite_sock_addr  fscs_addr;
+  intrustd_sock_addr  fscs_addr;
   UT_hash_handle  fscs_hash_ent;
 
   struct timersub fscs_client_timeout;
@@ -292,7 +292,7 @@ static void fscs_client_fn(struct flockservice *svc, struct flockclientstate *st
 }
 
 static int fscs_init(struct flocksvcclientstate *st, struct flockservice *svc, SSL *dtls,
-                     kite_sock_addr *peer, shfreefn freefn) {
+                     intrustd_sock_addr *peer, shfreefn freefn) {
   if ( fcs_init(&st->fscs_base_st, fscs_client_fn, freefn) != 0 ) return -1;
 
   memset(&st->fscs_addr, 0, sizeof(st->fscs_addr));
@@ -370,7 +370,7 @@ static void free_fscs(const struct shared *s, int level) {
 }
 
 static struct flocksvcclientstate *fscs_alloc(struct flockservice *svc, SSL *dtls,
-                                              kite_sock_addr *peer) {
+                                              intrustd_sock_addr *peer) {
   struct flocksvcclientstate *st = (struct flocksvcclientstate *) malloc(sizeof(*st));
   if ( !st ) {
     fprintf(stderr, "fscs_alloc: out of memory\n");
@@ -447,7 +447,7 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
     case STUN_BINDING:
       fprintf(stderr, "TODO binding requests\n");
       break;
-    case STUN_KITE_STARTCONN:
+    case STUN_INTRUSTD_STARTCONN:
       if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
         err = 0;
         reg_err = flockservice_handle_startconn_response(svc, msg, buf_sz);
@@ -457,8 +457,8 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
       } else
         err = STUN_BAD_REQUEST;
       break;
-    case STUN_KITE_SENDOFFER:
-      fprintf(stderr, "Stun kite sendoffer\n");
+    case STUN_INTRUSTD_SENDOFFER:
+      fprintf(stderr, "Stun intrustd sendoffer\n");
       if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
         err = 0;
         reg_err = flockservice_handle_offer_response(svc, msg, buf_sz);
@@ -468,7 +468,7 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
       } else
         err = STUN_BAD_REQUEST;
       break;
-    case STUN_KITE_GET_PERSONAS:
+    case STUN_INTRUSTD_GET_PERSONAS:
       // This is sent to the appliance
       if ( STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE ) {
         err = 0;
@@ -476,7 +476,7 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
         if ( st->fscs_appliance_ptr ) {
           app = st->fscs_appliance_ptr;
           AI_REF(st->fscs_appliance_ptr);
-	  
+
           pthread_mutex_unlock(&st->fscs_state_mutex);
           // If we are an appliance, sen
           reg_err = applianceinfo_receive_persona_response(app, msg, buf_sz);
@@ -489,7 +489,7 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
       } else
         err = STUN_BAD_REQUEST;
       break;
-    case STUN_KITE_REGISTRATION:
+    case STUN_INTRUSTD_REGISTRATION:
       // The appliance gets its own reference to our state.
       // This is dereferenced in fscs_free_appliance
       //
@@ -850,13 +850,13 @@ void flockservice_start(struct flockservice *svc, struct eventloop *el) {
 
 // Service
 
-static int receive_next_packet(struct flockservice *st, kite_sock_addr *datagram_addr) {
+static int receive_next_packet(struct flockservice *st, intrustd_sock_addr *datagram_addr) {
   int err;
   socklen_t addr_sz = sizeof(*datagram_addr);
   //  char addr_buf[INET6_ADDRSTRLEN];
 
   err = recvfrom(st->fs_service_sk, st->fs_incoming_packet, sizeof(st->fs_incoming_packet),
-                 0, &datagram_addr->ksa, &addr_sz);
+                 0, &datagram_addr->sa, &addr_sz);
   if ( err < 0 ) {
     perror("next_packet_address: recvmsg");
     return -1;
@@ -876,7 +876,7 @@ static int receive_next_packet(struct flockservice *st, kite_sock_addr *datagram
 }
 
 static void flock_service_accept(struct flockservice *st, struct eventloop *eventloop,
-                                 kite_sock_addr *peer) {
+                                 intrustd_sock_addr *peer) {
   int err;
   SSL *ssl = NULL;
   BIO *bio_in = NULL, *bio_out = NULL;
@@ -987,7 +987,7 @@ static void flock_service_accept(struct flockservice *st, struct eventloop *even
   BIO_static_set(SSL_get_wbio(ssl), &client_st->fscs_outgoing);
 
   pthread_rwlock_wrlock(&st->fs_clients_mutex);
-  HASH_ADD(fscs_hash_ent, st->fs_clients_hash, fscs_addr, sizeof(kite_sock_addr), client_st);
+  HASH_ADD(fscs_hash_ent, st->fs_clients_hash, fscs_addr, sizeof(intrustd_sock_addr), client_st);
   pthread_rwlock_unlock(&st->fs_clients_mutex);
 
   // Now attempt to send the packet. This may fail if there's no space
@@ -996,7 +996,7 @@ static void flock_service_accept(struct flockservice *st, struct eventloop *even
   if ( BIO_STATIC_WPENDING(&outgoing_bio) ) {
     fprintf(stderr, "Responding to DTLS handshake\n");
     err = sendto(st->fs_service_sk, pkt_out, BIO_STATIC_WPENDING(&outgoing_bio), 0,
-                 &peer->ksa, sizeof(*peer));
+                 &peer->sa, sizeof(*peer));
     if ( err < 0 && errno != EAGAIN && errno != EWOULDBLOCK ) {
       perror("sendto");
       goto error;
@@ -1017,7 +1017,7 @@ static void flock_service_accept(struct flockservice *st, struct eventloop *even
 }
 
 static void flock_service_handle_read(struct flockservice *st, struct eventloop *eventloop) {
-  kite_sock_addr datagram_addr;
+  intrustd_sock_addr datagram_addr;
   struct flocksvcclientstate *client = NULL;
 
   memset(&datagram_addr, 0, sizeof(datagram_addr));
@@ -1232,7 +1232,7 @@ int get_sendoffer_rsp_lns(void *arg, int *line_index, const char **start, const 
   for ( ; STUN_IS_VALID(sorl->sorl_attr, sorl->sorl_msg, sorl->sorl_sz);
         sorl->sorl_attr = STUN_NEXTATTR(sorl->sorl_attr) ) {
     switch ( STUN_ATTR_NAME(sorl->sorl_attr) ) {
-    case STUN_ATTR_KITE_SDP_LINE:
+    case STUN_ATTR_INTRUSTD_SDP_LINE:
       if ( STUN_ATTR_PAYLOAD_SZ(sorl->sorl_attr) >= 2 ) {
         *line_index = ntohs(*((uint16_t *) STUN_ATTR_DATA(sorl->sorl_attr)));
         if ( *line_index == 0xFFFF || *line_index == 0xFFFE ) {
@@ -1266,15 +1266,15 @@ static int flockservice_handle_offer_response(struct flockservice *svc,
         attr = STUN_NEXTATTR(attr) ) {
     fprintf(stderr, "Got stun attribute %04x\n", STUN_ATTR_NAME(attr));
     switch ( STUN_ATTR_NAME(attr) ) {
-    case STUN_ATTR_KITE_CONN_ID:
+    case STUN_ATTR_INTRUSTD_CONN_ID:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(conn_id) ) {
         conn_id = ntohll(*((uint64_t *) STUN_ATTR_DATA(attr)));
       }
       break;
-    case STUN_ATTR_KITE_SDP_LINE:
+    case STUN_ATTR_INTRUSTD_SDP_LINE:
       has_lines = 1;
       break;
-    case STUN_ATTR_KITE_ANSWER_OFFSET:
+    case STUN_ATTR_INTRUSTD_ANSWER_OFFSET:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) >= 2 ) {
         uint16_t offs;
         memcpy(&offs, STUN_ATTR_DATA(attr), sizeof(offs));
@@ -1337,12 +1337,12 @@ static int flockservice_handle_startconn_response(struct flockservice *svc,
         error = ntohs(*((uint16_t *) STUN_ATTR_DATA(attr)));
       }
       break;
-    case STUN_ATTR_KITE_CONN_ID:
+    case STUN_ATTR_INTRUSTD_CONN_ID:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(conn_id) ) {
         conn_id = ntohll(*((uint64_t *) STUN_ATTR_DATA(attr)));
       }
       break;
-    case STUN_ATTR_KITE_PERSONAS_HASH:
+    case STUN_ATTR_INTRUSTD_PERSONAS_HASH:
       if ( STUN_ATTR_PAYLOAD_SZ(attr) == sizeof(personas_hash) ) {
         memcpy(personas_hash, (char *) STUN_ATTR_DATA(attr), sizeof(personas_hash));
         has_personas = 1;
@@ -1403,10 +1403,10 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
   struct stunmsg *rsp_msg = (struct stunmsg *) rsp_buf;
   struct stunattr *rsp_attr;
 
-  kite_sock_addr app_addr;
+  intrustd_sock_addr app_addr;
 
   int app_name_found = 0;
-  char app_name[KITE_APPLIANCE_NAME_MAX];
+  char app_name[INTRUSTD_APPLIANCE_NAME_MAX];
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, msg_sz); attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
@@ -1498,11 +1498,11 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
       reconciliation.air_old = old_app;
       strncpy(reconciliation.air_new_name, app_name, sizeof(reconciliation.air_new_name));
       reconciliation.air_new_cert = SSL_get_peer_certificate(st->fscs_dtls);
-      
+
       err = old_app->ai_appliance_fn(old_app, AI_OP_RECONCILE, &reconciliation);
       if ( err < 0 ) {
 	pthread_mutex_unlock(&st->fscs_state_mutex);
-	STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
+	STUN_INIT_MSG(rsp_msg, STUN_INTRUSTD_REGISTRATION | STUN_RESPONSE);
 	memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
 	rsp_attr = STUN_FIRSTATTR(rsp_msg);
 	STUN_INIT_ATTR(rsp_attr, STUN_ATTR_ERROR_CODE, sizeof(uint16_t));
@@ -1517,7 +1517,7 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
 	*rsp_sz = STUN_MSG_LENGTH(rsp_msg);
 
 	AI_UNREF(old_app);
-	
+
 	return err;
       } else {
 	st->fscs_appliance_ptr = old_app;
@@ -1530,7 +1530,7 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
       AI_UNREF(old_app);
     }
   }
-  
+
   err = applianceinfo_get_peer_addr(cur_app, &app_addr);
   AI_UNREF(cur_app);
   if ( err < 0 ) {
@@ -1538,10 +1538,10 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
     return -1;
   }
 
-  STUN_INIT_MSG(rsp_msg, STUN_KITE_REGISTRATION | STUN_RESPONSE);
+  STUN_INIT_MSG(rsp_msg, STUN_INTRUSTD_REGISTRATION | STUN_RESPONSE);
   memcpy(&rsp_msg->sm_tx_id, &msg->sm_tx_id, sizeof(rsp_msg->sm_tx_id));
   rsp_attr = STUN_FIRSTATTR(rsp_msg);
-  err = stun_add_mapped_address_attrs(&rsp_attr, rsp_msg, max_rsp_sz, &app_addr.ksa, sizeof(app_addr));
+  err = stun_add_mapped_address_attrs(&rsp_attr, rsp_msg, max_rsp_sz, &app_addr.sa, sizeof(app_addr));
   if ( err < 0 ) {
     fprintf(stderr, "Could not add mapped address attributes\n");
     return -1;

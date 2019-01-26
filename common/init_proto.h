@@ -1,15 +1,15 @@
-#ifndef __stork_init_proto_H__
-#define __stork_init_proto_H__
+#ifndef __intrustd_init_proto_H__
+#define __intrustd_init_proto_H__
 
 #include <stdint.h>
 
-#define STK_MAX_PKT_SZ (2 * 1024 * 1024)
-#define STK_ARG_MAX (64 * 1024)
-#define ENV_ARG_MAX (64 * 1024)
+#define APPINIT_MAX_PKT_SZ (2 * 1024 * 1024)
+#define APPINIT_ARG_MAX (64 * 1024)
+#define APPINIT_ENV_MAX (64 * 1024)
 
-struct stkinitmsg {
-  uint16_t sim_req;
-  uint32_t sim_flags;
+struct appinitmsg {
+  uint16_t aim_req;
+  uint32_t aim_flags;
   union {
     struct {
       int argc, envc;
@@ -26,21 +26,21 @@ struct stkinitmsg {
   char after[];
 };
 
-#define STK_ARGS(msg) ((msg)->after)
+#define APPINIT_ARGS(msg) ((msg)->after)
 
-#define STK_REQ_RUN  0x0001
-#define STK_REQ_KILL 0x0002
-#define STK_REQ_MOD_HOST_ENTRY 0x0003
+#define APPINIT_REQ_RUN  0x0001
+#define APPINIT_REQ_KILL 0x0002
+#define APPINIT_REQ_MOD_HOST_ENTRY 0x0003
 
-// The process follows the kite initialization protocol. Set this flag
+// The process follows the intrustd initialization protocol. Set this flag
 // to wait for the process to really start
-#define STK_RUN_FLAG_KITE   0x00000001
+#define APPINIT_RUN_FLAG_INTRUSTD_INIT 0x00000001
 
-#define STK_RUN_FLAG_STDIN  0x00000002
-#define STK_RUN_FLAG_STDOUT 0x00000004
-#define STK_RUN_FLAG_STDERR 0x00000008
+#define APPINIT_RUN_FLAG_STDIN  0x00000002
+#define APPINIT_RUN_FLAG_STDOUT 0x00000004
+#define APPINIT_RUN_FLAG_STDERR 0x00000008
 
 // Causes the process to send its return code on a pipe when it exits
-#define STK_RUN_FLAG_WAIT   0x00000010
+#define APPINIT_RUN_FLAG_WAIT   0x00000010
 
 #endif

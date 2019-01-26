@@ -399,9 +399,9 @@ static int connection_write_request(struct fcspktwriter *fcspw, char *req_buf, i
     case CONN_AI_STATE_WAITING_FOR_AUTH:
     case CONN_AI_STATE_AUTHENTICATING:
       fprintf(stderr, "connection_write_request: sending STARTCONN\n");
-      STUN_INIT_MSG(msg, STUN_KITE_STARTCONN);
+      STUN_INIT_MSG(msg, STUN_INTRUSTD_STARTCONN);
       memcpy(&msg->sm_tx_id, &conn->conn_start_tx_id, sizeof(msg->sm_tx_id));
-      STUN_INIT_ATTR(attr, STUN_ATTR_KITE_CONN_ID, sizeof(conn->conn_id));
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_CONN_ID, sizeof(conn->conn_id));
       if ( !STUN_ATTR_IS_VALID(attr, msg, max_req_sz) ) { err = -1; goto error; }
       *((uint64_t *) STUN_ATTR_DATA(attr)) = htonll(conn->conn_id);
 
@@ -424,14 +424,14 @@ static int connection_write_request(struct fcspktwriter *fcspw, char *req_buf, i
     case CONN_AI_STATE_RECEIVE_OFFER:
       fprintf(stderr, "connection_write_request: sending SENDOFFER\n");
       // Write out offer packet
-      STUN_INIT_MSG(msg, STUN_KITE_SENDOFFER);
+      STUN_INIT_MSG(msg, STUN_INTRUSTD_SENDOFFER);
       memcpy(&msg->sm_tx_id, &conn->conn_start_tx_id, sizeof(msg->sm_tx_id));
-      STUN_INIT_ATTR(attr, STUN_ATTR_KITE_CONN_ID, sizeof(conn->conn_id));
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_CONN_ID, sizeof(conn->conn_id));
       if ( !STUN_ATTR_IS_VALID(attr, msg, max_req_sz) ) { err = -1; goto error; }
       *((uint64_t *) STUN_ATTR_DATA(attr)) = htonll(conn->conn_id);
 
       attr = STUN_NEXTATTR(attr);
-      STUN_INIT_ATTR(attr, STUN_ATTR_KITE_SDP_LINE, sizeof(uint16_t));
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_SDP_LINE, sizeof(uint16_t));
       if ( !STUN_ATTR_IS_VALID(attr, msg, max_req_sz)) { err = -1; goto error; }
       *((uint16_t *) STUN_ATTR_DATA(attr)) = htons(conn->conn_ai_offer_line);
 
@@ -460,7 +460,7 @@ static int connection_write_request(struct fcspktwriter *fcspw, char *req_buf, i
 
                 attr = nextattr;
                 assert(STUN_IS_VALID(attr, msg, max_req_sz));
-                STUN_INIT_ATTR(attr, STUN_ATTR_KITE_ANSWER, attr_sz);
+                STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_ANSWER, attr_sz);
                 assert(STUN_ATTR_IS_VALID(attr, msg, max_req_sz));
                 memcpy(STUN_ATTR_DATA(attr), &answer_offset, sizeof(answer_offset));
                 memcpy(((char *) STUN_ATTR_DATA(attr)) + 2,

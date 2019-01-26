@@ -1,5 +1,5 @@
-#ifndef __kite_sdp_H__
-#define __kite_sdp_H__
+#ifndef __intrustd_sdp_H__
+#define __intrustd_sdp_H__
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -57,7 +57,7 @@ struct sdpparsest {
   char            sps_session_name[SPS_NAME_LEN];
   char            sps_username[SPS_NAME_LEN];
   char            sps_session_id[SPS_NAME_LEN];
-  kite_sock_addr  sps_originator;
+  intrustd_sock_addr sps_originator;
   uint32_t        sps_flags;
 
   uint64_t        sps_start_time, sps_end_time;
@@ -68,7 +68,7 @@ struct sdpparsest {
   void           *sps_user_data;
 
   char            sps_media_name[SPS_NAME_LEN];
-  kite_sock_addr  sps_global_connection;
+  intrustd_sock_addr sps_global_connection;
 
   char            sps_line[SPS_LINE_LEN + 1];
 };

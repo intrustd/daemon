@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.11)
-project(kite)
+project(intrustd)
 
 set(CMAKE_CFLAGS_RELEASE "-O3")
 
@@ -27,35 +27,35 @@ SET(CMAKE_EXTRA_INCLUDE_FILES "sys/socket.h")
 CHECK_TYPE_SIZE("((struct cmsghdr *) 0)->cmsg_len" CMSGLEN_SIZE)
 SET(CMAKE_EXTRA_INCLUDE_FILES)
 
-SET(KITE_CFLAGS ${OPENSSL_CFLAGS} ${ZLIB_CFLAGS} ${UTHASH_CFLAGS} ${CMAKE_THREAD_LIBS_INIT} ${URIPARSER_CFLAGS} ${CURL_CFLAGS} -DJSMN_STRICT=1 -DCMSGLEN_SIZE=${CMSGLEN_SIZE})
+SET(INTRUSTD_CFLAGS ${OPENSSL_CFLAGS} ${ZLIB_CFLAGS} ${UTHASH_CFLAGS} ${CMAKE_THREAD_LIBS_INIT} ${URIPARSER_CFLAGS} ${CURL_CFLAGS} -DJSMN_STRICT=1 -DCMSGLEN_SIZE=${CMSGLEN_SIZE})
 
 include_directories(common)
-add_library(kite-common STATIC common/event.c common/static_bio.c
+add_library(intrustd-common STATIC common/event.c common/static_bio.c
   common/directory.c common/stun.c common/util.c common/buffer.c
   common/sdp.c common/dtls.c common/download.c common/jsmn.c
   common/process.c )
-target_compile_options(kite-common PUBLIC -Wall -Werror ${KITE_CFLAGS})
+target_compile_options(intrustd-common PUBLIC -Wall -Werror ${INTRUSTD_CFLAGS})
 
 add_executable(flockd flockd/main.c flockd/configuration.c flockd/connection.c
   flockd/state.c flockd/service.c flockd/websocket.c flockd/client.c flockd/appliance.c
   flockd/personas.c)
-target_link_libraries(flockd PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES})
-target_compile_options(flockd PUBLIC -Wall ${KITE_CFLAGS})
+target_link_libraries(flockd PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES})
+target_compile_options(flockd PUBLIC -Wall ${INTRUSTD_CFLAGS})
 
-add_library(kite-applianced STATIC  applianced/configuration.c applianced/state.c
+add_library(libapplianced STATIC  applianced/configuration.c applianced/state.c
   applianced/bridge.c applianced/local.c applianced/flock.c applianced/persona.c
   applianced/pconn.c applianced/container.c applianced/update.c applianced/application.c
   applianced/token.c)
-target_compile_options(kite-applianced PUBLIC -Wall ${KITE_CFLAGS})
-target_link_libraries(kite-applianced PUBLIC kite-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
+target_compile_options(libapplianced PUBLIC -Wall ${INTRUSTD_CFLAGS})
+target_link_libraries(libapplianced PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
 
 add_executable(applianced applianced/main.c)
-target_link_libraries(applianced PUBLIC kite-common kite-applianced)
-target_compile_options(applianced PUBLIC -Wall ${KITE_CFLAGS})
+target_link_libraries(applianced PUBLIC intrustd-common libapplianced)
+target_compile_options(applianced PUBLIC -Wall ${INTRUSTD_CFLAGS})
 
 add_executable(webrtc-proxy webrtc-proxy/main.c)
 target_compile_options(webrtc-proxy PUBLIC ${SCTP_CFLAGS})
-target_link_libraries(webrtc-proxy ${SCTP_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} kite-common ${OPENSSL_LIBRARIES})
+target_link_libraries(webrtc-proxy ${SCTP_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} intrustd-common ${OPENSSL_LIBRARIES})
 
 add_executable(persona-init init/persona.c init/init_common.c)
 add_executable(app-instance-init init/app_instance.c init/init_common.c)
@@ -63,15 +63,15 @@ add_executable(app-instance-init init/app_instance.c init/init_common.c)
 add_executable(appliancectl appliancectl/main.c appliancectl/common.c
   appliancectl/flock.c appliancectl/persona.c appliancectl/app.c
   appliancectl/container.c)
-target_link_libraries(appliancectl kite-common ${OPENSSL_LIBRARIES})
+target_link_libraries(appliancectl intrustd-common ${OPENSSL_LIBRARIES})
 
 add_executable(timer-test common/tests/timer-test.c)
-target_link_libraries(timer-test kite-common ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(timer-test intrustd-common ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(shared-test common/tests/shared-test.c)
 
 add_executable(appliance-tests applianced/tests/main.c applianced/tests/token.c)
-target_link_libraries(appliance-tests PUBLIC kite-common kite-applianced ${CHECK_LIBRARIES})
+target_link_libraries(appliance-tests PUBLIC intrustd-common libapplianced ${CHECK_LIBRARIES})
 
 OPTION(WEBRTC_DEBUG
   "Build the webrtc-proxy for debugging"

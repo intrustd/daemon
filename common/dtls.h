@@ -1,5 +1,5 @@
-#ifndef __kite_dtls_H__
-#define __kite_dtls_H__
+#ifndef __intrustd_dtls_H__
+#define __intrustd_dtls_H__
 
 // Provides a time-based SSL generate cookie callback and verification
 // function for use with DTLS. You will need to use a mutex to force

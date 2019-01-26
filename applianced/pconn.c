@@ -28,10 +28,10 @@ static const char guest_persona_id[PERSONA_ID_LENGTH] =
 // flocks when the pconn is started
 struct candsrc {
   // The address to use to connect to the candidates source
-  kite_sock_addr  cs_svr;
+  intrustd_sock_addr  cs_svr;
 
   // The local address (valid if sa_family != AF_UNSPEC)
-  kite_sock_addr  cs_local_addr;
+  intrustd_sock_addr  cs_local_addr;
 
   // The pconn to report candidates to
   struct pconn   *cs_pconn;
@@ -56,7 +56,7 @@ struct candsrc {
   struct icecandpair *cs_scheduled_connectivity_check;
 };
 
-// Do not assume the remote server can handle Kite requests
+// Do not assume the remote server can handle Intrustd requests
 #define CS_FLAG_STUN_ONLY  0x1
 // Do not use DTLS for connecting
 #define CS_FLAG_INSECURE   0x2
@@ -87,11 +87,11 @@ struct candsrc {
     int __has_raddr_ ## __LINE__ =                                      \
       (cand)->ic_type != ICE_TYPE_HOST;                                 \
                                                                         \
-    format_address(&(cand)->ic_addr.ksa, sizeof((cand)->ic_addr),       \
+    format_address(&(cand)->ic_addr.sa, sizeof((cand)->ic_addr),       \
                    __addr_ ## __LINE__, sizeof(__addr_ ## __LINE__),    \
                    &__port_ ## __LINE__);                               \
     if ( __has_raddr_ ## __LINE__ ) {                                   \
-      format_address(&(cand)->ic_raddr.ksa, sizeof((cand)->ic_raddr),   \
+      format_address(&(cand)->ic_raddr.sa, sizeof((cand)->ic_raddr),   \
                      __raddr_ ## __LINE__, sizeof(__raddr_ ## __LINE__),\
                      &__rport_ ## __LINE__);                            \
       snprintf(__rport_str_ ## __LINE__,                                \
@@ -252,7 +252,7 @@ static void candsrc_transmit_binding(struct candsrc *src) {
     // Note: always use sendto, as the connect()/bind() sequence in
     // candsrc_add_host_candidate may execute simultaneously.
     err = sendto(src->cs_socket, &msg, STUN_MSG_LENGTH(&msg), 0,
-                 &src->cs_svr.ksa, sizeof(src->cs_svr));
+                 &src->cs_svr.sa, sizeof(src->cs_svr));
     if ( err < 0 ) {
       if ( errno == EWOULDBLOCK ) {
         fprintf(stderr, "candsrc_transmit_binding: could not retransmit, because there's no space in the buffer\n");
@@ -265,12 +265,12 @@ static void candsrc_transmit_binding(struct candsrc *src) {
 }
 
 static int candsrc_process_binding_response(struct candsrc *cs, struct stunmsg *msg) {
-  kite_sock_addr addr;
+  intrustd_sock_addr addr;
   socklen_t addr_sz = sizeof(addr);
   int err;
 
   if ( cs->cs_state == CS_STATE_BINDING ) {
-    err = stun_process_binding_response(msg, &addr.ksa, &addr_sz);
+    err = stun_process_binding_response(msg, &addr.sa, &addr_sz);
     if ( err < 0 ) {
       fprintf(stderr, "candsrc_receive_response: invalid binding response\n");
     } else {
@@ -288,7 +288,7 @@ static int candsrc_process_binding_response(struct candsrc *cs, struct stunmsg *
       candidate.ic_type = ICE_TYPE_SRFLX;
 
       assert(addr_sz <= sizeof(candidate.ic_addr));
-      assert(cs->cs_local_addr.ksa.sa_family != AF_UNSPEC);
+      assert(cs->cs_local_addr.sa.sa_family != AF_UNSPEC);
       memcpy(&candidate.ic_addr, &addr, addr_sz);
       memcpy(&candidate.ic_raddr, &cs->cs_local_addr, sizeof(candidate.ic_raddr));
 
@@ -532,12 +532,12 @@ static void candsrc_send_error_response(struct candsrc *cs, const struct stunmsg
 // pconn mutex is locked, so we can use the incoming_pkt buffer
 static int candsrc_handle_response(struct candsrc *cs) {
   int err, pkt_sz, i;
-  kite_sock_addr peer_addr;
+  intrustd_sock_addr peer_addr;
   socklen_t peer_addr_sz = sizeof(peer_addr);
 
   pkt_sz = err = recvfrom(cs->cs_socket, cs->cs_pconn->pc_incoming_pkt,
                           sizeof(cs->cs_pconn->pc_incoming_pkt), 0,
-                          &peer_addr.ksa, &peer_addr_sz);
+                          &peer_addr.sa, &peer_addr_sz);
   if ( err < 0 ) {
     if ( errno == EWOULDBLOCK || errno == EAGAIN )
       return 0;
@@ -569,7 +569,7 @@ static int candsrc_handle_response(struct candsrc *cs) {
 
 	  bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
 					&cs->cs_pconn->pc_container,
-					&peer_addr.ksa, peer_addr_sz,
+					&peer_addr.sa, peer_addr_sz,
 					my_buf, pkt_sz);
 	}
       } else {
@@ -620,12 +620,12 @@ static int candsrc_handle_response(struct candsrc *cs) {
 
           //fprintf(stderr, "Received binding request\n");
           if ( STUN_REQUEST_TYPE(msg) == STUN_BINDING ) {
-            candsrc_send_binding_response(cs, msg, &peer_addr.ksa, peer_addr_sz);
+            candsrc_send_binding_response(cs, msg, &peer_addr.sa, peer_addr_sz);
           } else
             fprintf(stderr, "STUN message of unknown type %04x\n", STUN_REQUEST_TYPE(msg));
         } else if ( err > 0 ) { // Error to send back
           candsrc_send_error_response(cs, (struct stunmsg *) cs->cs_pconn->pc_incoming_pkt,
-                                      err, &sv, &peer_addr.ksa, peer_addr_sz);
+                                      err, &sv, &peer_addr.sa, peer_addr_sz);
         } else {
           fprintf(stderr, "error: stun_validate returned %d: %s\n", err, stun_strerror(err));
         }
@@ -680,7 +680,7 @@ static void candsrc_send_outgoing(struct candsrc *cs) {
     BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, 0);
 //    fprintf(stderr, "candsrc_send_outgoing: send packet of size %u (cs idx %d)\nfrom address",
 //            pconn_cs_idx(cs->cs_pconn, cs), sz);
-//    dump_address(stderr, &cs->cs_local_addr.ksa, sizeof(cs->cs_local_addr));
+//    dump_address(stderr, &cs->cs_local_addr.sa, sizeof(cs->cs_local_addr));
 //    fprintf(stderr, "\n");
     err = SSL_write(cs->cs_pconn->pc_dtls, outgoing, sz);
     if ( err <= 0 ) {
@@ -795,7 +795,7 @@ static void candsrc_send_connectivity_check(struct candsrc *cs) {
   }
 
   err = sendto(cs->cs_socket, &msg, STUN_MSG_LENGTH(&msg), 0,
-               &remote->ic_addr.ksa, sizeof(remote->ic_addr));
+               &remote->ic_addr.sa, sizeof(remote->ic_addr));
   if ( err < 0 ) {
     err = errno;
     if ( errno == EWOULDBLOCK ) {
@@ -826,7 +826,7 @@ static void candsrc_add_host_candidate(struct candsrc *cs) {
     return;
   }
 
-  err = getsockname(cs->cs_socket, &cs->cs_local_addr.ksa, &addrsz);
+  err = getsockname(cs->cs_socket, &cs->cs_local_addr.sa, &addrsz);
   if ( err < 0 ) {
     perror("candsrc_add_host_candidate: getsockname");
     return;
@@ -848,9 +848,9 @@ static void candsrc_add_host_candidate(struct candsrc *cs) {
   }
 
   fprintf(stderr, "Binding to ");
-  dump_address(stderr, &cs->cs_local_addr.ksa, addrsz);
+  dump_address(stderr, &cs->cs_local_addr.sa, addrsz);
   fprintf(stderr, "\n");
-  err = bind(cs->cs_socket, &cs->cs_local_addr.ksa, addrsz);
+  err = bind(cs->cs_socket, &cs->cs_local_addr.sa, addrsz);
   if ( err < 0 ) {
     perror("candsrc_add_host_candidate: bind");
   }
@@ -864,15 +864,15 @@ int icecand_equivalent(struct icecand *a, struct icecand *b) {
       return 0;
 
     // IP addresses should be the same
-    if ( a->ic_addr.ksa.sa_family != b->ic_addr.ksa.sa_family ) return 0;
+    if ( a->ic_addr.sa.sa_family != b->ic_addr.sa.sa_family ) return 0;
 
-    if ( a->ic_addr.ksa.sa_family == AF_INET ) {
-      return a->ic_addr.ksa_ipv4.sin_addr.s_addr == b->ic_addr.ksa_ipv4.sin_addr.s_addr &&
-        a->ic_addr.ksa_ipv4.sin_port == b->ic_addr.ksa_ipv4.sin_port;
-    } else if ( a->ic_addr.ksa.sa_family == AF_INET6 ) {
-      return memcmp(a->ic_addr.ksa_ipv6.sin6_addr.s6_addr,
-                    b->ic_addr.ksa_ipv6.sin6_addr.s6_addr, 16) == 0 &&
-        a->ic_addr.ksa_ipv6.sin6_port == b->ic_addr.ksa_ipv6.sin6_port;
+    if ( a->ic_addr.sa.sa_family == AF_INET ) {
+      return a->ic_addr.sa_ipv4.sin_addr.s_addr == b->ic_addr.sa_ipv4.sin_addr.s_addr &&
+        a->ic_addr.sa_ipv4.sin_port == b->ic_addr.sa_ipv4.sin_port;
+    } else if ( a->ic_addr.sa.sa_family == AF_INET6 ) {
+      return memcmp(a->ic_addr.sa_ipv6.sin6_addr.s6_addr,
+                    b->ic_addr.sa_ipv6.sin6_addr.s6_addr, 16) == 0 &&
+        a->ic_addr.sa_ipv6.sin6_port == b->ic_addr.sa_ipv6.sin6_port;
     } else return 0;
   } else
     return 0;
@@ -905,7 +905,7 @@ static void pconn_delayed_start(struct pconn *pc) {
   if ( pc->pc_candidate_sources ) {
     HASH_ITER(f_hh, app->as_flocks, cur_flock, tmp_flock) {
       struct candsrc *cursrc = &pc->pc_candidate_sources[pc->pc_candidate_sources_count];
-      if (cur_flock->f_flags & FLOCK_FLAG_KITE_ONLY) continue;
+      if (cur_flock->f_flags & FLOCK_FLAG_INTRUSTD_ONLY) continue;
 
       pc->pc_candidate_sources_count++;
 
@@ -939,7 +939,7 @@ static void pconn_delayed_start(struct pconn *pc) {
       }
 
       // Open socket
-      cursrc->cs_socket = socket(cursrc->cs_svr.ksa.sa_family, SOCK_DGRAM, 0);
+      cursrc->cs_socket = socket(cursrc->cs_svr.sa.sa_family, SOCK_DGRAM, 0);
       if ( cursrc->cs_socket < 0 ) {
         fprintf(stderr, "pconn_delayed_start: could not create socket\n");
         pc->pc_candidate_sources_count--;
@@ -951,12 +951,12 @@ static void pconn_delayed_start(struct pconn *pc) {
         }
 
         // Attempt to connect to the given endpoint
-        err = connect(cursrc->cs_socket, &cursrc->cs_svr.ksa, sizeof(cursrc->cs_svr));
+        err = connect(cursrc->cs_socket, &cursrc->cs_svr.sa, sizeof(cursrc->cs_svr));
         if ( err < 0 ) {
           if ( errno != EWOULDBLOCK )  // TODO EWOULDblock here
             perror("pconn_delayed_start: connect");
           else {
-            cursrc->cs_local_addr.ksa.sa_family = AF_UNSPEC;
+            cursrc->cs_local_addr.sa.sa_family = AF_UNSPEC;
             CANDSRC_SUBSCRIBE_WRITE(cursrc);
           }
         } else {
@@ -1181,7 +1181,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   };
 
   stun_random_tx_id(&ret->pc_tx_id);
-  ret->pc_last_req = STUN_KITE_STARTCONN;
+  ret->pc_last_req = STUN_INTRUSTD_STARTCONN;
   ret->pc_sctp_port = DEFAULT_SCTP_PORT;
   ret->pc_dtls = NULL;
   ret->pc_dtls_needs_write = ret->pc_dtls_needs_read = 0;
@@ -1390,7 +1390,7 @@ void pconn_start_service(struct pconn *pc) {
     line_off += err;                                                    \
   }
 #define OFFER_LINE_END if(1) {                                          \
-    STUN_INIT_ATTR(*attr, STUN_ATTR_KITE_SDP_LINE, sizeof(uint16_t) + line_off); \
+    STUN_INIT_ATTR(*attr, STUN_ATTR_INTRUSTD_SDP_LINE, sizeof(uint16_t) + line_off); \
     if ( !STUN_ATTR_IS_VALID(*attr, msg, buf_sz) ) {                    \
       *attr = prev_attr;                                                \
       break;                                                            \
@@ -1409,7 +1409,7 @@ void pconn_start_service(struct pconn *pc) {
 int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
                       struct stunattr **attr, size_t buf_sz) {
   char line[1024], addr_buf[INET6_ADDRSTRLEN + 1];
-  kite_sock_addr addr;
+  intrustd_sock_addr addr;
   char *addrty;
   int ret = -1, err, line_off = 0, i, did_complete_line = 0;
   unsigned int digest_len = SHA256_DIGEST_LENGTH;
@@ -1421,10 +1421,10 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
 //  err = getsockname(pc->pc_socket, &addr, &addrsz);
 //  if ( err < 0 ) {
 //    perror("pconn_write_offer: getsockname");
-  addr.ksa.sa_family = AF_UNSPEC;// TODO
+  addr.sa.sa_family = AF_UNSPEC;// TODO
     //  }
 
-  switch ( addr.ksa.sa_family ) {
+  switch ( addr.sa.sa_family ) {
   case AF_INET:
     addrty = "IP4";
     inet_ntop(AF_INET, &((struct sockaddr_in *)&addr)->sin_addr, addr_buf, sizeof(addr_buf));
@@ -1529,7 +1529,7 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
 #define STUN_ADD_CONNECTION_ID                                          \
   do {                                                                  \
     if ( !STUN_IS_VALID(attr, msg, buf_sz) ) return -1;                 \
-    STUN_INIT_ATTR(attr, STUN_ATTR_KITE_CONN_ID, sizeof(pc->pc_conn_id)); \
+    STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_CONN_ID, sizeof(pc->pc_conn_id)); \
     if ( !STUN_ATTR_IS_VALID(attr, msg, buf_sz) ) return -1;            \
     *((uint64_t *) STUN_ATTR_DATA(attr)) = htonll(pc->pc_conn_id);      \
   } while (0)
@@ -1542,7 +1542,7 @@ int pconn_write_response(struct pconn *pc, char *buf, int buf_sz) {
   switch ( pc->pc_state ) {
   case PCONN_STATE_WAIT_FOR_LOGIN:
   case PCONN_STATE_START_OFFER:
-    STUN_INIT_MSG(msg, STUN_RESPONSE | STUN_KITE_STARTCONN);
+    STUN_INIT_MSG(msg, STUN_RESPONSE | STUN_INTRUSTD_STARTCONN);
     memcpy(&msg->sm_tx_id, &pc->pc_tx_id, sizeof(msg->sm_tx_id));
 
     STUN_ADD_CONNECTION_ID;
@@ -1550,7 +1550,7 @@ int pconn_write_response(struct pconn *pc, char *buf, int buf_sz) {
     if ( pc->pc_personaset ) {
       attr = STUN_NEXTATTR(attr);
       if ( !STUN_IS_VALID(attr, msg, buf_sz) ) return -1;
-      STUN_INIT_ATTR(attr, STUN_ATTR_KITE_PERSONAS_HASH, SHA256_DIGEST_LENGTH);
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_PERSONAS_HASH, SHA256_DIGEST_LENGTH);
       if ( !STUN_ATTR_IS_VALID(attr, msg, buf_sz) ) return -1;
       memcpy((char *) STUN_ATTR_DATA(attr), pc->pc_personaset->ps_hash, SHA256_DIGEST_LENGTH);
     }
@@ -1561,7 +1561,7 @@ int pconn_write_response(struct pconn *pc, char *buf, int buf_sz) {
   case PCONN_STATE_SENDING_OFFER:
     fprintf(stderr, "pconn_respond: sending offer\n");
     // We've successfully sent the connection start the offer
-    STUN_INIT_MSG(msg, STUN_RESPONSE | STUN_KITE_SENDOFFER);
+    STUN_INIT_MSG(msg, STUN_RESPONSE | STUN_INTRUSTD_SENDOFFER);
     memcpy(&msg->sm_tx_id, &pc->pc_tx_id, sizeof(msg->sm_tx_id));
     STUN_ADD_CONNECTION_ID;
 
@@ -1572,7 +1572,7 @@ int pconn_write_response(struct pconn *pc, char *buf, int buf_sz) {
 
       attr = STUN_NEXTATTR(attr);
       if ( !STUN_IS_VALID(attr, msg, buf_sz) ) return -1;
-      STUN_INIT_ATTR(attr, STUN_ATTR_KITE_ANSWER_OFFSET, sizeof(uint16_t));
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_ANSWER_OFFSET, sizeof(uint16_t));
       if ( !STUN_ATTR_IS_VALID(attr, msg, buf_sz) ) return -1;
       memcpy(STUN_ATTR_DATA(attr), &offs16, sizeof(uint16_t));
     }
@@ -2170,7 +2170,7 @@ static struct icecandpair *pconn_find_candidate_pair(struct pconn *pc, struct ca
 //      dump_address(stderr, &remote->ic_addr, sizeof(remote->ic_addr));
 //      fprintf(stderr, "\n");
       // Check if the remote candidate matches this one
-      if ( kite_sock_addr_equal(&remote->ic_addr, peer_addr, peer_addr_sz) ) {
+      if ( intrustd_sock_addr_equal(&remote->ic_addr, peer_addr, peer_addr_sz) ) {
         if ( icp_ix ) *icp_ix = i;
         return pc->pc_candidate_pairs_sorted[i];
       }
@@ -2299,7 +2299,7 @@ static int icecand_parse(struct icecand *ic, const char *start, const char *end)
 
   addr_sz = sizeof(ic->ic_addr);
   if ( parse_address(ip_addr, sizeof(ip_addr), port,
-                     &ic->ic_addr.ksa, &addr_sz) < 0 ) {
+                     &ic->ic_addr.sa, &addr_sz) < 0 ) {
     fprintf(stderr, "icecand_parse: could not parse address\n");
     return -1;
   }
@@ -2332,7 +2332,7 @@ static int icecand_parse(struct icecand *ic, const char *start, const char *end)
 
     addr_sz = sizeof(ic->ic_raddr);
     if ( parse_address(ip_addr, sizeof(ip_addr), port,
-                       &ic->ic_raddr.ksa, &addr_sz) < 0 ) {
+                       &ic->ic_raddr.sa, &addr_sz) < 0 ) {
       fprintf(stderr, "icecand_parse: could not parse raddr\n");
       return -1;
     }
@@ -2643,8 +2643,8 @@ static int pconn_ensure_dtls(struct pconn *pc) {
   }
 
   fprintf(stderr, "Connecting to dtls on index %d ", pconn_cs_idx(local_src->cs_pconn, local_src));
-  dump_address(stderr, &remote->ic_addr.ksa, sizeof(remote->ic_addr));
-  if ( !BIO_ctrl(dg_out, BIO_CTRL_DGRAM_SET_PEER, 0, &remote->ic_addr.ksa) ) {
+  dump_address(stderr, &remote->ic_addr.sa, sizeof(remote->ic_addr));
+  if ( !BIO_ctrl(dg_out, BIO_CTRL_DGRAM_SET_PEER, 0, &remote->ic_addr.sa) ) {
     BIO_free(dg_out);
     fprintf(stderr, "pconn_ensure_dtls: could not set BIO_dgram peer\n");
     goto error;

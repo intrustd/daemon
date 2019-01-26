@@ -7,7 +7,7 @@ struct appconf {
   const char *ac_iproute_bin;
   const char *ac_ebroute_bin;
 
-  const char *ac_kitepath;
+  const char *ac_ourpath;
   const char *ac_webrtc_proxy_path;
   const char *ac_persona_init_path;
   const char *ac_app_instance_init_path;
@@ -18,10 +18,10 @@ struct appconf {
 
   uint32_t ac_flags;
 
-  uid_t ac_kite_user, ac_daemon_user;
-  gid_t ac_kite_user_group, ac_daemon_group;
+  uid_t ac_app_user, ac_daemon_user;
+  gid_t ac_app_user_group, ac_daemon_group;
 
-  const char *ac_kite_packet_file;
+  const char *ac_dump_packet_file;
 };
 
 // If set to 1, we do not use containers, as best we can

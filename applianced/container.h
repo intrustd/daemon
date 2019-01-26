@@ -89,7 +89,7 @@ int container_ensure_running(struct container *c, struct eventloop *el);
 int container_release_running(struct container *c, struct eventloop *el);
 int container_is_running(struct container *c);
 
-#define CONTAINER_EXEC_WAIT_FOR_KITE   0x00000001
+#define CONTAINER_EXEC_WAIT_FOR_INIT   0x00000001
 #define CONTAINER_EXEC_ENABLE_WAIT     0x00000002
 #define CONTAINER_EXEC_REDIRECT_STDIN  0x00000004
 #define CONTAINER_EXEC_REDIRECT_STDOUT 0x00000008

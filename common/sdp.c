@@ -218,11 +218,11 @@ void sdp_reset(struct sdpparsest *st) {
   st->sps_session_name[0] = '\0';
   st->sps_username[0] = '\0';
   st->sps_session_id[0] = '\0';
-  st->sps_originator.ksa.sa_family = AF_UNSPEC;
+  st->sps_originator.sa.sa_family = AF_UNSPEC;
   st->sps_flags = 0;
   st->sps_start_time = st->sps_end_time = 0;
 
-  st->sps_global_connection.ksa.sa_family = AF_UNSPEC;
+  st->sps_global_connection.sa.sa_family = AF_UNSPEC;
 }
 
 int sdp_init(struct sdpparsest *st, sdpnewmediafn new_media, sdpmediactlfn media_ctl,
@@ -450,7 +450,7 @@ static int sdp_parse_line(struct sdpparsest *st) {
     st->sps_mode = SPS_MODE_PARSED_MEDIA_CONNECTION;
     if ( type == 'c' ) {
       // TODO parse connection
-      kite_sock_addr addr;
+      intrustd_sock_addr addr;
 
       if ( st->sps_media_ctl_fn(st->sps_user_data, SPS_MEDIA_SET_CONNECTION, (void *)&addr) == -1 )
         SDP_ERROR(SPS_INVALID_CONNECTION);

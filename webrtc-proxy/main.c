@@ -15,7 +15,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include <storkd_proto.h>
+#include <intrustd_proto.h>
 
 #define SCTP_DEBUG 1
 //#include <usrsctp.h>
@@ -165,7 +165,7 @@ struct wrcpendingconn {
 };
 
 // Messages that we receive on a control or data socket
-struct stkcmsg {
+struct appcmsg {
   uint8_t scm_type;
   union {
     struct {
@@ -187,8 +187,8 @@ struct stkcmsg {
   } data;
 } PACKED;
 
-#define STK_CMSG_REQ(msg) ((msg)->scm_type & SCM_REQ_MASK)
-#define STK_CMSG_IS_RSP(msg) ((msg)->scm_type & SCM_RESPONSE)
+#define APP_CMSG_REQ(msg) ((msg)->scm_type & SCM_REQ_MASK)
+#define APP_CMSG_IS_RSP(msg) ((msg)->scm_type & SCM_RESPONSE)
 #define SCM_DATA(req) ((void *) &(req)->data.scm_data.scm_bod)
 
 #define SCM_RESPONSE     0x80 // bitmask for responses to requests
@@ -206,8 +206,8 @@ struct stkcmsg {
 #define SCM_CONNECT_RSP_SZ      1
 #define SCM_DATA_REQ_SZ         5
 
-#define STORKD_ADDR "10.0.0.2"
-#define STORKD_OPEN_APP_PORT 9998 // The port where we send open app requests
+#define APPLIANCED_ADDR "10.0.0.2"
+#define APPLIANCED_OPEN_APP_PORT 9998 // The port where we send open app requests
 
 #define OUTGOING_BUF_SIZE    65536
 #define PACKET_BUF_SIZE      65536
@@ -268,15 +268,15 @@ int timespec_lt(struct timespec *a, struct timespec *b) {
   }
 }
 
-uint32_t translate_stk_connection_error(int which) {
+uint32_t translate_app_connection_error(int which) {
   uint32_t ret;
   switch ( which ) {
-  case ENOENT:       ret = STKD_ERROR_INVALID_ADDR; break;
+  case ENOENT:       ret = APPD_ERROR_INVALID_ADDR; break;
   case ENETUNREACH:
-  case ECONNREFUSED: ret = STKD_ERROR_CONN_REFUSED; break;
-  case EALREADY:     ret = STKD_ERROR_SYSTEM_BUSY; break;
-  case ETIMEDOUT:    ret = STKD_ERROR_TEMP_UNAVAILABLE; break;
-  default:           ret = STKD_ERROR_SYSTEM_ERROR; break;
+  case ECONNREFUSED: ret = APPD_ERROR_CONN_REFUSED; break;
+  case EALREADY:     ret = APPD_ERROR_SYSTEM_BUSY; break;
+  case ETIMEDOUT:    ret = APPD_ERROR_TEMP_UNAVAILABLE; break;
+  default:           ret = APPD_ERROR_SYSTEM_ERROR; break;
   }
 
   return ret;
@@ -493,7 +493,7 @@ void force_close_channel(struct wrtcchan *chan) {
 }
 
 void rsp_cmsg_error(int srv, struct wrtcchan *chan, uint8_t req, int rsperr) {
-  struct stkcmsg msg;
+  struct appcmsg msg;
   struct sctp_sndrcvinfo sri;
   int err;
 
@@ -979,28 +979,28 @@ void set_sk_nonblocking(int sk) {
 }
 
 // EPOLL thread
-int stkdmsg_has_enough(struct stkdmsg *msg, int sz) {
+int appdmsg_has_enough(struct appdmsg *msg, int sz) {
   if ( sz < 4 ) return 0;
 
-  if ( STKD_IS_RSP(msg) && STKD_IS_ERROR(msg) )
-    return sz >= STKD_ERROR_MSG_SZ;
+  if ( APPD_IS_RSP(msg) && APPD_IS_ERROR(msg) )
+    return sz >= APPD_ERROR_MSG_SZ;
 
-  switch ( STKD_REQ(msg) ) {
-  case STKD_OPEN_APP_REQUEST:
-    if ( STKD_IS_RSP(msg) ) {
-      return sz >= STKD_OPENED_APP_RSP_SZ;
+  switch ( APPD_REQ(msg) ) {
+  case APPD_OPEN_APP_REQUEST:
+    if ( APPD_IS_RSP(msg) ) {
+      return sz >= APPD_OPENED_APP_RSP_SZ;
     }
   default:
     return 1;
   }
 }
 
-int stkcmsg_has_enough(struct stkcmsg *msg, int sz) {
+int appcmsg_has_enough(struct appcmsg *msg, int sz) {
   if ( sz < 1 ) return 0;
 
-  switch ( STK_CMSG_REQ(msg) ) {
+  switch ( APP_CMSG_REQ(msg) ) {
   case SCM_REQ_OPEN_APP:
-    if ( STK_CMSG_IS_RSP(msg) )
+    if ( APP_CMSG_IS_RSP(msg) )
       return sz <= SCM_OPENED_APP_RSP_SZ;
     else {
       uint32_t appnmlen = ntohl(msg->data.scm_open_app_request.scm_app_len);
@@ -1010,12 +1010,12 @@ int stkcmsg_has_enough(struct stkcmsg *msg, int sz) {
       return sz >= (SCM_OPEN_APP_REQ_SZ_MIN + appnmlen);
     }
   case SCM_REQ_CONNECT:
-    if ( STK_CMSG_IS_RSP(msg) )
+    if ( APP_CMSG_IS_RSP(msg) )
       return sz >= SCM_CONNECT_RSP_SZ;
     else
       return sz >= SCM_CONNECT_REQ_SZ;
   case SCM_REQ_DATA:
-    if ( STK_CMSG_IS_RSP(msg) )
+    if ( APP_CMSG_IS_RSP(msg) )
       return 0; // No response for DATA messages
     else return sz >= SCM_DATA_REQ_SZ;
   default:
@@ -1030,8 +1030,8 @@ int receive_ctl_rsp(int srv, struct wrtcchan *chan) {
   int err, rsp_sz;
   struct sctp_sndrcvinfo sri;
 
-  struct stkdmsg *msg = (struct stkdmsg *) chan->wrc_proxy_buf;
-  struct stkcmsg rsp;
+  struct appdmsg *msg = (struct appdmsg *) chan->wrc_proxy_buf;
+  struct appcmsg rsp;
 
   chan_sctp_sndrcvinfo(chan, &sri);
 
@@ -1047,29 +1047,29 @@ int receive_ctl_rsp(int srv, struct wrtcchan *chan) {
   } else
     err = chan->wrc_proxy_buf_sz; // Data already read, but we could not send a response
 
-  if ( stkdmsg_has_enough(msg, err) ) {
-    if ( STKD_IS_RSP(msg) ) {
-      switch ( STKD_REQ(msg) ) {
-      case STKD_OPEN_APP_REQUEST:
-        if ( STKD_IS_ERROR(msg) ) {
+  if ( appdmsg_has_enough(msg, err) ) {
+    if ( APPD_IS_RSP(msg) ) {
+      switch ( APPD_REQ(msg) ) {
+      case APPD_OPEN_APP_REQUEST:
+        if ( APPD_IS_ERROR(msg) ) {
           log_printf("Got open app error %d for channel %d\n",
-                     ntohl(msg->sm_data.sm_error), chan->wrc_chan_id);
+                     ntohl(msg->am_data.am_error), chan->wrc_chan_id);
           rsp.scm_type = SCM_ERROR | SCM_RESPONSE | SCM_REQ_OPEN_APP;
-          rsp.data.scm_error = msg->sm_data.sm_error;
+          rsp.data.scm_error = msg->am_data.am_error;
           rsp_sz = SCM_ERROR_RSP_SZ;
         } else {
           log_printf("Got open app response in family %s: %s\n",
-                     sk_family_str(ntohl(msg->sm_data.sm_opened_app.sm_family)),
-                     inet_ntop(ntohl(msg->sm_data.sm_opened_app.sm_family),
-                               &msg->sm_data.sm_opened_app.sm_addr,
+                     sk_family_str(ntohl(msg->am_data.am_opened_app.sm_family)),
+                     inet_ntop(ntohl(msg->am_data.am_opened_app.sm_family),
+                               &msg->am_data.am_opened_app.am_addr,
                                addr_buf, sizeof(addr_buf)));
 
           rsp.scm_type = SCM_RESPONSE | SCM_REQ_OPEN_APP;
           rsp_sz = SCM_OPENED_APP_RSP_SZ;
-          err = get_address_descriptor(msg->sm_data.sm_opened_app.sm_addr);
+          err = get_address_descriptor(msg->am_data.am_opened_app.am_addr);
           if ( err < 0 ) {
             rsp.scm_type |= SCM_ERROR;
-            rsp.data.scm_error = htonl(STKD_ERROR_NO_SPACE);
+            rsp.data.scm_error = htonl(APPD_ERROR_NO_SPACE);
             rsp_sz = SCM_ERROR_RSP_SZ;
           } else {
             rsp.data.scm_opened_app = htonl(err);
@@ -1088,15 +1088,15 @@ int receive_ctl_rsp(int srv, struct wrtcchan *chan) {
         break;
 
       default:
-        log_printf("Unknown storkd request type: %d\n", STKD_REQ(msg));
+        log_printf("Unknown applianced request type: %d\n", APPD_REQ(msg));
         return -1;
       }
     } else {
-      log_printf("Got request from storkd: %08x (TODO)\n", ntohl(msg->sm_flags));
+      log_printf("Got request from applianced: %08x (TODO)\n", ntohl(msg->sm_flags));
       return 0;
     }
   } else {
-    log_printf("Not enough data in storkd response\n");
+    log_printf("Not enough data in applianced response\n");
     return -1;
   }
 
@@ -1203,7 +1203,7 @@ int proxy_data(int srv, struct wrtcchan *chan, int *events) {
 }
 
 int send_connection_opens_rsp(int srv, struct wrtcchan *chan) {
-  struct stkcmsg rsp;
+  struct appcmsg rsp;
   struct sctp_sndrcvinfo sri;
   int err;
 
@@ -1253,7 +1253,7 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
       int scm_error = errno;
       perror("connect_socket");
 
-      scm_error = translate_stk_connection_error(scm_error);
+      scm_error = translate_app_connection_error(scm_error);
 
       rsp_cmsg_error(srv, chan, SCM_REQ_CONNECT, scm_error);
       chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_HAS_PENDING_CONN);
@@ -1328,7 +1328,7 @@ void flush_chan(int srv, struct wrtcchan *chan, int *new_events, int *needs_writ
           log_printf("No more retries left for datagram\n");
           if ( chan->wrc_flags & WRC_ERROR_ON_RETRY ) {
             log_printf("An error was requested to be delivered on retry failure\n");
-            rsp_cmsg_error(srv, chan, chan->wrc_retry_rsp, STKD_ERROR_TEMP_UNAVAILABLE);
+            rsp_cmsg_error(srv, chan, chan->wrc_retry_rsp, APPD_ERROR_TEMP_UNAVAILABLE);
           }
           chan->wrc_flags &= ~(WRC_RETRY_MSG | WRC_ERROR_ON_RETRY);
         } else {
@@ -1410,9 +1410,9 @@ int chan_disconnects(int srv, struct wrtcchan *chan, int triggers, int *evts) {
     } else {
       log_printf("Closing socket due to error: %s (%d retries_left)\n", strerror(sockerr), chan->wrc_retries_left);
 
-      cerr = translate_stk_connection_error(sockerr);
+      cerr = translate_app_connection_error(sockerr);
 
-      if ( chan->wrc_retries_left > 0 && STKD_ERR_IS_TEMPORARY(cerr) ) {
+      if ( chan->wrc_retries_left > 0 && APPD_ERR_IS_TEMPORARY(cerr) ) {
         // set the channel with WRC_HAS_OUTGOING, which causes a new
         // connect to be issued
         chan->wrc_retries_left--;
@@ -1896,7 +1896,7 @@ int write_open_app_req(struct wrtcchan *chan, char *app_name, int app_name_len) 
 void handle_chan_msg(int srv, struct wrtcchan *chan,
                      void *buf, int sz, int flags) {
   int app_name_len, err, rsp_sz, req;
-  struct stkcmsg rsp, *msg = (struct stkcmsg *)buf;
+  struct appcmsg rsp, *msg = (struct appcmsg *)buf;
   struct sctp_sndrcvinfo sri;
   struct sockaddr_in endpoint;
   void *data_buf;
@@ -1905,11 +1905,11 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
     req = SCM_REQ_DATA;
     data_buf = msg;
   } else {
-    if ( !stkcmsg_has_enough(msg, sz) ) {
-      fprintf(stderr, "Invalid control message received: %d %x\n", sz, STK_CMSG_REQ(msg));
+    if ( !appcmsg_has_enough(msg, sz) ) {
+      fprintf(stderr, "Invalid control message received: %d %x\n", sz, APP_CMSG_REQ(msg));
       goto reset;
     }
-    req = STK_CMSG_REQ(msg);
+    req = APP_CMSG_REQ(msg);
     data_buf = SCM_DATA(msg);
   }
 
@@ -1923,7 +1923,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
 
       if ( WRC_HAS_MESSAGE_PENDING(chan) ) {
         fprintf(stderr, "Request already in progress on channel %d\n", chan->wrc_chan_id);
-        rsp_cmsg_error(srv, chan, STK_CMSG_REQ(msg), STKD_ERROR_SYSTEM_BUSY);
+        rsp_cmsg_error(srv, chan, APP_CMSG_REQ(msg), APPD_ERROR_SYSTEM_BUSY);
         break;
       }
 
@@ -1932,7 +1932,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
         int saved_errno = errno;
         perror("write_open_app_req");
         errno = saved_errno;
-        rsp_cmsg_error(srv, chan, STK_CMSG_REQ(msg), STKD_ERROR_SYSTEM_ERROR);
+        rsp_cmsg_error(srv, chan, APP_CMSG_REQ(msg), APPD_ERROR_SYSTEM_ERROR);
         break;
       }
 
@@ -1951,7 +1951,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
       if ( chan-> wrc_flags & WRC_HAS_PENDING_CONN ) {
         rsp_sz = SCM_ERROR_RSP_SZ;
         rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-        rsp.data.scm_error = htonl(STKD_ERROR_SYSTEM_BUSY);
+        rsp.data.scm_error = htonl(APPD_ERROR_SYSTEM_BUSY);
       } else if ( chan_supports_sk_type(chan, msg->data.scm_connect.scm_sk_type) ) {
         endpoint.sin_family = AF_INET;
         endpoint.sin_port = msg->data.scm_connect.scm_port;
@@ -1961,7 +1961,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
           log_printf("Could not find app %d\n", ntohl(msg->data.scm_connect.scm_app));
           rsp_sz = SCM_ERROR_RSP_SZ;
           rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-          rsp.data.scm_error = htonl(STKD_ERROR_APP_DOES_NOT_EXIST);
+          rsp.data.scm_error = htonl(APPD_ERROR_APP_DOES_NOT_EXIST);
         } else {
           err = mk_socket(msg->data.scm_connect.scm_sk_type);
           if ( err < 0 ) {
@@ -1970,7 +1970,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
 
             rsp_sz = SCM_ERROR_RSP_SZ;
             rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-            rsp.data.scm_error = htonl(translate_stk_connection_error(saved_errno));
+            rsp.data.scm_error = htonl(translate_app_connection_error(saved_errno));
           } else {
             int old_sk = chan->wrc_sk;
 
@@ -1986,7 +1986,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
               // TODO we should probably close this socket
               rsp_sz = SCM_ERROR_RSP_SZ;
               rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-              rsp.data.scm_error = htonl(translate_stk_connection_error(errno));
+              rsp.data.scm_error = htonl(translate_app_connection_error(errno));
             } else {
               if ( err == 0 ) {
                 mark_channel_connected(chan);
@@ -2007,7 +2007,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
       } else {
         rsp_sz = SCM_ERROR_RSP_SZ;
         rsp.scm_type = SCM_RESPONSE | SCM_ERROR | SCM_REQ_CONNECT;
-        rsp.data.scm_error = htonl(STKD_ERROR_INVALID_SOCKET_TYPE);
+        rsp.data.scm_error = htonl(APPD_ERROR_INVALID_SOCKET_TYPE);
       }
 
       // send the response, if any
@@ -2090,7 +2090,7 @@ void handle_chan_msg(int srv, struct wrtcchan *chan,
     }
     break;
   default:
-    fprintf(stderr, "Invalid control message type: %d\n", STK_CMSG_REQ(msg));
+    fprintf(stderr, "Invalid control message type: %d\n", APP_CMSG_REQ(msg));
     goto reset;
   }
 
@@ -2222,8 +2222,8 @@ void handle_msg(int srv,
       set_sk_nonblocking(sk);
 
       remote.sin_family = AF_INET;
-      remote.sin_port = htons(STORKD_OPEN_APP_PORT);
-      inet_pton(AF_INET, STORKD_ADDR, &remote.sin_addr);
+      remote.sin_port = htons(APPLIANCED_OPEN_APP_PORT);
+      inet_pton(AF_INET, APPLIANCED_ADDR, &remote.sin_addr);
       err = connect(sk, (struct sockaddr *)&remote, sizeof(remote));
       if ( err < 0 ) {
         perror("connect control channel");
@@ -2340,7 +2340,7 @@ int main(int argc, char **argv) {
 
   int flags;
 
-  uint8_t kite_sts = 1;
+  uint8_t applianced_sts = 1;
   int comm_up = 0, frag_il = 2;
   //  int autoclose_interval = 60; // Close the association in 60 seconds
   //  struct linger sctp_linger;
@@ -2352,7 +2352,7 @@ int main(int argc, char **argv) {
 
   //  sigset_t block;
   if ( fcntl(COMM, F_GETFD) >= 0 ) {
-    fprintf(stderr, "webrtc-proxy: running in kite\n");
+    fprintf(stderr, "webrtc-proxy: running in applianced\n");
     comm_up = 1;
   } else {
     fprintf(stderr, "webrtc-proxy: running in debug mode\n");
@@ -2487,7 +2487,7 @@ int main(int argc, char **argv) {
   }
 
   if ( comm_up ) {
-    if ( write(COMM, &kite_sts, 1) != 1 )
+    if ( write(COMM, &applianced_sts, 1) != 1 )
       perror("webrtc-proxy: write(COMM)");
     close(COMM);
   }

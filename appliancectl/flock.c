@@ -4,11 +4,11 @@
 #include "commands.h"
 
 int join_flock(int argc, char **argv) {
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
-  struct kitelocalattr *attr = KLM_FIRSTATTR(msg, sizeof(buf));
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg = (struct applocalmsg *)buf;
+  struct applocalattr *attr = ALM_FIRSTATTR(msg, sizeof(buf));
   char *flock_uri;
-  int err, sk = 0, sz = KLM_SIZE_INIT;
+  int err, sk = 0, sz = ALM_SIZE_INIT;
 
   if ( argc != 2 ) {
     fprintf(stderr, "Usage: appliancectl join-flock <FLOCK-URI>\n");
@@ -19,15 +19,15 @@ int join_flock(int argc, char **argv) {
 
   assert(attr);
 
-  msg->klm_req = ntohs(KLM_REQ_CREATE | KLM_REQ_ENTITY_FLOCK);
-  msg->klm_req_flags = 0;
-  attr->kla_name = ntohs(KLA_FLOCK_URL);
-  attr->kla_length = ntohs(KLA_SIZE(strlen(flock_uri)));
+  msg->alm_req = ntohs(ALM_REQ_CREATE | ALM_REQ_ENTITY_FLOCK);
+  msg->alm_req_flags = 0;
+  attr->ala_name = ntohs(ALA_FLOCK_URL);
+  attr->ala_length = ntohs(ALA_SIZE(strlen(flock_uri)));
 
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
-  assert(KLA_DATA(attr, buf, sizeof(buf)));
-  memcpy(KLA_DATA_UNSAFE(attr, void*), flock_uri, strlen(flock_uri));
+  assert(ALA_DATA(attr, buf, sizeof(buf)));
+  memcpy(ALA_DATA_UNSAFE(attr, void*), flock_uri, strlen(flock_uri));
 
   sk = mk_api_socket();
   if ( sk < 0 ) {
@@ -49,7 +49,7 @@ int join_flock(int argc, char **argv) {
     return 4;
   }
 
-  display_stork_response(buf, sz, "Flock request submitted (use list-flocks command to see status)");
+  display_intrustd_response(buf, sz, "Flock request submitted (use list-flocks command to see status)");
 
   close(sk);
 
@@ -57,18 +57,18 @@ int join_flock(int argc, char **argv) {
 }
 
 int list_flocks(int argc, char **argv) {
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT, sk, err;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg = (struct applocalmsg *)buf;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT, sk, err;
 
   if ( argc > 1 ) {
     fprintf(stderr, "Usage: appliancectl list-flocks\n");
     return 1;
   }
 
-  msg->klm_req = ntohs(KLM_REQ_GET | KLM_REQ_ENTITY_FLOCK);
-  msg->klm_req_flags = htons(KLM_RETURN_MULTIPLE);
+  msg->alm_req = ntohs(ALM_REQ_GET | ALM_REQ_ENTITY_FLOCK);
+  msg->alm_req_flags = htons(ALM_RETURN_MULTIPLE);
 
   sk = mk_api_socket();
   if ( sk < 0 ) {
@@ -91,7 +91,7 @@ int list_flocks(int argc, char **argv) {
       return 4;
     }
 
-    if ( display_stork_response(buf, sz, NULL) == 0 ) {
+    if ( display_intrustd_response(buf, sz, NULL) == 0 ) {
       // Successful response, print result in tabular format
       uint32_t flock_status = 0xFFFFFFFF;
       unsigned char *flock_signature_start, *flock_signature_end;
@@ -99,24 +99,24 @@ int list_flocks(int argc, char **argv) {
       flock_signature_start = flock_signature_end = NULL;
       flock_url_start = flock_url_end = NULL;
 
-      assert( KLM_REQ_ENTITY(msg) == KLM_REQ_ENTITY_FLOCK &&
-              KLM_REQ_OP(msg) == KLM_REQ_GET );
+      assert( ALM_REQ_ENTITY(msg) == ALM_REQ_ENTITY_FLOCK &&
+              ALM_REQ_OP(msg) == ALM_REQ_GET );
 
-      for ( attr = KLM_FIRSTATTR(msg, sz); attr; attr = KLM_NEXTATTR(msg, attr, sz) ) {
-        switch ( ntohs(attr->kla_name) ) {
-        case KLA_FLOCK_URL:
-          flock_url_start = KLA_DATA(attr, msg, sz);
-          flock_url_end = flock_url_start + KLA_PAYLOAD_SIZE(attr);
+      for ( attr = ALM_FIRSTATTR(msg, sz); attr; attr = ALM_NEXTATTR(msg, attr, sz) ) {
+        switch ( ntohs(attr->ala_name) ) {
+        case ALA_FLOCK_URL:
+          flock_url_start = ALA_DATA(attr, msg, sz);
+          flock_url_end = flock_url_start + ALA_PAYLOAD_SIZE(attr);
           break;
-        case KLA_FLOCK_SIGNATURE:
-          flock_signature_start = (unsigned char *)KLA_DATA(attr, msg, sz);
-          flock_signature_end = flock_signature_start + KLA_PAYLOAD_SIZE(attr);
+        case ALA_FLOCK_SIGNATURE:
+          flock_signature_start = (unsigned char *)ALA_DATA(attr, msg, sz);
+          flock_signature_end = flock_signature_start + ALA_PAYLOAD_SIZE(attr);
           break;
-        case KLA_FLOCK_STATUS:
-          if ( KLA_PAYLOAD_SIZE(attr) != sizeof(flock_status) ) {
-            fprintf(stderr, "list_flocks: Invalid payload length for KLA_FLOCK_STATUS: %zu\n", KLA_PAYLOAD_SIZE(attr));
+        case ALA_FLOCK_STATUS:
+          if ( ALA_PAYLOAD_SIZE(attr) != sizeof(flock_status) ) {
+            fprintf(stderr, "list_flocks: Invalid payload length for ALA_FLOCK_STATUS: %zu\n", ALA_PAYLOAD_SIZE(attr));
           } else {
-            flock_status = ntohl(*(KLA_DATA_AS(attr, buf, sz, uint32_t *)));
+            flock_status = ntohl(*(ALA_DATA_AS(attr, buf, sz, uint32_t *)));
           }
         default:
           break;
@@ -143,7 +143,7 @@ int list_flocks(int argc, char **argv) {
     } else
       return 5;
 
-  } while ( !KLM_IS_END(msg) );
+  } while ( !ALM_IS_END(msg) );
 
   return EXIT_SUCCESS;
 }

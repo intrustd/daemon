@@ -14,15 +14,15 @@
 
 char *g_persona_id;
 
-pid_t do_run(struct stkinitmsg *pkt, int sz) {
+pid_t do_run(struct appinitmsg *pkt, int sz) {
   char *args, *end;
   char **argv = NULL, **envv = NULL;
   int i, err;
   pid_t child_pid;
 
-  int kite_pipe[2];
+  int appd_pipe[2];
 
-  args = STK_ARGS(pkt);
+  args = APPINIT_ARGS(pkt);
   end = ((char *) pkt) + sz;
 
   if ( pkt->un.run.argc <= 1 ) { errno = EINVAL; goto err; }
@@ -57,8 +57,8 @@ pid_t do_run(struct stkinitmsg *pkt, int sz) {
 
   fprintf(stderr, "[Persona %s] Running command\n", g_persona_id);
 
-  if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
-    err = pipe(kite_pipe);
+  if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT ) {
+    err = pipe(appd_pipe);
     if ( err < 0 ) {
       perror("pipe");
       goto err;
@@ -68,20 +68,20 @@ pid_t do_run(struct stkinitmsg *pkt, int sz) {
   child_pid = vfork();
   if ( child_pid < 0 ) goto err;
   else if ( child_pid == 0 ) {
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
-      close(kite_pipe[0]);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT )
+      close(appd_pipe[0]);
 
     fprintf(stderr, "[Persona %s] Going to run %s\n", g_persona_id, argv[0]);
 
     close(COMM);
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
-      err = dup2(kite_pipe[1], COMM);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT ) {
+      err = dup2(appd_pipe[1], COMM);
       if ( err < 0 ) {
-        perror("dup2(kite_pipe[1], COMM)");
+        perror("dup2(appd_pipe[1], COMM)");
         exit(EXIT_FAILURE);
       }
 
-      close(kite_pipe[1]);
+      close(appd_pipe[1]);
     }
 
     execve(argv[0], argv+1, envv);
@@ -90,18 +90,18 @@ pid_t do_run(struct stkinitmsg *pkt, int sz) {
   } else {
     uint8_t sts;
 
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE )
-      close(kite_pipe[1]);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT )
+      close(appd_pipe[1]);
 
     fprintf(stderr, "[Persona %s] launched with pid %d\n", g_persona_id, child_pid);
 
-    if ( pkt->sim_flags & STK_RUN_FLAG_KITE ) {
-      err = read(kite_pipe[0], &sts, 1);
+    if ( pkt->aim_flags & APPINIT_RUN_FLAG_INTRUSTD_INIT ) {
+      err = read(appd_pipe[0], &sts, 1);
       if ( err != 1 ) {
-        perror("read(kite_pipe[0])");
+        perror("read(appd_pipe[0])");
       }
 
-      close(kite_pipe[0]);
+      close(appd_pipe[0]);
     }
   }
 
@@ -117,13 +117,13 @@ pid_t do_run(struct stkinitmsg *pkt, int sz) {
 }
 
 void usage() {
-  fprintf(stderr, "persona-init - stork init process for persona containers\n");
+  fprintf(stderr, "persona-init - intrustd init process for persona containers\n");
   fprintf(stderr, "usage: persona-init <persona-id>\n");
 }
 
 int main(int argc, char **argv) {
   char *buf;
-  struct stkinitmsg *pkt;
+  struct appinitmsg *pkt;
   uint8_t sts = 1;
   int n, ret;
   pid_t our_pid = getpid(), child_pid;
@@ -146,13 +146,13 @@ int main(int argc, char **argv) {
 
   fprintf(stderr, "[Persona %s] set up signals\n", g_persona_id);
 
-  buf = malloc(STK_MAX_PKT_SZ);
+  buf = malloc(APPINIT_MAX_PKT_SZ);
   if ( !buf ) {
-    perror("malloc(STK_MAX_PKT_SZ)");
+    perror("malloc(APPINIT_MAX_PKT_SZ)");
     return 1;
   }
 
-  pkt = (struct stkinitmsg *)buf;
+  pkt = (struct appinitmsg *)buf;
   n = send(COMM, &sts, 1, 0);
   if ( n == -1 ) {
     perror("send");
@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
   // Continuously read from COMM socket
   while ( 1 ) {
 
-    n = recv(COMM, buf, STK_MAX_PKT_SZ, 0);
+    n = recv(COMM, buf, APPINIT_MAX_PKT_SZ, 0);
     if ( n == 0 ) break;
 
     if ( n == -1 ) {
@@ -178,8 +178,8 @@ int main(int argc, char **argv) {
       fprintf(stderr, "[Persona %s] Packet is too small %d < %lu\n", g_persona_id, n, sizeof(*pkt));
     }
 
-    switch ( pkt->sim_req ) {
-    case STK_REQ_RUN:
+    switch ( pkt->aim_req ) {
+    case APPINIT_REQ_RUN:
       child_pid = do_run(pkt, n);
       do {
         n = send(COMM, &child_pid, sizeof(child_pid), 0);
@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
       }
 
       break;
-    case STK_REQ_KILL:
+    case APPINIT_REQ_KILL:
       fprintf(stderr, "Killing process %d with signal %d\n", pkt->un.kill.which, pkt->un.kill.sig);
       ret = kill(pkt->un.kill.which, pkt->un.kill.sig);
       if ( ret < 0 ) {
@@ -210,7 +210,7 @@ int main(int argc, char **argv) {
 
       break;
     default:
-      fprintf(stderr, "[Persona %s] Invalid init req: %d\n", g_persona_id, pkt->sim_req);
+      fprintf(stderr, "[Persona %s] Invalid init req: %d\n", g_persona_id, pkt->aim_req);
     };
   }
 

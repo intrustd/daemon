@@ -19,45 +19,45 @@
 #define WEBRTC_PROXY_OPTION 0x202
 #define PERSONA_INIT_OPTION 0x203
 #define APP_INSTANCE_INIT_OPTION 0x204
-#define KITE_USER_OPTION 0x205
-#define KITE_USER_GROUP_OPTION 0x206
-#define KITE_PACKETS_FILE_OPTION 0x207
-#define KITE_RESOLV_CONF_OPTION 0x208
-#define KITE_DAEMON_USER_OPTION 0x209
-#define KITE_DAEMON_GROUP_OPTION 0x20A
+#define USER_OPTION 0x205
+#define USER_GROUP_OPTION 0x206
+#define PACKETS_FILE_OPTION 0x207
+#define RESOLV_CONF_OPTION 0x208
+#define DAEMON_USER_OPTION 0x209
+#define DAEMON_GROUP_OPTION 0x20A
 
 static void usage(const char *msg) {
   if ( msg ) fprintf(stderr, "Error: %s\n", msg);
 
-  fprintf(stderr, "applianced - Kite appliance server\n");
+  fprintf(stderr, "applianced - Intrustd appliance server\n");
   fprintf(stderr, "Usage: applianced [OPTION]...\n\n");
   fprintf(stderr, "Options:\n");
   fprintf(stderr,
-          "  -h, --help                    Show this help message\n");
+          "  -h, --help                        Show this help message\n");
   fprintf(stderr,
-          "  -c, --conf-dir <DIR>          Appliance configuration directory\n");
+          "  -c, --conf-dir <DIR>              Appliance configuration directory\n");
   fprintf(stderr,
-          "  -H, --host                    System type for application downloads\n");
+          "  -H, --host                        System type for application downloads\n");
   fprintf(stderr,
-          "  --ebroute <EBROUTE>           Path to 'ebroute' executable\n");
+          "  --ebroute <EBROUTE>               Path to 'ebroute' executable\n");
   fprintf(stderr,
-          "  --iproute <IPROUTE>           Path to 'iproute' executable\n");
+          "  --iproute <IPROUTE>               Path to 'iproute' executable\n");
   fprintf(stderr,
-          "  --webrtc-proxy <PROXY>        Path to 'webrtc-proxy' executable\n");
+          "  --webrtc-proxy <PROXY>            Path to 'webrtc-proxy' executable\n");
   fprintf(stderr,
-          "  --persona-init <INIT>         Path to 'persona-init' executable\n");
+          "  --persona-init <INIT>             Path to 'persona-init' executable\n");
   fprintf(stderr,
-          "  --app-instance-init <INIT>    Path to 'app-instance-init' executable\n");
+          "  --app-instance-init <INIT>        Path to 'app-instance-init' executable\n");
   fprintf(stderr,
-          "  --kite-user <UID>/<USERNAME>  Uid or username of kite user (for user-mode privileges in namespace) (Default: kiteuser)\n");
+          "  --intrustd-user <UID>/<USERNAME>  Uid or username of intrustd user (for user-mode privileges in namespace) (Default: intrustd-user)\n");
   fprintf(stderr,
-          "  --kite-group <GID>/<GROUP>    Uid or group name of kite user group (Default: kiteuser)\n");
+          "  --intrustd-group <GID>/<GROUP>    Uid or group name of intrustd user group (Default: intrustd-user)\n");
   fprintf(stderr,
-          "  --dump-pkts <PACKET FILE>     Dump all ethernet frames received at the bridge to a file\n");
+          "  --dump-pkts <PACKET FILE>         Dump all ethernet frames received at the bridge to a file\n");
   fprintf(stderr,
-          "  --valgrind                    Make things valgrind compatible\n");
+          "  --valgrind                        Make things valgrind compatible\n");
   fprintf(stderr,
-          "  --resolv-conf                 Location of resolv.conf for containers\n");
+          "  --resolv-conf                     Location of resolv.conf for containers\n");
 }
 
 static const char *get_nix_system_config() {
@@ -238,21 +238,21 @@ void appconf_init(struct appconf *ac) {
   ac->ac_app_instance_init_path = NULL;
   ac->ac_system_config = NULL;
   ac->ac_resolv_conf = NULL;
-  ac->ac_kitepath = NULL;
+  ac->ac_ourpath = NULL;
   ac->ac_flags = 0;
-  ac->ac_kite_user = -1;
-  ac->ac_kite_user_group = -1;
+  ac->ac_app_user = -1;
+  ac->ac_app_user_group = -1;
   ac->ac_daemon_user = -1;
   ac->ac_daemon_group = -1;
-  ac->ac_kite_packet_file = NULL;
+  ac->ac_dump_packet_file = NULL;
 }
 
-static void appconf_attempt_kitepath(struct appconf *ac) {
+static void appconf_attempt_ourpath(struct appconf *ac) {
   FILE *maps;
 
   maps = fopen("/proc/self/maps", "rt");
   if ( !maps ) {
-    fprintf(stderr, "appconf_attempt_kite_path: could not open maps\n");
+    fprintf(stderr, "appconf_attempt_ourpath: could not open maps\n");
     return;
   }
 
@@ -264,15 +264,15 @@ static void appconf_attempt_kitepath(struct appconf *ac) {
     if ( n != 3 ) {
       fprintf(stderr, "warning could not match items for maps file\n");
     } else {
-      if ( start <= (void*)appconf_attempt_kitepath &&
-           end > (void*)appconf_attempt_kitepath ) {
+      if ( start <= (void*)appconf_attempt_ourpath &&
+           end > (void*)appconf_attempt_ourpath ) {
         const char *dir = dirname(path);
 
         char *newdir = malloc(strlen(dir) + 1);
         strcpy(newdir, dir);
 
-        fprintf(stderr, "found KITEPATH %s by examining mappings\n", ac->ac_kitepath);
-        ac->ac_kitepath = newdir;
+        fprintf(stderr, "found INTRUSTDPATH %s by examining mappings\n", ac->ac_ourpath);
+        ac->ac_ourpath = newdir;
 
         break;
       }
@@ -285,36 +285,36 @@ static void appconf_attempt_kitepath(struct appconf *ac) {
 }
 
 static int parse_user(const char *user, uid_t *uid, gid_t *gid) {
-  struct passwd *kite_user = getpwnam(optarg);
-  if ( !kite_user && isdigit(optarg[0]) ) {
+  struct passwd *userent = getpwnam(optarg);
+  if ( !userent && isdigit(optarg[0]) ) {
     if ( sscanf(optarg, "%d", uid) != 1 ) {
       fprintf(stderr, "No such user: %s\n", optarg);
       return -1;
     } else
       return 0;
-  } else if ( !kite_user ) {
+  } else if ( !userent ) {
     fprintf(stderr, "No such user: %s\n", optarg);
     return -1;
   } else {
-    *uid = kite_user->pw_uid;
-    *gid = kite_user->pw_gid;
+    *uid = userent->pw_uid;
+    *gid = userent->pw_gid;
     return 0;
   }
 }
 
 static int parse_group(const char *group, gid_t *gid) {
-  struct group *kite_user_group = getgrnam(optarg);
-  if ( !kite_user_group && isdigit(optarg[0]) ) {
+  struct group *groupent = getgrnam(optarg);
+  if ( !groupent && isdigit(optarg[0]) ) {
     if ( sscanf(optarg, "%d", gid) != 1 ) {
       fprintf(stderr, "No such group: %s\n", optarg);
       return -1;
     } else
       return 0;
-  } else if ( !kite_user_group ) {
+  } else if ( !groupent ) {
     fprintf(stderr, "No such group: %s\n", optarg);
     return -1;
   } else {
-    *gid = kite_user_group->gr_gid;
+    *gid = groupent->gr_gid;
     return 0;
   }
 }
@@ -330,18 +330,18 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "webrtc-proxy", required_argument, 0, WEBRTC_PROXY_OPTION },
     { "persona-init", required_argument, 0, PERSONA_INIT_OPTION },
     { "app-instance-init", required_argument, 0, APP_INSTANCE_INIT_OPTION },
-    { "kite-user", required_argument, 0, KITE_USER_OPTION },
-    { "kite-group", required_argument, 0, KITE_USER_GROUP_OPTION },
-    { "user", required_argument, 0, KITE_DAEMON_USER_OPTION },
-    { "group", required_argument, 0, KITE_DAEMON_GROUP_OPTION },
-    { "dump-pkts", required_argument, 0, KITE_PACKETS_FILE_OPTION },
+    { "intrustd-user", required_argument, 0, USER_OPTION },
+    { "intrustd-group", required_argument, 0, USER_GROUP_OPTION },
+    { "user", required_argument, 0, DAEMON_USER_OPTION },
+    { "group", required_argument, 0, DAEMON_GROUP_OPTION },
+    { "dump-pkts", required_argument, 0, PACKETS_FILE_OPTION },
     { "host", required_argument, 0, 'H' },
-    { "resolv-conf", required_argument, 0, KITE_RESOLV_CONF_OPTION },
+    { "resolv-conf", required_argument, 0, RESOLV_CONF_OPTION },
     { 0, 0, 0, 0 }
   };
 
-  ac->ac_kitepath = getenv("KITEPATH");
-  appconf_attempt_kitepath(ac); // Attempts to get the kite path in other ways
+  ac->ac_ourpath = getenv("INTRUSTDPATH");
+  appconf_attempt_ourpath(ac); // Attempts to get the executable path in other ways
 
   while ( 1 ) {
     err = getopt_long(argc, argv, "hc:H:", long_options, &option_index);
@@ -366,30 +366,30 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
       ac->ac_app_instance_init_path = optarg;
       break;
 
-    case KITE_USER_OPTION:
-      if ( parse_user(optarg, &ac->ac_kite_user, &ac->ac_kite_user_group) < 0 )
+    case USER_OPTION:
+      if ( parse_user(optarg, &ac->ac_app_user, &ac->ac_app_user_group) < 0 )
         return -1;
       break;
 
-    case KITE_USER_GROUP_OPTION:
-      if ( parse_group(optarg, &ac->ac_kite_user_group) < 0 )
+    case USER_GROUP_OPTION:
+      if ( parse_group(optarg, &ac->ac_app_user_group) < 0 )
         return -1;
       break;
 
-    case KITE_PACKETS_FILE_OPTION:
-      ac->ac_kite_packet_file = optarg;
+    case PACKETS_FILE_OPTION:
+      ac->ac_dump_packet_file = optarg;
       break;
 
-    case KITE_RESOLV_CONF_OPTION:
+    case RESOLV_CONF_OPTION:
       ac->ac_resolv_conf = optarg;
       break;
 
-    case KITE_DAEMON_USER_OPTION:
+    case DAEMON_USER_OPTION:
       if ( parse_user(optarg, &ac->ac_daemon_user, &ac->ac_daemon_group) < 0 )
         return -1;
       break;
 
-    case KITE_DAEMON_GROUP_OPTION:
+    case DAEMON_GROUP_OPTION:
       if ( parse_group(optarg, &ac->ac_daemon_group) < 0 )
         return -1;
       break;
@@ -425,17 +425,17 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
 }
 
 const char *appconf_get_default_executable(struct appconf *ac, const char *nm) {
-  if ( ac->ac_kitepath ) {
+  if ( ac->ac_ourpath ) {
     int err;
     char *path;
     struct stat stinfo;
 
-    err = snprintf(NULL, 0, "%s/%s", ac->ac_kitepath, nm);
+    err = snprintf(NULL, 0, "%s/%s", ac->ac_ourpath, nm);
 
     path = malloc(err + 1);
     if ( !path ) return NULL;
 
-    snprintf(path, err + 1, "%s/%s", ac->ac_kitepath, nm);
+    snprintf(path, err + 1, "%s/%s", ac->ac_ourpath, nm);
 
     err = stat(path, &stinfo);
     if ( err < 0 ) {
@@ -462,7 +462,7 @@ const char *appconf_get_default_executable(struct appconf *ac, const char *nm) {
     if ( !ac->fd ) {                                                    \
       ac->fd = appconf_get_default_executable(ac, nm);                  \
       if ( !ac->fd ) {                                                  \
-        fprintf(stderr, "Could not get " nm " (Use --" nm " or KITEPATH)\n"); \
+        fprintf(stderr, "Could not get " nm " (Use --" nm " or INTRUSTDPATH)\n"); \
         return -1;                                                      \
       }                                                                 \
     }                                                                   \
@@ -477,24 +477,24 @@ int appconf_validate(struct appconf *ac, int do_debug) {
 
   uid = geteuid();
   if ( uid == 0 && (ac->ac_daemon_user < 0 || ac->ac_daemon_group < 0) ) {
-    fprintf(stderr, "Kite will not run as super-user, sorry\nSpecify --user and --group to enable switching\n");
+    fprintf(stderr, "Applianced will not run as super-user, sorry\nSpecify --user and --group to enable switching\n");
     return -1;
   }
 
-  if ( ac->ac_kite_user < 0 ) {
+  if ( ac->ac_app_user < 0 ) {
     struct passwd *user;
-    user = getpwnam("kiteuser");
+    user = getpwnam("intrustd-user");
     if ( !user ) {
-      fprintf(stderr, "No valid kite-user provided\n");
+      fprintf(stderr, "No valid intrustd-user provided\n");
       return -1;
     }
 
-    ac->ac_kite_user = user->pw_uid;
-    ac->ac_kite_user_group = user->pw_gid;
+    ac->ac_app_user = user->pw_uid;
+    ac->ac_app_user_group = user->pw_gid;
   }
 
-  if ( ac->ac_kite_user_group < 0 ) {
-    fprintf(stderr, "No valid kite-user group\n");
+  if ( ac->ac_app_user_group < 0 ) {
+    fprintf(stderr, "No valid intrustd-user group\n");
     return -1;
   }
 

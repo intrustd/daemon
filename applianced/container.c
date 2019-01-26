@@ -24,6 +24,8 @@
 #define OP_CONTAINER_CHECK_PERM (EVT_CTL_CUSTOM + 1)
 #define OP_CONTAINER_INIT_EXITS (EVT_CTL_CUSTOM + 2)
 
+#define DOMAIN_NAME "intrustd"
+
 struct containerchildinfo {
   struct container *cci_cont;
   int cci_comm;
@@ -509,7 +511,7 @@ static int container_start_child(void *c_) {
     return 1;
   }
 
-  err = setdomainname("kite", 4);
+  err = setdomainname(DOMAIN_NAME, strlen(DOMAIN_NAME));
   if ( err < 0 ) {
     perror("container_start_child: setdomainname");
     return 1;
@@ -592,7 +594,7 @@ static int container_start_child(void *c_) {
 int container_mod_host_entry(struct container *c, int direction,
                              const char *app_domain, const char *target) {
   int err;
-  struct stkinitmsg msg;
+  struct appinitmsg msg;
   struct iovec iov[3];
   struct msghdr skmsg =
     { .msg_flags = 0,
@@ -609,8 +611,8 @@ int container_mod_host_entry(struct container *c, int direction,
   if ( strlen(target) > 0xFFFF )
     return -1;
 
-  msg.sim_req = STK_REQ_MOD_HOST_ENTRY;
-  msg.sim_flags = 0;
+  msg.aim_req = APPINIT_REQ_MOD_HOST_ENTRY;
+  msg.aim_flags = 0;
   msg.un.modhost.dir = direction == 0 ? 0 : (direction / abs(direction));
   msg.un.modhost.dom_len = strlen(app_domain);
   msg.un.modhost.tgt_len = strlen(target);
@@ -674,8 +676,8 @@ int container_execute(struct container *c, uint32_t exec_flags, const char *path
 
 int container_execute_ex(struct container *c, struct containerexecinfo *info) {
   char *buf, *out;
-  struct stkinitmsg msg;
-  size_t buf_size = sizeof(struct stkinitmsg);
+  struct appinitmsg msg;
+  size_t buf_size = sizeof(struct appinitmsg);
   int i = 0, argc = 1, envc = 0, err;
 
   struct iovec iov;
@@ -709,7 +711,7 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
     return -1;
   }
 
-  if ( buf_size >= STK_MAX_PKT_SZ ) {
+  if ( buf_size >= APPINIT_MAX_PKT_SZ ) {
     fprintf(stderr, "container_execute: packet exceeds bounds\n");
     return -1;
   }
@@ -718,11 +720,11 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
   assert(buf);
   memset(buf, 0, buf_size); // Since this is allocated on the stack, make sure we don't accidentally expose any information
 
-  msg.sim_req = STK_REQ_RUN;
-  msg.sim_flags = 0;
+  msg.aim_req = APPINIT_REQ_RUN;
+  msg.aim_flags = 0;
 
-  if ( info->cei_flags & CONTAINER_EXEC_WAIT_FOR_KITE )
-    msg.sim_flags |= STK_RUN_FLAG_KITE;
+  if ( info->cei_flags & CONTAINER_EXEC_WAIT_FOR_INIT )
+    msg.aim_flags |= APPINIT_RUN_FLAG_INTRUSTD_INIT;
 
   if ( info->cei_flags & (CONTAINER_EXEC_REDIRECT_STDIN |
                           CONTAINER_EXEC_REDIRECT_STDOUT |
@@ -735,15 +737,15 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
 
     if ( info->cei_flags & CONTAINER_EXEC_REDIRECT_STDIN ) {
       fds[nfds++] = info->cei_stdin_fd;
-      msg.sim_flags |= STK_RUN_FLAG_STDIN;
+      msg.aim_flags |= APPINIT_RUN_FLAG_STDIN;
     }
     if ( info->cei_flags & CONTAINER_EXEC_REDIRECT_STDOUT ) {
       fds[nfds++] = info->cei_stdout_fd;
-      msg.sim_flags |= STK_RUN_FLAG_STDOUT;
+      msg.aim_flags |= APPINIT_RUN_FLAG_STDOUT;
     }
     if ( info->cei_flags & CONTAINER_EXEC_REDIRECT_STDERR ) {
       fds[nfds++] = info->cei_stderr_fd;
-      msg.sim_flags |= STK_RUN_FLAG_STDERR;
+      msg.aim_flags |= APPINIT_RUN_FLAG_STDERR;
     }
 
     skmsg.msg_controllen += CMSG_SPACE(sizeof(int) * nfds);
@@ -759,7 +761,7 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
   }
 
   if ( info->cei_flags & CONTAINER_EXEC_ENABLE_WAIT )
-    msg.sim_flags |= STK_RUN_FLAG_WAIT;
+    msg.aim_flags |= APPINIT_RUN_FLAG_WAIT;
 
   msg.un.run.argc = argc;
   msg.un.run.envc = envc;
@@ -847,10 +849,10 @@ int container_execute_ex(struct container *c, struct containerexecinfo *info) {
 }
 
 int container_kill(struct container *c, pid_t pid, int sig) {
-  struct stkinitmsg msg;
+  struct appinitmsg msg;
 
-  msg.sim_req = STK_REQ_KILL;
-  msg.sim_flags = 0;
+  msg.aim_req = APPINIT_REQ_KILL;
+  msg.aim_flags = 0;
   msg.un.kill.which = pid;
   msg.un.kill.sig = sig;
 

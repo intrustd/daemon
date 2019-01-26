@@ -181,14 +181,14 @@ void websocket_fn(struct eventloop *el, int op, void *arg) {
   int new_sk;
   struct wsconnection *conn;
 
-  kite_sock_addr addr;
+  intrustd_sock_addr addr;
   unsigned int addr_sz = sizeof(addr);
 
   st = FLOCKSTATE_FROM_EVENTLOOP(el);
 
   switch ( op ) {
   case WS_EVENT_ACCEPT:
-    new_sk = accept(st->fs_websocket_sk, &addr.ksa, &addr_sz);
+    new_sk = accept(st->fs_websocket_sk, &addr.sa, &addr_sz);
     if ( new_sk < 0 ) {
       perror("websocket_fn: accept");
       return;
@@ -390,7 +390,7 @@ static int wsconnection_onread(struct wsconnection *wsc, struct eventloop *el) {
           send_http_error(wsc, &handshake);
           connection_complete_unlocked(&wsc->wsc_conn);
         } else {
-          char appliance_name[KITE_APPLIANCE_NAME_MAX];
+          char appliance_name[INTRUSTD_APPLIANCE_NAME_MAX];
           struct applianceinfo *appliance;
 
           if ( uri_decode(handshake.ws_loc_start + 1, real_end - handshake.ws_loc_start - 1,
@@ -1284,7 +1284,6 @@ static void send_handshake_response(struct wsconnection *wsc, struct wshs *hs) {
   wsconnection_respond_line(wsc, el, "Upgrade: websocket");
   wsconnection_respond_line(wsc, el, "Connection: Upgrade");
   wsconnection_respond_line(wsc, el, accept_header);
-  //  wsconnection_respond_line(wsc, el, "Sec-WebSocket-Protocol: kite+flock");
   wsconnection_respond_line(wsc, el, "");
 
   WSC_SUBSCRIBE_WRITE(wsc);

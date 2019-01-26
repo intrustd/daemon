@@ -8,7 +8,7 @@ pkgs:
                  { seconds = 300; changes = 10; }
                  { seconds = 60; changes = 10000; } ],
   dbfilename ? "dump.rdb",
-  dir ? "/kite/",
+  dir ? "/intrustd/",
   extraConfig ? "",
   name }:
 

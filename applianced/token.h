@@ -7,8 +7,8 @@
 
 #include "persona.h"
 
-#define TOKEN_LOGIN_PERM_URL "kite+perm://admin.flywithkite.com/login"
-#define TOKEN_GUEST_PERM_URL "kite+perm://admin.flywithkite.com/guest"
+#define TOKEN_LOGIN_PERM_URL "intrustd+perm://admin.intrustd.com/login"
+#define TOKEN_GUEST_PERM_URL "intrustd+perm://admin.intrustd.com/guest"
 
 #define TOKEN_ID_LENGTH 32
 #define SITE_ID_MAX_LENGTH 32

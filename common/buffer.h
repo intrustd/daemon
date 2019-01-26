@@ -1,5 +1,5 @@
-#ifndef __kite_buffer_H__
-#define __kite_buffer_H__
+#ifndef __intrustd_buffer_H__
+#define __intrustd_buffer_H__
 
 #include "stdlib.h"
 

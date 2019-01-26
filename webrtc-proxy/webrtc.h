@@ -1,5 +1,5 @@
-#ifndef __stork_webrtc_H__
-#define __stork_webrtc_H__
+#ifndef __intrustd_webrtc_H__
+#define __intrustd_webrtc_H__
 
 #include <stdint.h>
 

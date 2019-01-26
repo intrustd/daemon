@@ -2,7 +2,7 @@
 
 pkgs:
 { name ? "default",
-  stateDir ? "/kite/logs/nginx-${name}",
+  stateDir ? "/intrustd/logs/nginx-${name}",
   nginx ? pkgs.nginx,
   port ? 50051,
   statusPage ? false,

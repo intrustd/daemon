@@ -42,7 +42,7 @@ struct localapi {
   struct appupdater *la_current_updater;
   struct fdsub la_container_waiter;
 
-  char la_outgoing[KITE_MAX_LOCAL_MSG_SZ];
+  char la_outgoing[APPLIANCED_MAX_LOCAL_MSG_SZ];
   int la_outgoing_sz;
 };
 
@@ -65,7 +65,7 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
   struct qdevent *qde;
   int err;
 
-  char buf[KITE_MAX_LOCAL_MSG_SZ], cbuf[128];
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ], cbuf[128];
 
   switch ( op ) {
   case OP_LOCALAPI_CONTAINER_CMD_COMPLETE:
@@ -79,12 +79,12 @@ static void localsockfn(struct eventloop *el, int op, void *arg) {
       err = read(api->la_container_sts_fd, &sts, sizeof(sts));
       if ( err < sizeof(sts) )  {
         perror("localsockfn(OP_LOCALAPI_CONTAINER_CMD_COMPLETE): recv");
-        localsock_respond_simple(api, el, ntohs(KLM_REQ_SUB | KLM_REQ_ENTITY_CONTAINER), KLE_SYSTEM_ERROR);
+        localsock_respond_simple(api, el, ntohs(ALM_REQ_SUB | ALM_REQ_ENTITY_CONTAINER), ALE_SYSTEM_ERROR);
       } else {
         localsock_cmd_completes(api, sts);
       }
     } else if ( FD_ERROR_PENDING(fde) ) {
-      localsock_respond_simple(api, el, ntohs(KLM_REQ_SUB | KLM_REQ_ENTITY_CONTAINER), KLE_SYSTEM_ERROR);
+      localsock_respond_simple(api, el, ntohs(ALM_REQ_SUB | ALM_REQ_ENTITY_CONTAINER), ALE_SYSTEM_ERROR);
     }
 
     api->la_busy = 0;
@@ -272,111 +272,111 @@ static int localsock_respond(struct localapi *api, struct eventloop *el,
 }
 
 // static int localsock_return_error_response(struct localapi *api, struct eventloop *el,
-//                                            struct kitelocalmsg *in_response_to, uint16_t err_code) {
-//   char buf[KITE_MAX_LOCAL_MSG_SZ];
-//   struct kitelocalmsg *msg;
-//   struct kitelocalattr *attr;
-//   int sz = KLM_SIZE_INIT;
+//                                            struct applocalmsg *in_response_to, uint16_t err_code) {
+//   char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+//   struct applocalmsg *msg;
+//   struct applocalattr *attr;
+//   int sz = ALM_SIZE_INIT;
 //
-//   msg = (struct kitelocalmsg *)buf;
-//   attr = KLM_FIRSTATTR(msg, sizeof(buf));
+//   msg = (struct applocalmsg *)buf;
+//   attr = ALM_FIRSTATTR(msg, sizeof(buf));
 //
 //   assert (attr);
 //
-//   msg->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
-//   msg->klm_req_flags = 0;
-//   attr->kla_name = htons(KLA_RESPONSE_CODE);
-//   attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-//   *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(err_code);
-//   KLM_SIZE_ADD_ATTR(sz, attr);
+//   msg->alm_req = htons(ALM_RESPONSE | ntohs(in_response_to->alm_req));
+//   msg->alm_req_flags = 0;
+//   attr->ala_name = htons(ALA_RESPONSE_CODE);
+//   attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+//   *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(err_code);
+//   ALM_SIZE_ADD_ATTR(sz, attr);
 //
 //   return localsock_respond(api, el, buf, sz);
 // }
 
 static int localsock_return_bad_entity(struct localapi *api, struct eventloop *el,
-                                       struct kitelocalmsg *in_response_to, uint16_t entity) {
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
+                                       struct applocalmsg *in_response_to, uint16_t entity) {
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
 
-  msg = (struct kitelocalmsg *)buf;
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+  msg = (struct applocalmsg *)buf;
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
 
   assert (attr);
 
-  msg->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_BAD_ENTITY);
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  msg->alm_req = htons(ALM_RESPONSE | ntohs(in_response_to->alm_req));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(ALE_BAD_ENTITY);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
-  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+  attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
   assert(attr);
-  attr->kla_name = htons(KLA_ENTITY);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(entity);
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = htons(ALA_ENTITY);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(entity);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   return localsock_respond(api, el, buf, sz);
 }
 
 static int localsock_return_bad_method(struct localapi *api, struct eventloop *el,
-                                       struct kitelocalmsg *in_response_to,
+                                       struct applocalmsg *in_response_to,
                                        uint16_t entity, uint16_t op) {
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
 
-  msg = (struct kitelocalmsg *)buf;
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+  msg = (struct applocalmsg *)buf;
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
 
   assert (attr);
 
-  msg->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_BAD_OP);
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  msg->alm_req = htons(ALM_RESPONSE | ntohs(in_response_to->alm_req));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(ALE_BAD_OP);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
-  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+  attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
   assert(attr);
-  attr->kla_name = htons(KLA_ENTITY);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(entity);
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = htons(ALA_ENTITY);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(entity);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
-  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+  attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
   assert(attr);
-  attr->kla_name = htons(KLA_OPERATION);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(op);
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = htons(ALA_OPERATION);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(op);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
 
   return localsock_respond(api, el, buf, sz);
 }
 
 static int localsock_return_missing_attrs(struct localapi *api, struct eventloop *el,
-                                          struct kitelocalmsg *in_response_to,
+                                          struct applocalmsg *in_response_to,
                                           ...) {
   va_list args;
 
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg = (struct kitelocalmsg *)buf;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
-  uint16_t rsp = KLE_MISSING_ATTRIBUTES;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg = (struct applocalmsg *)buf;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
+  uint16_t rsp = ALE_MISSING_ATTRIBUTES;
 
-  msg->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
-  msg->klm_req_flags = 0;
+  msg->alm_req = htons(ALM_RESPONSE | ntohs(in_response_to->alm_req));
+  msg->alm_req_flags = 0;
 
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
-  attr->kla_name = ntohs(KLA_RESPONSE_CODE);
-  attr->kla_length = ntohs(KLA_SIZE(sizeof(rsp)));
-  memcpy(KLA_DATA_UNSAFE(attr, uint16_t *), &rsp, sizeof(rsp));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
+  attr->ala_name = ntohs(ALA_RESPONSE_CODE);
+  attr->ala_length = ntohs(ALA_SIZE(sizeof(rsp)));
+  memcpy(ALA_DATA_UNSAFE(attr, uint16_t *), &rsp, sizeof(rsp));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   va_start(args, in_response_to);
   while ( 1 ) {
@@ -387,14 +387,14 @@ static int localsock_return_missing_attrs(struct localapi *api, struct eventloop
 
     mattr = mattrn;
 
-    attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
+    attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
     if ( !attr ) goto done;
 
-    attr->kla_name = ntohs(KLA_ATTRIBUTE);
-    attr->kla_length = ntohs(KLA_SIZE(sizeof(mattr)));
-    if ( !(KLA_DATA(attr, msg, sizeof(buf))) ) goto done;
-    memcpy(KLA_DATA_UNSAFE(attr, uint16_t *), &mattr, sizeof(mattr));
-    KLM_SIZE_ADD_ATTR(sz, attr);
+    attr->ala_name = ntohs(ALA_ATTRIBUTE);
+    attr->ala_length = ntohs(ALA_SIZE(sizeof(mattr)));
+    if ( !(ALA_DATA(attr, msg, sizeof(buf))) ) goto done;
+    memcpy(ALA_DATA_UNSAFE(attr, uint16_t *), &mattr, sizeof(mattr));
+    ALM_SIZE_ADD_ATTR(sz, attr);
   }
 
 
@@ -405,88 +405,88 @@ static int localsock_return_missing_attrs(struct localapi *api, struct eventloop
 
 static int localsock_respond_simple(struct localapi *api, struct eventloop *el,
                                     uint16_t req, uint16_t code) {
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
 
-  msg = (struct kitelocalmsg *)buf;
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+  msg = (struct applocalmsg *)buf;
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
 
   assert (attr);
 
-  msg->klm_req = htons(KLM_RESPONSE | req);
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(code);
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  msg->alm_req = htons(ALM_RESPONSE | req);
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(code);
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   return localsock_respond(api, el, buf, sz);
 }
 
 static int localsock_return_simple(struct localapi *api, struct eventloop *el,
-                                   struct kitelocalmsg *in_response_to,
+                                   struct applocalmsg *in_response_to,
                                    uint16_t code) {
-  return localsock_respond_simple(api, el, ntohs(in_response_to->klm_req), code);
+  return localsock_respond_simple(api, el, ntohs(in_response_to->alm_req), code);
 }
 
 static int localsock_return_not_found(struct localapi *api, struct eventloop *el,
-                                      struct kitelocalmsg *in_response_to) {
-  return localsock_return_simple(api, el, in_response_to, KLE_NOT_FOUND);
+                                      struct applocalmsg *in_response_to) {
+  return localsock_return_simple(api, el, in_response_to, ALE_NOT_FOUND);
 }
 
 static int localsock_return_not_allowed(struct localapi *api, struct eventloop *el,
-                                      struct kitelocalmsg *in_response_to) {
-  return localsock_return_simple(api, el, in_response_to, KLE_NOT_ALLOWED);
+                                      struct applocalmsg *in_response_to) {
+  return localsock_return_simple(api, el, in_response_to, ALE_NOT_ALLOWED);
 }
 
 // static int localsock_return_not_implemented(struct localapi *api, struct eventloop *el,
-//                                             struct kitelocalmsg *in_response_to) {
-//   return localsock_return_simple(api, el, in_response_to, KLE_NOT_IMPLEMENTED);
+//                                             struct applocalmsg *in_response_to) {
+//   return localsock_return_simple(api, el, in_response_to, ALE_NOT_IMPLEMENTED);
 // }
 
 static int localsock_return_internal_error(struct localapi *api, struct eventloop *el,
-                                           struct kitelocalmsg *in_response_to) {
-  return localsock_return_simple(api, el, in_response_to, KLE_SYSTEM_ERROR);
+                                           struct applocalmsg *in_response_to) {
+  return localsock_return_simple(api, el, in_response_to, ALE_SYSTEM_ERROR);
 }
 
 static void localsock_respond_persona(struct localapi *api, struct eventloop *el,
-                                      struct kitelocalmsg *in_response_to,
+                                      struct applocalmsg *in_response_to,
                                       const char *display_name,
                                       uint32_t p_flags) {
-  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
-  struct kitelocalattr *attr;
-  int rspsz = KLM_SIZE_INIT;
+  char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *rsp = (struct applocalmsg *) ret_buf;
+  struct applocalattr *attr;
+  int rspsz = ALM_SIZE_INIT;
 
-  rsp->klm_req = htons(KLM_RESPONSE | ntohs(in_response_to->klm_req));
-  rsp->klm_req_flags = 0;
+  rsp->alm_req = htons(ALM_RESPONSE | ntohs(in_response_to->alm_req));
+  rsp->alm_req_flags = 0;
 
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
 
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SUCCESS);
+  ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-  attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+  attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
   assert(attr);
-  attr->kla_name = htons(KLA_PERSONA_DISPLAYNM);
-  attr->kla_length = htons(KLA_SIZE(strlen(display_name)));
-  memcpy(KLA_DATA_UNSAFE(attr, char *), display_name, strlen(display_name));
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
+  attr->ala_name = htons(ALA_PERSONA_DISPLAYNM);
+  attr->ala_length = htons(ALA_SIZE(strlen(display_name)));
+  memcpy(ALA_DATA_UNSAFE(attr, char *), display_name, strlen(display_name));
+  ALM_SIZE_ADD_ATTR(rspsz, attr);
 
   if ( p_flags ) {
     uint32_t flags[2] = { ntohl(p_flags), 0 };
 
-    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+    attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
     assert(attr);
-    attr->kla_name = htons(KLA_PERSONA_FLAGS);
-    attr->kla_length = htons(KLA_SIZE(sizeof(flags)));
+    attr->ala_name = htons(ALA_PERSONA_FLAGS);
+    attr->ala_length = htons(ALA_SIZE(sizeof(flags)));
 
-    memcpy(KLA_DATA_UNSAFE(attr, void *), flags, sizeof(flags));
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    memcpy(ALA_DATA_UNSAFE(attr, void *), flags, sizeof(flags));
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
   }
 
   localsock_respond(api, el, ret_buf, rspsz);
@@ -494,26 +494,26 @@ static void localsock_respond_persona(struct localapi *api, struct eventloop *el
 }
 
 static void localsock_get_persona(struct localapi *api, struct eventloop *el,
-                                  struct kitelocalmsg *msg, int msgsz) {
-  struct kitelocalattr *attr;
+                                  struct applocalmsg *msg, int msgsz) {
+  struct applocalattr *attr;
 
   int has_persona_id = 0;
   char persona_id[PERSONA_ID_LENGTH];
   struct persona *p;
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_PERSONA_ID:
-      if ( KLA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH ) {
+  for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_PERSONA_ID:
+      if ( ALA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH ) {
         has_persona_id = 1;
-        memcpy(persona_id, KLA_DATA_UNSAFE(attr, void *), PERSONA_ID_LENGTH);
+        memcpy(persona_id, ALA_DATA_UNSAFE(attr, void *), PERSONA_ID_LENGTH);
       } else {
-        localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+        localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
         return;
       }
       break;
     default:
-      localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+      localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
       return;
     }
   }
@@ -524,7 +524,7 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
 
     SAFE_RWLOCK_RDLOCK(&api->la_app_state->as_personas_mutex);
     p_count = HASH_CNT(p_hh, api->la_app_state->as_personas);
-    if ( localsock_start_list(api, KLM_REQ_ENTITY_PERSONA, p_count) == 0 ) {
+    if ( localsock_start_list(api, ALM_REQ_ENTITY_PERSONA, p_count) == 0 ) {
       unsigned int i = 0;
       HASH_ITER(p_hh, api->la_app_state->as_personas, cur, tmp) {
         PERSONA_REF(cur);
@@ -559,11 +559,11 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_create_persona(struct localapi *api, struct eventloop *el,
-                                     struct kitelocalmsg *msg, int msgsz) {
-  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+                                     struct applocalmsg *msg, int msgsz) {
+  char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
 
-  struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
-  struct kitelocalattr *attr;
+  struct applocalmsg *rsp = (struct applocalmsg *) ret_buf;
+  struct applocalattr *attr;
 
   struct persona *persona;
 
@@ -571,31 +571,31 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
   int display_name_sz = 0, password_sz = 0;
   uint32_t p_flags = 0;
 
-  int rspsz = KLM_SIZE_INIT;
+  int rspsz = ALM_SIZE_INIT;
 
-  rsp->klm_req = htons(KLM_RESPONSE | htons(msg->klm_req));
-  rsp->klm_req_flags = 0;
+  rsp->alm_req = htons(ALM_RESPONSE | htons(msg->alm_req));
+  rsp->alm_req_flags = 0;
 
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
 
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_PERSONA_DISPLAYNM:
-      display_name = KLA_DATA_AS(attr, msg, msgsz, char *);
-      display_name_sz = KLA_PAYLOAD_SIZE(attr);
+  for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_PERSONA_DISPLAYNM:
+      display_name = ALA_DATA_AS(attr, msg, msgsz, char *);
+      display_name_sz = ALA_PAYLOAD_SIZE(attr);
       break;
-    case KLA_PERSONA_PASSWORD:
-      password = KLA_DATA_AS(attr, msg, msgsz, char *);
-      password_sz = KLA_PAYLOAD_SIZE(attr);
+    case ALA_PERSONA_PASSWORD:
+      password = ALA_DATA_AS(attr, msg, msgsz, char *);
+      password_sz = ALA_PAYLOAD_SIZE(attr);
       break;
-    case KLA_PERSONA_FLAGS:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(uint32_t) * 2 ) {
+    case ALA_PERSONA_FLAGS:
+      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(uint32_t) * 2 ) {
         uint32_t flags[2];
-        memcpy(flags, KLA_DATA_UNSAFE(attr, uint64_t *), sizeof(flags));
+        memcpy(flags, ALA_DATA_UNSAFE(attr, uint64_t *), sizeof(flags));
 
         p_flags |= ntohl(flags[0]);
         p_flags &= ~ntohl(flags[1]);
@@ -615,17 +615,17 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
 
   assert(persona);
 
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
-  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
+  *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SUCCESS);
+  ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-  attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+  attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
   assert(attr);
-  attr->kla_name = htons(KLA_PERSONA_ID);
-  attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
-  memcpy(KLA_DATA_UNSAFE(attr, char *), persona->p_persona_id, PERSONA_ID_LENGTH);
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
+  attr->ala_name = htons(ALA_PERSONA_ID);
+  attr->ala_length = htons(ALA_SIZE(PERSONA_ID_LENGTH));
+  memcpy(ALA_DATA_UNSAFE(attr, char *), persona->p_persona_id, PERSONA_ID_LENGTH);
+  ALM_SIZE_ADD_ATTR(rspsz, attr);
 
   localsock_respond(api, el, ret_buf, rspsz);
 
@@ -634,118 +634,118 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
   return;
 
  bad_request:
-  localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+  localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
 }
 
 static void localsock_get_system(struct localapi *api, struct eventloop *el,
-                                 struct kitelocalmsg *msg, int msgsz) {
-  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *rsp = (struct kitelocalmsg *)ret_buf;
-  struct kitelocalattr *attr;
-  int rspsz = KLM_SIZE_INIT;
+                                 struct applocalmsg *msg, int msgsz) {
+  char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *rsp = (struct applocalmsg *)ret_buf;
+  struct applocalattr *attr;
+  int rspsz = ALM_SIZE_INIT;
 
   const char *system_type = api->la_app_state->as_system;
 
-  msg->klm_req = htons(KLM_RESPONSE | ntohs(msg->klm_req));
-  msg->klm_req_flags = 0;
+  msg->alm_req = htons(ALM_RESPONSE | ntohs(msg->alm_req));
+  msg->alm_req_flags = 0;
 
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
 
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SUCCESS);
+  ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-  attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+  attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
   assert(attr);
-  attr->kla_name = htons(KLA_SYSTEM_TYPE);
-  attr->kla_length = htons(KLA_SIZE(strlen(system_type)));
-  if ( !KLA_DATA(attr, rsp, sizeof(ret_buf)) ) {
-    localsock_respond_simple(api, el, msg->klm_req, KLE_SYSTEM_ERROR);
+  attr->ala_name = htons(ALA_SYSTEM_TYPE);
+  attr->ala_length = htons(ALA_SIZE(strlen(system_type)));
+  if ( !ALA_DATA(attr, rsp, sizeof(ret_buf)) ) {
+    localsock_respond_simple(api, el, msg->alm_req, ALE_SYSTEM_ERROR);
     return;
   }
-  memcpy(KLA_DATA_UNSAFE(attr, void *), system_type, strlen(system_type));
-  KLM_SIZE_ADD_ATTR(rspsz, attr);
+  memcpy(ALA_DATA_UNSAFE(attr, void *), system_type, strlen(system_type));
+  ALM_SIZE_ADD_ATTR(rspsz, attr);
 
   localsock_respond(api, el, ret_buf, rspsz);
 }
 
 static void localsock_crud_system(struct localapi *api, struct eventloop *el,
-                                  struct kitelocalmsg *msg, int msgsz) {
-  switch ( KLM_REQ_OP(msg) ) {
-  case KLM_REQ_GET:
+                                  struct applocalmsg *msg, int msgsz) {
+  switch ( ALM_REQ_OP(msg) ) {
+  case ALM_REQ_GET:
     localsock_get_system(api, el, msg, msgsz);
     break;
 
   default:
-    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
     break;
   }
 }
 
 static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
-                                   struct kitelocalmsg *msg, int msgsz) {
-  switch ( KLM_REQ_OP(msg) ) {
-  case KLM_REQ_GET:
+                                   struct applocalmsg *msg, int msgsz) {
+  switch ( ALM_REQ_OP(msg) ) {
+  case ALM_REQ_GET:
     localsock_get_persona(api, el, msg, msgsz);
     break;
 
-  case KLM_REQ_CREATE:
+  case ALM_REQ_CREATE:
     localsock_create_persona(api, el, msg, msgsz);
     break;
 
   default:
-    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
     break;
   }
 }
 
 static void localsock_crud_flock(struct localapi *api, struct eventloop *el,
-                                 struct kitelocalmsg *msg, int msgsz) {
-  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+                                 struct applocalmsg *msg, int msgsz) {
+  char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
 
-  struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
-  struct kitelocalattr *attr;
+  struct applocalmsg *rsp = (struct applocalmsg *) ret_buf;
+  struct applocalattr *attr;
   struct flock flock;
   struct flock *current_flock, *tmp_flock;
-  int err, rspsz = KLM_SIZE_INIT;
+  int err, rspsz = ALM_SIZE_INIT;
   int found_uri = 0, flock_count, i;
 
   UriParserStateA flock_uri_parser;
   UriUriA flock_uri;
   flock_uri_parser.uri = &flock_uri;
 
-  rsp->klm_req = htons(KLM_RESPONSE | htons(msg->klm_req));
-  rsp->klm_req_flags = 0;
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  rsp->alm_req = htons(ALM_RESPONSE | htons(msg->alm_req));
+  rsp->alm_req_flags = 0;
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
 
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
 
-  switch ( KLM_REQ_OP(msg) ) {
-  case KLM_REQ_CREATE:
+  switch ( ALM_REQ_OP(msg) ) {
+  case ALM_REQ_CREATE:
     flock_clear(&flock);
 
-    for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-      switch ( KLA_NAME(attr) ) {
-      case KLA_FLOCK_URL:
-        if ( uriParseUriExA(&flock_uri_parser, KLA_DATA_UNSAFE(attr, char *),
-                            KLA_DATA_UNSAFE(attr, char *) + KLA_PAYLOAD_SIZE(attr))
+    for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+      switch ( ALA_NAME(attr) ) {
+      case ALA_FLOCK_URL:
+        if ( uriParseUriExA(&flock_uri_parser, ALA_DATA_UNSAFE(attr, char *),
+                            ALA_DATA_UNSAFE(attr, char *) + ALA_PAYLOAD_SIZE(attr))
              != URI_SUCCESS ) {
-          attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
-          *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_INVALID_URL);
-          KLM_SIZE_ADD_ATTR(rspsz, attr);
+          attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
+          *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_INVALID_URL);
+          ALM_SIZE_ADD_ATTR(rspsz, attr);
           localsock_respond(api, el, ret_buf, rspsz);
           return;
         }
 
         if ( flock_assign_uri(&flock, &flock_uri) != 0 ) {
           fprintf(stderr, "Could not assign flock URI\n");
-          attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
-          *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_INVALID_URL);
-          KLM_SIZE_ADD_ATTR(rspsz, attr);
+          attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
+          *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_INVALID_URL);
+          ALM_SIZE_ADD_ATTR(rspsz, attr);
           localsock_respond(api, el, ret_buf, rspsz);
           return;
         }
@@ -756,17 +756,17 @@ static void localsock_crud_flock(struct localapi *api, struct eventloop *el,
       }
     }
 
-    attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+    attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
     if ( !found_uri ) {
-      *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_MISSING_ATTRIBUTES);
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_MISSING_ATTRIBUTES);
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
 
       if ( !found_uri ) {
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-        attr->kla_name = htons(KLA_REQUEST_ATTRIBUTE);
-        attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-        *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLA_FLOCK_URL);
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr->ala_name = htons(ALA_REQUEST_ATTRIBUTE);
+        attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+        *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALA_FLOCK_URL);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
       }
 
       flock_release(&flock);
@@ -780,67 +780,67 @@ static void localsock_crud_flock(struct localapi *api, struct eventloop *el,
     } else {
       err = appstate_create_flock(api->la_app_state, &flock, 0);
       if ( err < 0 ) {
-        *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SYSTEM_ERROR);
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SYSTEM_ERROR);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-        attr->kla_name = htons(KLA_SYSTEM_ERROR);
-        attr->kla_length = htons(KLA_SIZE(sizeof(uint32_t)));
-        *(KLA_DATA_UNSAFE(attr, uint32_t *)) = htonl(errno);
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr->ala_name = htons(ALA_SYSTEM_ERROR);
+        attr->ala_length = htons(ALA_SIZE(sizeof(uint32_t)));
+        *(ALA_DATA_UNSAFE(attr, uint32_t *)) = htonl(errno);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
         localsock_respond(api, el, ret_buf, rspsz);
         return;
       } else {
-        *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SUCCESS);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
         localsock_respond(api, el, ret_buf, rspsz);
         return;
       }
     }
     break;
 
-  case KLM_REQ_GET:
+  case ALM_REQ_GET:
     SAFE_RWLOCK_RDLOCK(&api->la_app_state->as_flocks_mutex);
     flock_count = HASH_CNT(f_hh, api->la_app_state->as_flocks);
     i = 0;
     HASH_ITER(f_hh, api->la_app_state->as_flocks, current_flock, tmp_flock) {
-      rspsz = KLM_SIZE_INIT;
+      rspsz = ALM_SIZE_INIT;
 
-      rsp->klm_req_flags = KLM_RETURN_MULTIPLE;
+      rsp->alm_req_flags = ALM_RETURN_MULTIPLE;
       if ( ++i == flock_count ) {
-        rsp->klm_req_flags |= KLM_IS_LAST;
+        rsp->alm_req_flags |= ALM_IS_LAST;
       }
-      rsp->klm_req_flags = htons(rsp->klm_req_flags);
+      rsp->alm_req_flags = htons(rsp->alm_req_flags);
 
-      attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+      attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
       assert(attr);
-      attr->kla_name = htons(KLA_RESPONSE_CODE);
-      attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-      *(KLA_DATA_AS(attr, rsp, sizeof(ret_buf), uint16_t*)) = htons(KLE_SUCCESS);
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      attr->ala_name = htons(ALA_RESPONSE_CODE);
+      attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+      *(ALA_DATA_AS(attr, rsp, sizeof(ret_buf), uint16_t*)) = htons(ALE_SUCCESS);
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-      attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+      attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
       assert(attr);
-      attr->kla_name = htons(KLA_FLOCK_URL);
-      attr->kla_length = htons(KLA_SIZE(strlen(current_flock->f_uri_str)));
-      memcpy(KLA_DATA_UNSAFE(attr, char *), current_flock->f_uri_str, KLA_PAYLOAD_SIZE(attr));
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      attr->ala_name = htons(ALA_FLOCK_URL);
+      attr->ala_length = htons(ALA_SIZE(strlen(current_flock->f_uri_str)));
+      memcpy(ALA_DATA_UNSAFE(attr, char *), current_flock->f_uri_str, ALA_PAYLOAD_SIZE(attr));
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-      attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+      attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
       assert(attr);
-      attr->kla_name = htons(KLA_FLOCK_STATUS);
-      attr->kla_length = htons(KLA_SIZE(sizeof(uint32_t)));
-      *(KLA_DATA_AS(attr, rsp, sizeof(ret_buf), uint32_t *)) = htonl(current_flock->f_flags);
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      attr->ala_name = htons(ALA_FLOCK_STATUS);
+      attr->ala_length = htons(ALA_SIZE(sizeof(uint32_t)));
+      *(ALA_DATA_AS(attr, rsp, sizeof(ret_buf), uint32_t *)) = htonl(current_flock->f_flags);
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
 
       if ( current_flock->f_flags & FLOCK_FLAG_VALIDATE_CERT ) {
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
-        attr->kla_name = htons(KLA_FLOCK_SIGNATURE);
-        attr->kla_length = htons(KLA_SIZE(sizeof(current_flock->f_expected_digest)));
-        memcpy(KLA_DATA_UNSAFE(attr, unsigned char *), current_flock->f_expected_digest, sizeof(current_flock->f_expected_digest));
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        attr->ala_name = htons(ALA_FLOCK_SIGNATURE);
+        attr->ala_length = htons(ALA_SIZE(sizeof(current_flock->f_expected_digest)));
+        memcpy(ALA_DATA_UNSAFE(attr, unsigned char *), current_flock->f_expected_digest, sizeof(current_flock->f_expected_digest));
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
       }
 
       err = localsock_respond(api, el, ret_buf, rspsz);
@@ -854,56 +854,56 @@ static void localsock_crud_flock(struct localapi *api, struct eventloop *el,
 
       fprintf(stderr, "returning more flocks\n");
 
-      if ( !(ntohs(msg->klm_req_flags) & KLM_RETURN_MULTIPLE) ) break;
+      if ( !(ntohs(msg->alm_req_flags) & ALM_RETURN_MULTIPLE) ) break;
     }
     pthread_rwlock_unlock(&api->la_app_state->as_flocks_mutex);
     break;
 
   default:
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_BAD_OP);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_BAD_OP);
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+    attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
     assert(attr);
-    attr->kla_name = htons(KLA_ENTITY);
-    attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLM_REQ_ENTITY(msg));
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    attr->ala_name = htons(ALA_ENTITY);
+    attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+    *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALM_REQ_ENTITY(msg));
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+    attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
     assert(attr);
-    attr->kla_name = htons(KLA_OPERATION);
-    attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLM_REQ_OP(msg));
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    attr->ala_name = htons(ALA_OPERATION);
+    attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+    *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALM_REQ_OP(msg));
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
     localsock_respond(api, el, ret_buf, rspsz);
   }
 }
 
 static void localsock_get_app(struct localapi *api, struct eventloop *el,
-                              struct kitelocalmsg *msg, int msgsz) {
-  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+                              struct applocalmsg *msg, int msgsz) {
+  char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
 
-  struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
-  struct kitelocalattr *attr;
+  struct applocalmsg *rsp = (struct applocalmsg *) ret_buf;
+  struct applocalattr *attr;
 
   const char *app_uri = NULL;
   size_t app_uri_sz = 0;
   struct app *app;
 
-  int rspsz = KLM_SIZE_INIT, found_app_url = 0;
+  int rspsz = ALM_SIZE_INIT, found_app_url = 0;
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_APP_URL:
+  for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_APP_URL:
       if ( found_app_url ) {
-        localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+        localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
         return;
       } else {
         found_app_url = 1;
-        app_uri_sz = KLA_PAYLOAD_SIZE(attr);
-        app_uri = KLA_DATA_UNSAFE(attr, char *);
+        app_uri_sz = ALA_PAYLOAD_SIZE(attr);
+        app_uri = ALA_DATA_UNSAFE(attr, char *);
       }
       break;
     default:
@@ -912,7 +912,7 @@ static void localsock_get_app(struct localapi *api, struct eventloop *el,
   }
 
   if ( !found_app_url ) {
-    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
     return;
   }
 
@@ -935,29 +935,29 @@ static void localsock_get_app(struct localapi *api, struct eventloop *el,
       return;
     }
 
-    rsp->klm_req = htons(KLM_RESPONSE | htons(msg->klm_req));
-    rsp->klm_req_flags = 0;
+    rsp->alm_req = htons(ALM_RESPONSE | htons(msg->alm_req));
+    rsp->alm_req_flags = 0;
 
-    attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+    attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
     assert(attr);
 
-    attr->kla_name = htons(KLA_RESPONSE_CODE);
-    attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SUCCESS);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    attr->ala_name = htons(ALA_RESPONSE_CODE);
+    attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+    *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SUCCESS);
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-    attr->kla_name = htons(KLA_MANIFEST_NAME);
-    attr->kla_length = htons(KLA_SIZE(2 * sizeof(mf->am_digest)));
+    attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+    attr->ala_name = htons(ALA_MANIFEST_NAME);
+    attr->ala_length = htons(ALA_SIZE(2 * sizeof(mf->am_digest)));
     hex_digest_str(mf->am_digest, mf_str, sizeof(mf->am_digest));
-    memcpy(KLA_DATA_UNSAFE(attr, char *), mf_str, sizeof(mf->am_digest) * 2);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    memcpy(ALA_DATA_UNSAFE(attr, char *), mf_str, sizeof(mf->am_digest) * 2);
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
     if ( is_signed ) {
-      attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-      attr->kla_name = htons(KLA_MANIFEST_NAME);
-      attr->kla_length = htons(KLA_SIZE(0));
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+      attr->ala_name = htons(ALA_MANIFEST_NAME);
+      attr->ala_length = htons(ALA_SIZE(0));
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
     }
 
     localsock_respond(api, el, ret_buf, rspsz);
@@ -965,52 +965,52 @@ static void localsock_get_app(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_create_app(struct localapi *api, struct eventloop *el,
-                                 struct kitelocalmsg *msg, int msgsz,
+                                 struct applocalmsg *msg, int msgsz,
                                  int *fds, int nfds) {
-  char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+  char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
 
-  struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
-  struct kitelocalattr *attr;
+  struct applocalmsg *rsp = (struct applocalmsg *) ret_buf;
+  struct applocalattr *attr;
 
   const char *app_uri, *sign_uri = NULL;
   size_t app_uri_sz, sign_uri_sz = 0;
 
-  int rspsz = KLM_SIZE_INIT, found_app_manifest = 0, do_force = 0, progress = -1, infer_app_sign = 1;
+  int rspsz = ALM_SIZE_INIT, found_app_manifest = 0, do_force = 0, progress = -1, infer_app_sign = 1;
 
-  rsp->klm_req = htons(KLM_RESPONSE | htons(msg->klm_req));
-  rsp->klm_req_flags = 0;
+  rsp->alm_req = htons(ALM_RESPONSE | htons(msg->alm_req));
+  rsp->alm_req_flags = 0;
 
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
 
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_APP_MANIFEST_URL:
-      app_uri = KLA_DATA_UNSAFE(attr, char *);
-      app_uri_sz = KLA_PAYLOAD_SIZE(attr);
+  for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_APP_MANIFEST_URL:
+      app_uri = ALA_DATA_UNSAFE(attr, char *);
+      app_uri_sz = ALA_PAYLOAD_SIZE(attr);
       found_app_manifest = 1;
       break;
 
-    case KLA_APP_SIGNATURE_URL:
-      sign_uri = KLA_DATA_UNSAFE(attr, char *);
-      sign_uri_sz = KLA_PAYLOAD_SIZE(attr);
+    case ALA_APP_SIGNATURE_URL:
+      sign_uri = ALA_DATA_UNSAFE(attr, char *);
+      sign_uri_sz = ALA_PAYLOAD_SIZE(attr);
       infer_app_sign = 0;
 
       if ( sign_uri_sz == 0 )
         sign_uri = NULL;
       break;
 
-    case KLA_FORCE:
+    case ALA_FORCE:
       do_force = 1;
       break;
 
-    case KLA_STDOUT:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(uint8_t) ) {
+    case ALA_STDOUT:
+      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(uint8_t) ) {
         uint8_t fdix;
-        memcpy(&fdix, KLA_DATA_UNSAFE(attr, void*), sizeof(fdix));
+        memcpy(&fdix, ALA_DATA_UNSAFE(attr, void*), sizeof(fdix));
         if ( fdix < nfds ) {
           progress = fds[fdix];
         }
@@ -1021,17 +1021,17 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
     }
   }
 
-  attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+  attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
   assert(attr);
   if ( !found_app_manifest ) {
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_MISSING_ATTRIBUTES);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_MISSING_ATTRIBUTES);
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-    attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
-    attr->kla_name = htons(KLA_REQUEST_ATTRIBUTE);
-    attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-    *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLA_APP_MANIFEST_URL);
-    KLM_SIZE_ADD_ATTR(rspsz, attr);
+    attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+    attr->ala_name = htons(ALA_REQUEST_ATTRIBUTE);
+    attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+    *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALA_APP_MANIFEST_URL);
+    ALM_SIZE_ADD_ATTR(rspsz, attr);
 
     localsock_respond(api, el, ret_buf, rspsz);
 
@@ -1064,8 +1064,8 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
                                  AU_UPDATE_REASON_MANUAL,
                                  progress_fd, NULL);
     if ( !u ) {
-      *(KLA_DATA_UNSAFE(attr, uint16_t *)) = htons(KLE_SYSTEM_ERROR);
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      *(ALA_DATA_UNSAFE(attr, uint16_t *)) = htons(ALE_SYSTEM_ERROR);
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
       localsock_respond(api, el, ret_buf, rspsz);
       return;
     }
@@ -1079,36 +1079,36 @@ static void localsock_create_app(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_crud_app(struct localapi *api, struct eventloop *el,
-                               struct kitelocalmsg *msg, int msgsz,
+                               struct applocalmsg *msg, int msgsz,
                                int *fds, int nfds) {
 
-  switch ( KLM_REQ_OP(msg) ) {
-  case KLM_REQ_CREATE:
+  switch ( ALM_REQ_OP(msg) ) {
+  case ALM_REQ_CREATE:
     localsock_create_app(api, el, msg, msgsz, fds, nfds);
     break;
 
-  case KLM_REQ_GET:
+  case ALM_REQ_GET:
     localsock_get_app(api, el, msg, msgsz);
     break;
 
   default:
-    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
   }
   return;
 }
 
 static void localsock_get_container(struct localapi *api, struct eventloop *el,
-                                    struct kitelocalmsg *msg, int msgsz) {
-  struct kitelocalattr *attr;
+                                    struct applocalmsg *msg, int msgsz) {
+  struct applocalattr *attr;
 
   struct in_addr addr;
   addr.s_addr = 0;
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz); attr; attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_ADDR:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
-        memcpy(&addr.s_addr, KLA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
+  for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_ADDR:
+      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
+        memcpy(&addr.s_addr, ALA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
       }
       break;
 
@@ -1117,8 +1117,8 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
   }
 
   if ( addr.s_addr == 0 ){
-    localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg),
-                                   KLA_ADDR, -1);
+    localsock_return_missing_attrs(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg),
+                                   ALA_ADDR, -1);
   } else {
     int err;
     struct arpdesc desc;
@@ -1129,69 +1129,69 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
     else if ( err < 0 )
       localsock_return_internal_error(api, el, msg);
     else {
-      char ret_buf[KITE_MAX_LOCAL_MSG_SZ];
+      char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
       uint16_t code;
 
-      struct kitelocalmsg *rsp = (struct kitelocalmsg *) ret_buf;
-      int rspsz = KLM_SIZE_INIT;
+      struct applocalmsg *rsp = (struct applocalmsg *) ret_buf;
+      int rspsz = ALM_SIZE_INIT;
 
       const char *hash_sn;
       int hash_type_nid, hash_len, hash_name_len;
 
-      attr = KLM_FIRSTATTR(rsp, sizeof(ret_buf));
+      attr = ALM_FIRSTATTR(rsp, sizeof(ret_buf));
 
-      rsp->klm_req = htons(KLM_RESPONSE | ntohs(msg->klm_req));
-      rsp->klm_req_flags = 0;
-      attr->kla_name = htons(KLA_RESPONSE_CODE);
-      attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-      code = htons(KLE_SUCCESS);
-      memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
-      KLM_SIZE_ADD_ATTR(rspsz, attr);
+      rsp->alm_req = htons(ALM_RESPONSE | ntohs(msg->alm_req));
+      rsp->alm_req_flags = 0;
+      attr->ala_name = htons(ALA_RESPONSE_CODE);
+      attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+      code = htons(ALE_SUCCESS);
+      memcpy(ALA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+      ALM_SIZE_ADD_ATTR(rspsz, attr);
 
       switch ( desc.ad_container_type ) {
       case ARP_DESC_PERSONA:
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
-        attr->kla_name = htons(KLA_CONTAINER_TYPE);
-        attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+        attr->ala_name = htons(ALA_CONTAINER_TYPE);
+        attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
         code = htons(desc.ad_container_type);
-        memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        memcpy(ALA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
-        attr->kla_name = htons(KLA_PERSONA_ID);
-        attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
-        memcpy(KLA_DATA_UNSAFE(attr, void *), desc.ad_persona.ad_persona_id,
+        attr->ala_name = htons(ALA_PERSONA_ID);
+        attr->ala_length = htons(ALA_SIZE(PERSONA_ID_LENGTH));
+        memcpy(ALA_DATA_UNSAFE(attr, void *), desc.ad_persona.ad_persona_id,
                PERSONA_ID_LENGTH);
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
         if ( pthread_mutex_lock(&desc.ad_persona.ad_pconn->pc_mutex) == 0 ) {
           struct pconntoken *cur_tok, *tmp_tok;
 
-          attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+          attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
           assert(attr);
-          attr->kla_name = htons(KLA_PCONN_ID);
-          attr->kla_length = htons(KLA_SIZE(sizeof(uint64_t)));
-          memcpy(KLA_DATA_UNSAFE(attr, void *), &desc.ad_persona.ad_pconn->pc_conn_id,
+          attr->ala_name = htons(ALA_PCONN_ID);
+          attr->ala_length = htons(ALA_SIZE(sizeof(uint64_t)));
+          memcpy(ALA_DATA_UNSAFE(attr, void *), &desc.ad_persona.ad_pconn->pc_conn_id,
                  sizeof(uint64_t));
-          KLM_SIZE_ADD_ATTR(rspsz, attr);
+          ALM_SIZE_ADD_ATTR(rspsz, attr);
 
           // Authenticated or not
           if ( desc.ad_persona.ad_pconn->pc_is_logged_in ) {
-            attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+            attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
             assert(attr);
-            attr->kla_name = htons(KLA_SIGNED);
-            attr->kla_length = htons(KLA_SIZE(0));
-            KLM_SIZE_ADD_ATTR(rspsz, attr);
+            attr->ala_name = htons(ALA_SIGNED);
+            attr->ala_length = htons(ALA_SIZE(0));
+            ALM_SIZE_ADD_ATTR(rspsz, attr);
           }
 
           if ( desc.ad_persona.ad_pconn->pc_is_guest ) {
-            attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+            attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
             assert(attr);
-            attr->kla_name = htons(KLA_GUEST);
-            attr->kla_length = htons(KLA_SIZE(0));
-            KLM_SIZE_ADD_ATTR(rspsz, attr);
+            attr->ala_name = htons(ALA_GUEST);
+            attr->ala_length = htons(ALA_SIZE(0));
+            ALM_SIZE_ADD_ATTR(rspsz, attr);
           }
 
           // Site ID
@@ -1204,40 +1204,40 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
           hash_name_len = strlen(hash_sn) + 1;
           hash_len = EVP_MD_size(desc.ad_persona.ad_pconn->pc_remote_cert_fingerprint_digest);
 
-          attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+          attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
           assert(attr);
-          attr->kla_name = htons(KLA_SITE_ID);
-          attr->kla_length = htons(KLA_SIZE(hash_name_len + 2 * hash_len));
-          assert(KLA_DATA(attr, ret_buf, sizeof(ret_buf)));
-          memcpy(KLA_DATA_UNSAFE(attr, char *), hash_sn, hash_name_len - 1);
-          (KLA_DATA_UNSAFE(attr, char *))[hash_name_len] = ':';
+          attr->ala_name = htons(ALA_SITE_ID);
+          attr->ala_length = htons(ALA_SIZE(hash_name_len + 2 * hash_len));
+          assert(ALA_DATA(attr, ret_buf, sizeof(ret_buf)));
+          memcpy(ALA_DATA_UNSAFE(attr, char *), hash_sn, hash_name_len - 1);
+          (ALA_DATA_UNSAFE(attr, char *))[hash_name_len] = ':';
           hex_digest_str((unsigned char *) desc.ad_persona.ad_pconn->pc_remote_cert_fingerprint,
-                         KLA_DATA_UNSAFE(attr, char *) + hash_name_len,
+                         ALA_DATA_UNSAFE(attr, char *) + hash_name_len,
                          hash_len);
-          memcpy(KLA_DATA_UNSAFE(attr, char *) + hash_name_len - 1,
-                 KLA_DATA_UNSAFE(attr, char *) + hash_name_len,
+          memcpy(ALA_DATA_UNSAFE(attr, char *) + hash_name_len - 1,
+                 ALA_DATA_UNSAFE(attr, char *) + hash_name_len,
                  2 * hash_len);
-          (KLA_DATA_UNSAFE(attr, char *))[hash_name_len - 1] = ':';
-          KLM_SIZE_ADD_ATTR(rspsz, attr);
+          (ALA_DATA_UNSAFE(attr, char *))[hash_name_len - 1] = ':';
+          ALM_SIZE_ADD_ATTR(rspsz, attr);
 
           // Each pconn may have one or more tokens
           HASH_ITER(pct_hh, desc.ad_persona.ad_pconn->pc_tokens, cur_tok, tmp_tok) {
             struct token *tok = cur_tok->pct_token;
-            attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+            attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
             if ( !attr ) {
               fprintf(stderr, "Not enough space for tokens\n");
               break;
             }
 
-            attr->kla_name = htons(KLA_TOKEN);
-            attr->kla_length = htons(KLA_SIZE(TOKEN_ID_LENGTH));
-            if ( !(KLA_DATA(attr, ret_buf, sizeof(ret_buf))) ) {
+            attr->ala_name = htons(ALA_TOKEN);
+            attr->ala_length = htons(ALA_SIZE(TOKEN_ID_LENGTH));
+            if ( !(ALA_DATA(attr, ret_buf, sizeof(ret_buf))) ) {
               fprintf(stderr, "Not enough space for token data\n");
               break;
             }
-            memcpy(KLA_DATA_UNSAFE(attr, char *), tok->tok_token_id, TOKEN_ID_LENGTH);
+            memcpy(ALA_DATA_UNSAFE(attr, char *), tok->tok_token_id, TOKEN_ID_LENGTH);
 
-            KLM_SIZE_ADD_ATTR(rspsz, attr);
+            ALM_SIZE_ADD_ATTR(rspsz, attr);
           }
 
           pthread_mutex_unlock(&desc.ad_persona.ad_pconn->pc_mutex);
@@ -1248,35 +1248,35 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
         break;
 
       case ARP_DESC_APP_INSTANCE:
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
-        attr->kla_name = htons(KLA_CONTAINER_TYPE);
-        attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+        attr->ala_name = htons(ALA_CONTAINER_TYPE);
+        attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
         code = htons(desc.ad_container_type);
-        memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        memcpy(ALA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
-        attr->kla_name = htons(KLA_PERSONA_ID);
-        attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
-        memcpy(KLA_DATA_UNSAFE(attr, void *), desc.ad_app_instance.ad_persona_id,
+        attr->ala_name = htons(ALA_PERSONA_ID);
+        attr->ala_length = htons(ALA_SIZE(PERSONA_ID_LENGTH));
+        memcpy(ALA_DATA_UNSAFE(attr, void *), desc.ad_app_instance.ad_persona_id,
                PERSONA_ID_LENGTH);
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
-        attr = KLM_NEXTATTR(rsp, attr, sizeof(ret_buf));
+        attr = ALM_NEXTATTR(rsp, attr, sizeof(ret_buf));
         assert(attr);
-        attr->kla_name = htons(KLA_APP_URL);
-        attr->kla_length = htons(KLA_SIZE(strlen(desc.ad_app_instance.ad_app_url)));
-        memcpy(KLA_DATA_UNSAFE(attr, void *), desc.ad_app_instance.ad_app_url,
+        attr->ala_name = htons(ALA_APP_URL);
+        attr->ala_length = htons(ALA_SIZE(strlen(desc.ad_app_instance.ad_app_url)));
+        memcpy(ALA_DATA_UNSAFE(attr, void *), desc.ad_app_instance.ad_app_url,
                strlen(desc.ad_app_instance.ad_app_url));
-        KLM_SIZE_ADD_ATTR(rspsz, attr);
+        ALM_SIZE_ADD_ATTR(rspsz, attr);
 
         break;
 
       default:
-        code = htons(KLE_SYSTEM_ERROR);
-        memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+        code = htons(ALE_SYSTEM_ERROR);
+        memcpy(ALA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
         break;
       }
 
@@ -1287,9 +1287,9 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_sub_container(struct localapi *api, struct eventloop *el,
-                                    struct kitelocalmsg *msg, int msgsz,
+                                    struct applocalmsg *msg, int msgsz,
                                     int *fds, int nfds) {
-  struct kitelocalattr *attr;
+  struct applocalattr *attr;
   struct persona *persona = NULL;
   struct app *app = NULL;
 
@@ -1303,21 +1303,21 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
 
   buffer_init(&args);
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz);
+  for ( attr = ALM_FIRSTATTR(msg, msgsz);
         attr;
-        attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_ADDR:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
-        memcpy(&addr.s_addr, KLA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
+        attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_ADDR:
+      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
+        memcpy(&addr.s_addr, ALA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
       }
       break;
 
-    case KLA_PERSONA_ID:
-      if ( KLA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH && !persona ) {
+    case ALA_PERSONA_ID:
+      if ( ALA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH && !persona ) {
         // Look up this persona. If we have this persona, and this
         // application ID, attempt to launch the application instance
-        err = appstate_lookup_persona(api->la_app_state, KLA_DATA_UNSAFE(attr, const char *), &persona);
+        err = appstate_lookup_persona(api->la_app_state, ALA_DATA_UNSAFE(attr, const char *), &persona);
         if ( err < 0 ) {
           localsock_return_not_found(api, el, msg);
           goto done;
@@ -1325,9 +1325,9 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
       }
       break;
 
-    case KLA_APP_URL:
+    case ALA_APP_URL:
       if ( !app ) {
-        app = appstate_get_app_by_url_ex(api->la_app_state, KLA_DATA_UNSAFE(attr, const char*), KLA_PAYLOAD_SIZE(attr));
+        app = appstate_get_app_by_url_ex(api->la_app_state, ALA_DATA_UNSAFE(attr, const char*), ALA_PAYLOAD_SIZE(attr));
         if ( !app ) {
           localsock_return_not_found(api, el, msg);
           goto done;
@@ -1335,19 +1335,19 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
       }
       break;
 
-    case KLA_STDIN:
-    case KLA_STDOUT:
-    case KLA_STDERR:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(fdix) ) {
+    case ALA_STDIN:
+    case ALA_STDOUT:
+    case ALA_STDERR:
+      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(fdix) ) {
         int new_fd;
-        memcpy(&fdix, KLA_DATA_UNSAFE(attr, void*), sizeof(fdix));
+        memcpy(&fdix, ALA_DATA_UNSAFE(attr, void*), sizeof(fdix));
 
         if ( fdix < nfds ) {
           new_fd = fds[fdix];
 
-          if ( KLA_NAME(attr) == KLA_STDIN )
+          if ( ALA_NAME(attr) == ALA_STDIN )
             stdin_fd = new_fd;
-          else if ( KLA_NAME(attr) == KLA_STDOUT )
+          else if ( ALA_NAME(attr) == ALA_STDOUT )
             stdout_fd = new_fd;
           else
             stderr_fd = new_fd;
@@ -1355,8 +1355,8 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
       }
       break;
 
-    case KLA_ARG:
-      buffer_write(&args, KLA_DATA_UNSAFE(attr, void *), KLA_PAYLOAD_SIZE(attr));
+    case ALA_ARG:
+      buffer_write(&args, ALA_DATA_UNSAFE(attr, void *), ALA_PAYLOAD_SIZE(attr));
       buffer_write(&args, " ", 1);
       break;
 
@@ -1366,15 +1366,15 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
 
   if ( addr.s_addr == 0 && !persona && !app ) {
     buffer_release(&args);
-    localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg),
-                                   KLA_ADDR, -1);
+    localsock_return_missing_attrs(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg),
+                                   ALA_ADDR, -1);
   } else if ( addr.s_addr != 0 && (persona || app) ) {
     buffer_release(&args);
-    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
   } else if ( persona && !app ) {
     buffer_release(&args);
-    localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg),
-                                   KLA_APP_URL, -1);
+    localsock_return_missing_attrs(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg),
+                                   ALA_APP_URL, -1);
   } else {
     struct appinstance *ai = NULL;
     const char *argv[4] = { "-sh", "-c", NULL, NULL };
@@ -1475,8 +1475,8 @@ static void localsock_sub_container(struct localapi *api, struct eventloop *el,
 }
 
 static void localsock_update_container(struct localapi *api, struct eventloop *el,
-                                       struct kitelocalmsg *msg, int msgsz) {
-  struct kitelocalattr *attr;
+                                       struct applocalmsg *msg, int msgsz) {
+  struct applocalattr *attr;
   const char *cred = NULL;
   size_t credsz = 0;
   int err;
@@ -1485,23 +1485,23 @@ static void localsock_update_container(struct localapi *api, struct eventloop *e
   struct in_addr addr;
   addr.s_addr = 0;
 
-  for ( attr = KLM_FIRSTATTR(msg, msgsz);
+  for ( attr = ALM_FIRSTATTR(msg, msgsz);
         attr;
-        attr = KLM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( KLA_NAME(attr) ) {
-    case KLA_CRED:
+        attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    switch ( ALA_NAME(attr) ) {
+    case ALA_CRED:
       if ( cred ) {
-        localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY_CONTAINER, KLM_REQ_UPDATE);
+        localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY_CONTAINER, ALM_REQ_UPDATE);
         return;
       } else {
-        cred = KLA_DATA_UNSAFE(attr, const char *);
-        credsz = KLA_PAYLOAD_SIZE(attr);
+        cred = ALA_DATA_UNSAFE(attr, const char *);
+        credsz = ALA_PAYLOAD_SIZE(attr);
       }
       break;
 
-    case KLA_ADDR:
-      if ( KLA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
-        memcpy(&addr.s_addr, KLA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
+    case ALA_ADDR:
+      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(addr) ) {
+        memcpy(&addr.s_addr, ALA_DATA_UNSAFE(attr, void *), sizeof(addr.s_addr));
       }
       break;
 
@@ -1511,12 +1511,12 @@ static void localsock_update_container(struct localapi *api, struct eventloop *e
   }
 
   if ( addr.s_addr == 0 ) {
-    localsock_return_missing_attrs(api, el, msg, KLM_REQ_ENTITY_CONTAINER, KLM_REQ_UPDATE, KLA_ADDR, -1);
+    localsock_return_missing_attrs(api, el, msg, ALM_REQ_ENTITY_CONTAINER, ALM_REQ_UPDATE, ALA_ADDR, -1);
     return;
   }
 
   if ( !cred ) {
-    localsock_return_simple(api, el, msg, KLE_SUCCESS);
+    localsock_return_simple(api, el, msg, ALE_SUCCESS);
     return;
   }
 
@@ -1534,46 +1534,46 @@ static void localsock_update_container(struct localapi *api, struct eventloop *e
                                            cred, credsz);
         pthread_mutex_unlock(&desc.ad_persona.ad_pconn->pc_mutex);
         if ( err <= 0 ) {
-          localsock_return_simple(api, el, msg, KLE_NOT_ALLOWED);
+          localsock_return_simple(api, el, msg, ALE_NOT_ALLOWED);
         } else {
-          localsock_return_simple(api, el, msg, KLE_SUCCESS);
+          localsock_return_simple(api, el, msg, ALE_SUCCESS);
         }
       } else
         localsock_return_internal_error(api, el, msg);
       break;
 
     default:
-      localsock_return_simple(api, el, msg, KLE_BAD_ENTITY);
+      localsock_return_simple(api, el, msg, ALE_BAD_ENTITY);
     }
     arpdesc_release(&desc, sizeof(desc));
   }
 }
 
 static void localsock_crud_container(struct localapi *api, struct eventloop *el,
-                                     struct kitelocalmsg *msg, int msgsz,
+                                     struct applocalmsg *msg, int msgsz,
                                      int *fds, int nfds) {
-  switch ( KLM_REQ_OP(msg) ) {
-  case KLM_REQ_GET:
+  switch ( ALM_REQ_OP(msg) ) {
+  case ALM_REQ_GET:
     localsock_get_container(api, el, msg, msgsz);
     break;
 
-  case KLM_REQ_UPDATE:
+  case ALM_REQ_UPDATE:
     localsock_update_container(api, el, msg, msgsz);
     break;
 
-  case KLM_REQ_SUB:
+  case ALM_REQ_SUB:
     localsock_sub_container(api, el, msg, msgsz, fds, nfds);
     break;
 
   default:
-    localsock_return_bad_method(api, el, msg, KLM_REQ_ENTITY(msg), KLM_REQ_OP(msg));
+    localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
     break;
   }
 }
 
 static void localsock_handle_message(struct localapi *api, struct eventloop *el,
                                      const char *buf, int buf_sz, struct msghdr *skmsg) {
-  struct kitelocalmsg *msg;
+  struct applocalmsg *msg;
   struct cmsghdr *cmsg;
   int fds[10], nfds = 0, i;
 
@@ -1603,26 +1603,26 @@ static void localsock_handle_message(struct localapi *api, struct eventloop *el,
     }
   }
 
-  msg = (struct kitelocalmsg *) buf;
+  msg = (struct applocalmsg *) buf;
 
-  switch( KLM_REQ_ENTITY(msg) ) {
-  case KLM_REQ_ENTITY_PERSONA:
+  switch( ALM_REQ_ENTITY(msg) ) {
+  case ALM_REQ_ENTITY_PERSONA:
     localsock_crud_persona(api, el, msg, buf_sz);
     break;
-  case KLM_REQ_ENTITY_APP:
+  case ALM_REQ_ENTITY_APP:
     localsock_crud_app(api, el, msg, buf_sz, fds, nfds);
     break;
-  case KLM_REQ_ENTITY_FLOCK:
+  case ALM_REQ_ENTITY_FLOCK:
     localsock_crud_flock(api, el, msg, buf_sz);
     break;
-  case KLM_REQ_ENTITY_CONTAINER:
+  case ALM_REQ_ENTITY_CONTAINER:
     localsock_crud_container(api, el, msg, buf_sz, fds, nfds);
     break;
-  case KLM_REQ_ENTITY_SYSTEM:
+  case ALM_REQ_ENTITY_SYSTEM:
     localsock_crud_system(api, el, msg, buf_sz);
     break;
   default:
-    localsock_return_bad_entity(api, el, msg, KLM_REQ_ENTITY(msg));
+    localsock_return_bad_entity(api, el, msg, ALM_REQ_ENTITY(msg));
     break;
   }
 
@@ -1634,44 +1634,44 @@ static int localsock_list_current( struct localapi *api, struct eventloop *el,
                                    int is_empty ) {
   struct persona *p;
 
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
-  uint16_t return_code = htons(KLE_SUCCESS);
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
+  uint16_t return_code = htons(ALE_SUCCESS);
 
-  msg = (struct kitelocalmsg *)buf;
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
+  msg = (struct applocalmsg *)buf;
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
 
   assert (attr);
 
-  msg->klm_req = htons(KLM_RESPONSE | api->la_listing_ent | KLM_REQ_GET);
-  msg->klm_req_flags = KLM_RETURN_MULTIPLE;
+  msg->alm_req = htons(ALM_RESPONSE | api->la_listing_ent | ALM_REQ_GET);
+  msg->alm_req_flags = ALM_RETURN_MULTIPLE;
 
   if ( is_empty || (api->la_listing_offs + 1) >= api->la_listing_count ||
        !api->la_listing[api->la_listing_offs + 1] )
-    msg->klm_req_flags |= KLM_IS_LAST;
+    msg->alm_req_flags |= ALM_IS_LAST;
 
-  msg->klm_req_flags = htons(msg->klm_req_flags);
+  msg->alm_req_flags = htons(msg->alm_req_flags);
 
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
-  memcpy(KLA_DATA_UNSAFE(attr, void *), &return_code, sizeof(uint16_t));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
+  memcpy(ALA_DATA_UNSAFE(attr, void *), &return_code, sizeof(uint16_t));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   if ( !is_empty ) {
     struct shared *cur;
     cur = api->la_listing[api->la_listing_offs];
 
     switch ( api->la_listing_ent ) {
-    case KLM_REQ_ENTITY_PERSONA:
+    case ALM_REQ_ENTITY_PERSONA:
       p = STRUCT_FROM_BASE(struct persona, p_shared, cur);
 
-      attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
-      attr->kla_name = htons(KLA_PERSONA_ID);
-      attr->kla_length = htons(KLA_SIZE(PERSONA_ID_LENGTH));
-      memcpy(KLA_DATA_UNSAFE(attr, void*), p->p_persona_id, PERSONA_ID_LENGTH);
-      KLM_SIZE_ADD_ATTR(sz, attr);
+      attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
+      attr->ala_name = htons(ALA_PERSONA_ID);
+      attr->ala_length = htons(ALA_SIZE(PERSONA_ID_LENGTH));
+      memcpy(ALA_DATA_UNSAFE(attr, void*), p->p_persona_id, PERSONA_ID_LENGTH);
+      ALM_SIZE_ADD_ATTR(sz, attr);
 
       return localsock_respond(api, el, buf, sz);
 
@@ -1742,65 +1742,65 @@ static int localsock_flush(struct localapi *api, struct eventloop *el) {
 
 static void localsock_cmd_completes(struct localapi *api, int sts) {
   struct eventloop *el = &api->la_app_state->as_eventloop;
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
-  uint16_t code = KLE_SUCCESS;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
+  uint16_t code = ALE_SUCCESS;
   uint32_t usts = sts;
 
-  msg = (struct kitelocalmsg *)buf;
-  msg->klm_req = htons(KLM_RESPONSE | KLM_REQ_SUB | KLM_REQ_ENTITY_CONTAINER);
-  msg->klm_req_flags = 0;
+  msg = (struct applocalmsg *)buf;
+  msg->alm_req = htons(ALM_RESPONSE | ALM_REQ_SUB | ALM_REQ_ENTITY_CONTAINER);
+  msg->alm_req_flags = 0;
 
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
   code = htons(code);
-  memcpy(KLA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  memcpy(ALA_DATA_UNSAFE(attr, void *), &code, sizeof(code));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
-  attr = KLM_NEXTATTR(msg, attr, sizeof(buf));
-  attr->kla_name = htons(KLA_EXIT_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(usts)));
+  attr = ALM_NEXTATTR(msg, attr, sizeof(buf));
+  attr->ala_name = htons(ALA_EXIT_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(usts)));
   usts = htonl(usts);
-  memcpy(KLA_DATA_UNSAFE(attr, void *), &usts, sizeof(usts));
-  KLM_SIZE_ADD_ATTR(sz, attr);
+  memcpy(ALA_DATA_UNSAFE(attr, void *), &usts, sizeof(usts));
+  ALM_SIZE_ADD_ATTR(sz, attr);
 
   localsock_respond(api, el, buf, sz);
 }
 
 static void localsock_update_completes(struct localapi *api) {
   struct eventloop *el = &api->la_app_state->as_eventloop;
-  char buf[KITE_MAX_LOCAL_MSG_SZ];
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
-  int sz = KLM_SIZE_INIT;
+  char buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
+  int sz = ALM_SIZE_INIT;
 
-  msg = (struct kitelocalmsg *)buf;
-  attr = KLM_FIRSTATTR(msg, sizeof(buf));
-  attr->kla_name = htons(KLA_RESPONSE_CODE);
-  attr->kla_length = htons(KLA_SIZE(sizeof(uint16_t)));
+  msg = (struct applocalmsg *)buf;
+  attr = ALM_FIRSTATTR(msg, sizeof(buf));
+  attr->ala_name = htons(ALA_RESPONSE_CODE);
+  attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
 
-  msg->klm_req = htons(KLM_RESPONSE | KLM_REQ_CREATE | KLM_REQ_ENTITY_APP);
-  msg->klm_req_flags = 0;
+  msg->alm_req = htons(ALM_RESPONSE | ALM_REQ_CREATE | ALM_REQ_ENTITY_APP);
+  msg->alm_req_flags = 0;
 
   if ( api->la_current_updater ) {
     struct appupdater *au = api->la_current_updater;
     api->la_current_updater = NULL;
 
     if ( au->au_sts == AU_STATUS_DONE ) {
-      *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_SUCCESS);
+      *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(ALE_SUCCESS);
     } else if ( au->au_sts < 0 ) {
-      *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_SYSTEM_ERROR);
+      *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(ALE_SYSTEM_ERROR);
     } else {
-      *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_NOT_IMPLEMENTED);
+      *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(ALE_NOT_IMPLEMENTED);
     }
-    KLM_SIZE_ADD_ATTR(sz, attr);
+    ALM_SIZE_ADD_ATTR(sz, attr);
 
     APPUPDATER_UNREF(au);
   } else {
-    *KLA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(KLE_SYSTEM_ERROR);
+    *ALA_DATA_AS(attr, buf, sizeof(buf), uint16_t *) = htons(ALE_SYSTEM_ERROR);
   }
 
   localsock_respond(api, el, buf, sz);

@@ -10,84 +10,84 @@
 #include "local_proto.h"
 #include "commands.h"
 
-const char *kite_error_code_str(uint16_t code) {
+const char *intrustd_error_code_str(uint16_t code) {
   switch ( code ) {
-  case KLE_SUCCESS: return "Success";
-  case KLE_NOT_IMPLEMENTED: return "Not implemented";
-  case KLE_NOT_FOUND: return "Not found";
-  case KLE_BAD_ENTITY: return "Bad entity";
-  case KLE_BAD_OP: return "Bad operation";
-  case KLE_MISSING_ATTRIBUTES: return "Missing attributes";
-  case KLE_INVALID_URL: return "Invalid URL";
-  case KLE_SYSTEM_ERROR: return "System error";
+  case ALE_SUCCESS: return "Success";
+  case ALE_NOT_IMPLEMENTED: return "Not implemented";
+  case ALE_NOT_FOUND: return "Not found";
+  case ALE_BAD_ENTITY: return "Bad entity";
+  case ALE_BAD_OP: return "Bad operation";
+  case ALE_MISSING_ATTRIBUTES: return "Missing attributes";
+  case ALE_INVALID_URL: return "Invalid URL";
+  case ALE_SYSTEM_ERROR: return "System error";
   default: return "Unknown";
   }
 }
 
-const char *kite_entity_str(uint16_t entity) {
+const char *intrustd_entity_str(uint16_t entity) {
   entity &= 0x7F00;
 
   switch ( entity ) {
-  case KLM_REQ_ENTITY_PERSONA: return "Persona";
-  case KLM_REQ_ENTITY_APP: return "Application";
-  case KLM_REQ_ENTITY_FLOCK: return "Flock";
-  case KLM_REQ_ENTITY_CONTAINER: return "Container";
+  case ALM_REQ_ENTITY_PERSONA: return "Persona";
+  case ALM_REQ_ENTITY_APP: return "Application";
+  case ALM_REQ_ENTITY_FLOCK: return "Flock";
+  case ALM_REQ_ENTITY_CONTAINER: return "Container";
   default: return "Unknown";
   }
 }
 
-const char *kite_operation_str(uint16_t otype) {
+const char *intrustd_operation_str(uint16_t otype) {
   otype &= 0x00FF;
 
   switch ( otype ) {
-  case KLM_REQ_GET: return "GET";
-  case KLM_REQ_CREATE: return "CREATE";
-  case KLM_REQ_DELETE: return "DELETE";
-  case KLM_REQ_UPDATE: return "UPDATE";
-  case KLM_REQ_STOP: return "STOP";
-  case KLM_REQ_SUB: return "SUB";
+  case ALM_REQ_GET: return "GET";
+  case ALM_REQ_CREATE: return "CREATE";
+  case ALM_REQ_DELETE: return "DELETE";
+  case ALM_REQ_UPDATE: return "UPDATE";
+  case ALM_REQ_STOP: return "STOP";
+  case ALM_REQ_SUB: return "SUB";
   default: return "Unknown";
   }
 }
 
-void kite_print_attr_data(FILE *out, struct kitelocalattr *attr) {
-  uint16_t attr_type = ntohs(attr->kla_name), attr_len = ntohs(attr->kla_length);
+void intrustd_print_attr_data(FILE *out, struct applocalattr *attr) {
+  uint16_t attr_type = ntohs(attr->ala_name), attr_len = ntohs(attr->ala_length);
   //  uint16_t *attr_d16;
 
   attr_len -= sizeof(*attr);
 
   switch ( attr_type ) {
-  case KLA_RESPONSE_CODE:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint16_t)) ) {
-      fprintf(out, "  Response code: %d\n", ntohs(*KLA_DATA_UNSAFE(attr, uint16_t *)));
+  case ALA_RESPONSE_CODE:
+    if ( ntohs(attr->ala_length) == ALA_SIZE(sizeof(uint16_t)) ) {
+      fprintf(out, "  Response code: %d\n", ntohs(*ALA_DATA_UNSAFE(attr, uint16_t *)));
       return;
     } else goto unknown;
-  case KLA_ENTITY:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint16_t)) ) {
-      uint16_t etype = ntohs(*KLA_DATA_UNSAFE(attr, uint16_t *));
-      fprintf(out, "  Entity: %s (%x)\n", kite_entity_str(etype), etype);
+  case ALA_ENTITY:
+    if ( ntohs(attr->ala_length) == ALA_SIZE(sizeof(uint16_t)) ) {
+      uint16_t etype = ntohs(*ALA_DATA_UNSAFE(attr, uint16_t *));
+      fprintf(out, "  Entity: %s (%x)\n", intrustd_entity_str(etype), etype);
       return;
     } else goto unknown;
-  case KLA_SYSTEM_ERROR:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint32_t)) ) {
-      fprintf(out, "   Error: %s\n", strerror(ntohl(*KLA_DATA_UNSAFE(attr, uint32_t *))));
+  case ALA_SYSTEM_ERROR:
+    if ( ntohs(attr->ala_length) == ALA_SIZE(sizeof(uint32_t)) ) {
+      fprintf(out, "   Error: %s\n", strerror(ntohl(*ALA_DATA_UNSAFE(attr, uint32_t *))));
       return;
     } else goto unknown;
-  case KLA_OPERATION:
-    if ( ntohs(attr->kla_length) == KLA_SIZE(sizeof(uint16_t)) ) {
-      uint16_t otype = ntohs(*KLA_DATA_UNSAFE(attr, uint16_t *));
-      fprintf(out, "  Operation: %s (%x)\n", kite_operation_str(otype), otype);
+  case ALA_OPERATION:
+    if ( ntohs(attr->ala_length) == ALA_SIZE(sizeof(uint16_t)) ) {
+      uint16_t otype = ntohs(*ALA_DATA_UNSAFE(attr, uint16_t *));
+      fprintf(out, "  Operation: %s (%x)\n", intrustd_operation_str(otype), otype);
       return;
     } else goto unknown;
-  case KLA_PERSONA_DISPLAYNM:
-    fprintf(out, "  Display Name: %.*s\n", (int) KLA_PAYLOAD_SIZE(attr),
-            KLA_DATA_UNSAFE(attr, char *));
+  case ALA_PERSONA_DISPLAYNM:
+    fprintf(out, "  Display Name: %.*s\n", (int) ALA_PAYLOAD_SIZE(attr),
+            ALA_DATA_UNSAFE(attr, char *));
     return;
-  case KLA_PERSONA_ID:
-    if ( KLA_PAYLOAD_SIZE(attr) <= 100 ) {
+  case ALA_PERSONA_ID:
+    if ( ALA_PAYLOAD_SIZE(attr) <= 100 ) {
       char hex_str[201];
-      fprintf(out, "  Persona ID: %s\n", hex_digest_str(KLA_DATA_UNSAFE(attr, unsigned char *),
-                                                        hex_str, KLA_PAYLOAD_SIZE(attr)));
+      fprintf(out, "  Persona ID: %s\n", hex_digest_str(ALA_DATA_UNSAFE(attr, unsigned char *),
+                                                        hex_str, ALA_PAYLOAD_SIZE(attr)));
       return;
     } else goto unknown;
   default: goto unknown;
@@ -96,9 +96,9 @@ void kite_print_attr_data(FILE *out, struct kitelocalattr *attr) {
     fprintf(out, "  Unknown Attribute(%d) with %d bytes of data: \n", attr_type, attr_len);
 }
 
-int display_stork_response(char *buf, int size, const char *success_msg) {
-  struct kitelocalmsg *msg;
-  struct kitelocalattr *attr;
+int display_intrustd_response(char *buf, int size, const char *success_msg) {
+  struct applocalmsg *msg;
+  struct applocalattr *attr;
   int found_response = 0, response_code = 0, is_error = 1;
 
   if ( size < sizeof(*msg) ) {
@@ -106,16 +106,16 @@ int display_stork_response(char *buf, int size, const char *success_msg) {
     exit(1);
   }
 
-  msg = (struct kitelocalmsg *) buf;
-  if ( (ntohs(msg->klm_req) & KLM_RESPONSE) == 0 ) {
-    fprintf(stderr, "Response was not a response (%04x)\n", ntohs(msg->klm_req));
+  msg = (struct applocalmsg *) buf;
+  if ( (ntohs(msg->alm_req) & ALM_RESPONSE) == 0 ) {
+    fprintf(stderr, "Response was not a response (%04x)\n", ntohs(msg->alm_req));
     exit(1);
   }
 
   // Go over each attribute
-  for ( attr = KLM_FIRSTATTR(msg, size); attr; attr = KLM_NEXTATTR(msg, attr, size) ) {
-    if ( ntohs(attr->kla_name) == KLA_RESPONSE_CODE ) {
-      uint16_t *code = KLA_DATA_AS(attr, msg, size, uint16_t *);
+  for ( attr = ALM_FIRSTATTR(msg, size); attr; attr = ALM_NEXTATTR(msg, attr, size) ) {
+    if ( ntohs(attr->ala_name) == ALA_RESPONSE_CODE ) {
+      uint16_t *code = ALA_DATA_AS(attr, msg, size, uint16_t *);
       found_response = 1;
 
       if ( !code ) {
@@ -128,20 +128,20 @@ int display_stork_response(char *buf, int size, const char *success_msg) {
   }
 
   if ( !found_response ) {
-    fprintf(stderr, "No KLA_RESPONSE_CODE attribute in response\n");
+    fprintf(stderr, "No ALA_RESPONSE_CODE attribute in response\n");
     exit(1);
   }
 
-  is_error = response_code != KLE_SUCCESS;
+  is_error = response_code != ALE_SUCCESS;
   if ( !is_error ) {
     if ( success_msg )
       fprintf(stderr, "%s\n", success_msg);
 
     return 0;
   } else {
-    fprintf(stderr, "Got error code: %s\n", kite_error_code_str(response_code));
-    for ( attr = KLM_FIRSTATTR(msg, size); attr; attr = KLM_NEXTATTR(msg, attr, size) ) {
-      kite_print_attr_data(stderr, attr);
+    fprintf(stderr, "Got error code: %s\n", intrustd_error_code_str(response_code));
+    for ( attr = ALM_FIRSTATTR(msg, size); attr; attr = ALM_NEXTATTR(msg, attr, size) ) {
+      intrustd_print_attr_data(stderr, attr);
     }
 
     return -1;
@@ -151,14 +151,14 @@ int display_stork_response(char *buf, int size, const char *success_msg) {
 int mk_api_socket() {
   struct sockaddr_un addr;
   int err, sk;
-  char *stork_path = getenv("KITE_APPLIANCE_DIR");
+  char *intrustd_path = getenv("INTRUSTD_APPLIANCE_DIR");
 
   addr.sun_family = AF_UNIX;
 
-  if ( stork_path )
-    err = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/" KITE_LOCAL_API_SOCK, stork_path);
+  if ( intrustd_path )
+    err = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/" APPLIANCED_LOCAL_API_SOCK, intrustd_path);
   else
-    err = strnlen(strncpy(addr.sun_path, KITE_LOCAL_API_SOCK, sizeof(addr.sun_path)),
+    err = strnlen(strncpy(addr.sun_path, APPLIANCED_LOCAL_API_SOCK, sizeof(addr.sun_path)),
                   sizeof(addr.sun_path));
   assert(err < sizeof(addr.sun_path));
 
