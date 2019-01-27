@@ -4,12 +4,12 @@ let pkgs = import <nixpkgs> {};
 in {
   jobsets =
     let spec = {
-          static = {
+          app = {
             inherit description;
             enabled = 1;
             hidden = false;
             nixexprinput = "kite";
-            nixexprpath = "nix/build-hydra-static.nix";
+            nixexprpath = "nix/build-hydra.nix";
             checkinterval = 300;
             schedulingshares = 50;
             enableemail = true;
