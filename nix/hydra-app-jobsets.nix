@@ -1,4 +1,4 @@
-{ description }:
+{ description, src }:
 
 let pkgs = import <nixpkgs> {};
 in {
@@ -8,7 +8,7 @@ in {
             inherit description;
             enabled = 1;
             hidden = false;
-            nixexprinput = "kite";
+            nixexprinput = "intrustd";
             nixexprpath = "nix/build-hydra.nix";
             checkinterval = 300;
             schedulingshares = 50;
@@ -16,10 +16,10 @@ in {
             emailoverride = "";
             keepnr = 3;
             inputs = {
-              nixpkgs = { type = "git"; value = "git://github.com/kitecomputing/nixpkgs.git kite"; emailresponsible = true; };
-              kite = { type = "git"; value = "git://github.com/kitecomputing/kite.git"; emailresponsible = true; };
-              system = { type = "git"; value = "git://github.com/kitecomputing/kite-system.git"; emailresponsible = true; };
-              src = { type = "git"; value = "git://github.com/kitecomputing/photos.git"; emailresponsible = true; };
+              inherit src;
+              nixpkgs = { type = "git"; value = "git://github.com/intrustd/nixpkgs.git kite"; emailresponsible = true; };
+              intrustd = { type = "git"; value = "git://github.com/intrustd/daemon.git"; emailresponsible = true; };
+              system = { type = "git"; value = "git://github.com/intrustd/appliance.git"; emailresponsible = true; };
             };
           };
         };
