@@ -32,6 +32,6 @@ in ((import <nixpkgs> {}).writeText "${config.app.meta.slug}-manifest"
         version = "${builtins.toString config.app.version.major}.${builtins.toString config.app.version.minor}.${builtins.toString config.app.version.revision}";
 
         bind-mounts = config.app.bindMounts;
-    })) // { toplevels = closures; appName = config.name; }
+    })) // { toplevels = closures; appName = config.app.meta.name; }
 
 
