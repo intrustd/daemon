@@ -17,7 +17,7 @@ let systems = builtins.attrNames (import <system/systems.nix>);
        pure-build = true;
     };
 
-    nodePkgSet = import <src/js> { pkgs = pkgs.buildPackages; nodeks = pkgs.buildPackages."nodejs-8_x"; };
+    nodePkgSet = import <src/js> { pkgs = pkgs.buildPackages; nodejs = pkgs.buildPackages."nodejs-8_x"; };
 
     nodeDeps = nodePkgSet.shell.override { bypassCache = true; }.nodeDependencies;
 
