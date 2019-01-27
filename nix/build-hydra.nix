@@ -11,7 +11,7 @@ let systems = builtins.attrNames (import <system/systems.nix>);
       in { name = pkgs.hostPlatform.config;
            value = pkgs; };
 
-    manifest = import ./build-bundle.nix rec {
+    bundle = import ./build-bundle.nix {
        systems = builtins.listToAttrs (map mkJobs systems);
        app-module = <src/app.nix>;
        pure-build = true;
@@ -19,14 +19,14 @@ let systems = builtins.attrNames (import <system/systems.nix>);
 
     nodePkgSet = import <src/js> { pkgs = pkgs.buildPackages; nodejs = pkgs.buildPackages."nodejs-8_x"; };
 
-    nodeDeps = nodePkgSet.shell.override { bypassCache = true; }.nodeDependencies;
+    nodeDeps = (nodePkgSet.shell.override { bypassCache = true; }).nodeDependencies;
 
-in { inherit manifest;
+in { inherit (bundle) manifest;
      static = pkgs.stdenv.mkDerivation {
-       name = "${manifest.appName}-static";
+       name = "${bundle.appName}-static";
        src = <src/js>;
 
-       nativeBuildInputs = [ nodeDeps nodejs-8_x ];
+       nativeBuildInputs = with pkgs; [ nodeDeps nodejs-8_x ];
 
        phases = [ "unpackPhase" "buildPhase" "installPhase" ];
 
@@ -39,8 +39,8 @@ in { inherit manifest;
        installPhase = ''
           mkdir $out
           cp -R ./dist $out
-          cp ${manifest} $out/manifest.json
+          cp ${bundle.manifest} $out/manifest.json
        '';
      };
    } //
-   mapAttrs' (platform: value: nameValuePair "app-${platform}" value) manifest.toplevels
+   mapAttrs' (platform: value: nameValuePair "app-${platform}" value) bundle.toplevels

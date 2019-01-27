@@ -18,20 +18,26 @@ let evalInPlatform = pkgs: import <nixpkgs/nixos/lib/eval-config.nix> {
     config = (builtins.head platforms).config;
     closures = builtins.listToAttrs (map ({name, package, ...}: { inherit name; value = package; }) platforms);
 
-in ((import <nixpkgs> {}).writeText "${config.app.meta.slug}-manifest"
-    (builtins.toJSON {
-        name = config.app.meta.name;
-        app-url = config.app.meta.app-url;
-        icon = config.app.meta.icon;
-#        authors = config.app.meta.authors;
-        domain = config.app.identifier;
-        nix-closure = closures;
-        run-as-admin = config.app.runAsAdmin;
-        singleton = config.app.singleton;
+in {
+  manifest =
+    (import <nixpkgs> {}).writeText "${config.app.meta.slug}-manifest"
+      (builtins.toJSON {
+          name = config.app.meta.name;
+          app-url = config.app.meta.app-url;
+          icon = config.app.meta.icon;
+#          authors = config.app.meta.authors;
+          domain = config.app.identifier;
+          nix-closure = closures;
+          run-as-admin = config.app.runAsAdmin;
+          singleton = config.app.singleton;
 
-        version = "${builtins.toString config.app.version.major}.${builtins.toString config.app.version.minor}.${builtins.toString config.app.version.revision}";
+          version = "${builtins.toString config.app.version.major}.${builtins.toString config.app.version.minor}.${builtins.toString config.app.version.revision}";
 
-        bind-mounts = config.app.bindMounts;
-    })) // { toplevels = closures; appName = config.app.meta.name; }
+          bind-mounts = config.app.bindMounts;
+          });
+
+  toplevels = closures;
+  appName = config.app.meta.slug;
+}
 
 
