@@ -17,5 +17,30 @@ let systems = builtins.attrNames (import <system/systems.nix>);
        pure-build = true;
     };
 
-in { inherit manifest; } //
+    nodePkgSet = import <src/js> { pkgs = pkgs.buildPackages; nodeks = pkgs.buildPackages."nodejs-8_x"; };
+
+    nodeDeps = nodePkgSet.shell.override { bypassCache = true; }.nodeDependencies;
+
+in { inherit manifest;
+     static = pkgs.stdenv.mkDerivation {
+       name = "${manifest.appName}-static";
+       src = <src/js>;
+
+       nativeBuildInputs = [ nodeDeps nodejs-8_x ];
+
+       phases = [ "unpackPhase" "buildPhase" "installPhase" ];
+
+       buildPhase = ''
+         ln -s ${nodeDeps}/lib/node_modules ./node_modules
+         ln -s ${nodeDeps}/lib/package-lock.json ./package-lock.json
+         npm run build
+       '';
+
+       installPhase = ''
+          mkdir $out
+          cp -R ./dist $out
+          cp ${manifest} $out/manifest.json
+       '';
+     };
+   } //
    mapAttrs' (platform: value: nameValuePair "app-${platform}" value) manifest.toplevels
