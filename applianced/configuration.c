@@ -49,9 +49,9 @@ static void usage(const char *msg) {
   fprintf(stderr,
           "  --app-instance-init <INIT>        Path to 'app-instance-init' executable\n");
   fprintf(stderr,
-          "  --intrustd-user <UID>/<USERNAME>  Uid or username of intrustd user (for user-mode privileges in namespace) (Default: intrustd-user)\n");
+          "  --app-user <UID>/<USERNAME>       Uid or username of intrustd user (for user-mode privileges in namespace) (Default: intrustd-user)\n");
   fprintf(stderr,
-          "  --intrustd-group <GID>/<GROUP>    Uid or group name of intrustd user group (Default: intrustd-user)\n");
+          "  --app-group <GID>/<GROUP>         Uid or group name of intrustd user group (Default: intrustd-user)\n");
   fprintf(stderr,
           "  --dump-pkts <PACKET FILE>         Dump all ethernet frames received at the bridge to a file\n");
   fprintf(stderr,
@@ -330,8 +330,8 @@ int appconf_parse_options(struct appconf *ac, int argc, char **argv) {
     { "webrtc-proxy", required_argument, 0, WEBRTC_PROXY_OPTION },
     { "persona-init", required_argument, 0, PERSONA_INIT_OPTION },
     { "app-instance-init", required_argument, 0, APP_INSTANCE_INIT_OPTION },
-    { "intrustd-user", required_argument, 0, USER_OPTION },
-    { "intrustd-group", required_argument, 0, USER_GROUP_OPTION },
+    { "app-user", required_argument, 0, USER_OPTION },
+    { "app-group", required_argument, 0, USER_GROUP_OPTION },
     { "user", required_argument, 0, DAEMON_USER_OPTION },
     { "group", required_argument, 0, DAEMON_GROUP_OPTION },
     { "dump-pkts", required_argument, 0, PACKETS_FILE_OPTION },
