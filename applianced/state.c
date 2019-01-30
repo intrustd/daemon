@@ -71,11 +71,23 @@ static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
   struct flock *f;
   struct pconn *pc;
 
+
   cert = X509_STORE_CTX_get_current_cert(ctx);
   err = X509_STORE_CTX_get_error(ctx);
   depth = X509_STORE_CTX_get_error_depth(ctx);
 
   ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+
+  if ( !preverify_ok ) {
+    int cert_err = X509_STORE_CTX_get_error(ctx);
+
+    if ( cert_err == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT )
+      preverify_ok = 1;
+    else {
+      fprintf(stderr, "appstate_verify_callback: cert fails preverification because: %s\n",
+              X509_verify_cert_error_string(cert_err));
+    }
+  }
 
   if ( depth > FLOCK_MAX_CERT_DEPTH )
     return 0;
@@ -847,6 +859,8 @@ static int appstate_open_trusted_keys(struct appstate *as, struct appconf *ac) {
 
     as->as_trusted_keys[as->as_trusted_key_count - 1] = key;
   }
+
+  fprintf(stderr, "appstate_open_trusted_keys: read %d trusted keys\n", as->as_trusted_key_count);
 
   return 0;
 }
