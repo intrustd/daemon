@@ -37,7 +37,6 @@ in { inherit (bundle) manifest;
        '';
 
        installPhase = ''
-          mkdir $out
           cp -R ./dist $out
           cp ${bundle.manifest} $out/manifest.json
        '';
