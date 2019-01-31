@@ -98,11 +98,11 @@ in {
 
         serviceConfigs = lib.mapAttrsToList mkServiceConfig config.app.services;
     in {
-      app.startHook = ''
+      app.startHook = lib.mkDefault ''
         exec ${pkgs.pythonPackages.supervisor}/bin/supervisord -c ${supervisorConfig} -n
       '';
 
-      app.healthCheckHook = ''
+      app.healthCheckHook = lib.mkDefault ''
         exec ${pkgs.pythonPackages.supervisor}/bin/supervisorctl -c ${supervisorConfig} status
       '';
     };
