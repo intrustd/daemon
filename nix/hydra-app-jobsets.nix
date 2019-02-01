@@ -17,7 +17,7 @@ in {
             keepnr = 3;
             inputs = {
               inherit src;
-              nixpkgs = { type = "git"; value = "git://github.com/intrustd/nixpkgs.git kite"; emailresponsible = true; };
+              nixpkgs = { type = "git"; value = "git://github.com/intrustd/nixpkgs.git intrustd"; emailresponsible = true; };
               intrustd = { type = "git"; value = "git://github.com/intrustd/daemon.git"; emailresponsible = true; };
               system = { type = "git"; value = "git://github.com/intrustd/appliance.git"; emailresponsible = true; };
             };
