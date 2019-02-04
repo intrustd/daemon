@@ -870,6 +870,14 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
       fprintf(stderr, "appinstance_setup: while making %s\n", where);   \
     }                                                                   \
   } while (0)
+#define DO_SYMLINK(from, to) do {                                       \
+    err = symlink(to, from);                                            \
+    if ( err < 0 ) {                                                    \
+      perror("appinstance_setup: symlink");                             \
+      fprintf(stderr, "appinstance_setup: while trying to link %s to %s\n", to, from); \
+    }                                                                   \
+  } while (0)
+
 static int appinstance_setup(struct container *c, struct appinstance *ai) {
   const char *image_path;
   struct appmanifest *cur_mf;
@@ -940,6 +948,14 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   FORMAT_PATH("%s/dev/pts", image_path);
   DO_MKDIR(path);
   DO_MOUNT("devpts", path, "devpts", MS_NOSUID | MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620,gid=0"); // TODO figure out group id
+
+  FORMAT_PATH("%s/dev/ptmx", image_path);
+  DO_SYMLINK(path, "pts/ptmx");
+
+  FORMAT_PATH("%s/dev/tty", image_path);
+  err = open(path, O_CREAT, 0666);
+  close(err);
+  DO_MOUNT("/dev/tty", path, "bind", MS_BIND, "");
 
   FORMAT_PATH("%s/dev/shm", image_path);
   DO_MKDIR(path);
