@@ -15,6 +15,7 @@
 #define APP_URL_MAX 1024
 
 typedef unsigned char mac_addr[ETH_ALEN];
+struct vlannat;
 
 #define ARP_DESC_PERSONA 1
 #define ARP_DESC_APP_INSTANCE 2
@@ -155,8 +156,9 @@ struct brstate {
   struct arpentry *br_arp_table;
   struct brpermrequest *br_outstanding_checks; // protected by arp mutex
 
-  pthread_rwlock_t br_sctp_mutex;
+  pthread_rwlock_t br_sctp_mutex; // protects br_sctp_table and br_nat_table
   struct sctpentry *br_sctp_table;
+  struct vlannat *br_nat_table;
 
   pthread_mutex_t br_tunnel_mutex;
   struct brtunnel *br_tunnels;
@@ -193,9 +195,14 @@ int bridge_del_arp(struct brstate *br, struct arpentry *old_arp);
 int bridge_register_sctp(struct brstate *br, struct sctpentry *se);
 int bridge_unregister_sctp(struct brstate *br, struct sctpentry *se);
 
+int bridge_register_vlan(struct brstate *br, struct vlannat *nat);
+int bridge_unregister_vlan(struct brstate *br, struct vlannat *nat);
+
 int bridge_write_from_foreign_pkt(struct brstate *br, struct container *dst,
                                   const struct sockaddr *sa, socklen_t sa_sz,
                                   const unsigned char *tap_pkt, uint16_t tap_sz);
+int bridge_write_ip_pkt_from_bridge(struct brstate *br, struct in_addr *dst,
+                                    const unsigned char *tap_pkt, uint16_t tap_sz);
 int bridge_write_tap_pkt(struct brstate *br, const unsigned char *tap_pkt, uint16_t tap_sz);
 int bridge_write_tap_pktv(struct brstate *br, const struct iovec *iov, int iovcnt);
 

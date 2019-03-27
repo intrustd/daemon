@@ -1284,6 +1284,10 @@ static int flockservice_handle_offer_response(struct flockservice *svc,
       break;
     case STUN_ATTR_FINGERPRINT:
       break;
+    case STUN_ATTR_ERROR_CODE:
+      fprintf(stderr, "flockservice_handle_offer_response: Got error code %04x\n",
+              *(uint16_t*)STUN_ATTR_DATA(attr));
+      break;
     default:
       fprintf(stderr, "flockservice_handle_offer_response: Unknown attribute %04x\n",
               STUN_ATTR_NAME(attr));

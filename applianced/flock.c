@@ -547,6 +547,8 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
   const char *persona_id = NULL;
   const char *credential = NULL;
   size_t credential_sz = 0;
+  uint8_t format = STUN_INTRUSTD_FORMAT_WEBRTC;
+  int type = PCONN_TYPE_WEBRTC;
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, pkt_sz); attr = STUN_NEXTATTR(attr) ) {
     switch ( STUN_ATTR_NAME(attr) ) {
@@ -567,6 +569,18 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
       else
         credential = NULL;
       break;
+    case STUN_ATTR_INTRUSTD_FORMAT:
+      memcpy(&format, STUN_ATTR_DATA(attr), sizeof(format));
+      switch ( format ) {
+      case STUN_INTRUSTD_FORMAT_WEBRTC:
+        type = PCONN_TYPE_WEBRTC;
+        break;
+      case STUN_INTRUSTD_FORMAT_VLAN:
+        type = PCONN_TYPE_VLAN;
+        break;
+      default: break;
+      }
+      break;
     case STUN_ATTR_FINGERPRINT:
       break;
     default:
@@ -585,7 +599,7 @@ static int flock_process_startconn(struct flock *f, struct appstate *app,
 
   HASH_FIND(pc_hh, f->f_pconns, &conn_id, sizeof(conn_id), conn);
   if ( !conn ) {
-    conn = pconn_alloc(conn_id, f, app, PCONN_TYPE_WEBRTC);
+    conn = pconn_alloc(conn_id, f, app, type);
     if ( !conn ) {
       fprintf(stderr, "flock_process_startconn: no more memory\n");
       // TODO return error

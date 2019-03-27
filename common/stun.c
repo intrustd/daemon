@@ -75,7 +75,7 @@ int stun_validate(const char *buf, int buf_sz, struct stunvalidation *v) {
 
   if ( (v->sv_flags & STUN_VALIDATE_RESPONSE) && (STUN_MESSAGE_TYPE(msg) & STUN_RESPONSE) == 0 ) {
     SVDBG("stun_validate: expected response, but this is a request: %x\n", STUN_MESSAGE_TYPE(msg));
-    return STUN_BAD_REQUEST;
+    return -STUN_BAD_REQUEST;
   }
 
   if ( (v->sv_flags & STUN_VALIDATE_RESPONSE) && (STUN_MESSAGE_TYPE(msg) & STUN_ERROR) ) {
@@ -99,8 +99,16 @@ int stun_validate(const char *buf, int buf_sz, struct stunvalidation *v) {
 
   if ( (v->sv_flags & STUN_VALIDATE_REQUEST) &&
        STUN_REQUEST_TYPE(msg) != STUN_MESSAGE_TYPE(msg) ) {
-    SVDBG("stun_validate: expected request, but got response\n");
-    return STUN_BAD_REQUEST;
+    if ( (v->sv_flags & STUN_ACCEPT_INDICATION) ) {
+      if ( STUN_MSG_CLASS(msg) != STUN_INDICATION ) {
+        SVDBG("stun_validate: expected request or indication, but got response\n");
+        return -STUN_BAD_REQUEST;
+      } else
+        v->sv_flags |= STUN_IS_INDICATION;
+    } else {
+      SVDBG("stun_validate: expected request, but got response\n");
+      return -STUN_BAD_REQUEST;
+    }
   }
 
   for ( attr = STUN_FIRSTATTR(msg); STUN_ATTR_IS_VALID(attr, msg, buf_sz);
@@ -259,7 +267,8 @@ int stun_validate(const char *buf, int buf_sz, struct stunvalidation *v) {
   SVDBG("checking message integrity\n");
   if ( v->sv_flags & STUN_NEED_MESSAGE_INTEGRITY ) {
     SVDBG("stun_validate: needed mesage integrity and had %08x\n", v->sv_flags & STUN_HAD_MESSAGE_INTEGRITY);
-    if ( (v->sv_flags & STUN_HAD_MESSAGE_INTEGRITY) == 0 ) return STUN_UNAUTHORIZED;
+    if ( (v->sv_flags & STUN_HAD_MESSAGE_INTEGRITY) == 0 &&
+         (v->sv_flags & STUN_IS_INDICATION) == 0 ) return STUN_UNAUTHORIZED;
   }
   SVDBG("return success\n");
 

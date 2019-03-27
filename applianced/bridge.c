@@ -31,6 +31,7 @@
 #include "application.h"
 #include "state.h"
 #include "intrustd_proto.h"
+#include "nat.h"
 
 #define APPLIANCED_APP_PORT 9998
 #define INET_LINK_NAME "intrustd-inet"
@@ -106,35 +107,12 @@ static int bridge_remove_ebtable_sub(struct brstate *br, int port);
 static int bridge_delete_veth(struct brstate *br, const char *if_name);
 static int bridge_disconnect_iface(struct brstate *brb, const char *if_name);
 static void bridge_handle_bpr_response(struct brstate *br, struct brpermrequest *bpr);
+static int bridge_try_nat(struct brstate *br, struct eventloop *el, int sz,
+                          struct ethhdr *eth, struct iphdr *ip);
 static int find_hw_addr(const char *if_name, unsigned char *mac_addr);
 static void bridgefn(struct eventloop *el, int op, void *arg);
 
 static pid_t g_main_pid = -1;
-
-static uint16_t ip_checksum(const void *buf, size_t sz) {
-  size_t i;
-  uint32_t a;
-  uint16_t cs;
-  uint8_t carry;
-
-  assert((sz % 2) == 0);
-
-  for ( i = 0, a = 0; i < sz; i += 2 ) {
-    uint16_t word;
-    memcpy(&word, buf + i, sizeof(word));
-
-    a += htons(word);
-  }
-
-  carry = (a >> 16) & 0xF;
-
-  a &= 0xFFFF;
-
-  cs = a;
-  cs += carry;
-
-  return ~cs;
-}
 
 void bridge_clear(struct brstate *br) {
   br->br_mutexes_initialized = 0;
@@ -151,6 +129,7 @@ void bridge_clear(struct brstate *br) {
   br->br_tap_addr.s_addr = 0;
   br->br_arp_table = NULL;
   br->br_sctp_table = NULL;
+  br->br_nat_table = NULL;
   memset(&br->br_tap_mac, 0, sizeof(mac_addr));
   fdsub_clear(&br->br_tap_sub);
   br->br_next_ip = 0x0A000001;
@@ -532,114 +511,115 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
   memcpy(&hdr_eth, br->br_tap_pkt, sizeof(struct ethhdr));
   memcpy(&hdr_ip, br->br_tap_pkt + sizeof(struct ethhdr), sizeof(struct iphdr));
 
-  if ( memcmp(hdr_eth.h_dest, br->br_tap_mac, ETH_ALEN) == 0 &&
-       hdr_ip.daddr == br->br_tap_addr.s_addr ) {
-    if ( bridge_validate_ip(br, &hdr_eth, &hdr_ip) < 0 ) {
-      fprintf(stderr, "bridge_process_ip: invalid source MAC/IP pair\n");
-      return;
-    }
+  if ( memcmp(hdr_eth.h_dest, br->br_tap_mac, ETH_ALEN) == 0 ) {
 
-    switch ( hdr_ip.protocol ) {
-    case IPPROTO_ICMP: {
-      struct icmphdr icmp;
-      struct ethhdr rsp_eth;
-      struct iphdr rsp_ip;
-      struct icmphdr rsp_icmp;
-
-
-      if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr)) ) {
-        fprintf(stderr, "bridge_process_ip: not enough bytes (ICMP)\n");
+    if ( hdr_ip.daddr == br->br_tap_addr.s_addr ) {
+      if ( bridge_validate_ip(br, &hdr_eth, &hdr_ip) < 0 ) {
+        fprintf(stderr, "bridge_process_ip: invalid source MAC/IP pair\n");
         return;
       }
 
-      memcpy(&icmp, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
-             sizeof(icmp));
-      memcpy(rsp_eth.h_dest, hdr_eth.h_source, ETH_ALEN);
-      memcpy(rsp_eth.h_source, br->br_tap_mac, ETH_ALEN);
-      rsp_eth.h_proto = htons(ETH_P_IP);
+      switch ( hdr_ip.protocol ) {
+      case IPPROTO_ICMP: {
+        struct icmphdr icmp;
+        struct ethhdr rsp_eth;
+        struct iphdr rsp_ip;
+        struct icmphdr rsp_icmp;
 
-      rsp_ip.version = 4;
-      rsp_ip.ihl = 5;
-      rsp_ip.tos = 0x00;
-      rsp_ip.tot_len = sz - sizeof(rsp_eth);
-      rsp_ip.tot_len = 2 * ((rsp_ip.tot_len + 1) / 2);
-      rsp_ip.tot_len = htons(rsp_ip.tot_len);
-      rsp_ip.id = hdr_ip.id;
-      rsp_ip.frag_off = htons(IP_DF);
-      rsp_ip.ttl = 64;
-      rsp_ip.protocol = IPPROTO_ICMP;
-      rsp_ip.check = 0;
-      rsp_ip.saddr = br->br_tap_addr.s_addr;
-      rsp_ip.daddr = hdr_ip.saddr;
-      rsp_icmp.type = ICMP_ECHOREPLY;
-      rsp_icmp.code = 0;
-      rsp_icmp.checksum = 0;
-      rsp_icmp.un.echo.id = icmp.un.echo.id;
-      rsp_icmp.un.echo.sequence = icmp.un.echo.sequence;
+        if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr)) ) {
+          fprintf(stderr, "bridge_process_ip: not enough bytes (ICMP)\n");
+          return;
+        }
 
-      rsp_ip.check = htons(ip_checksum(&rsp_ip, sizeof(rsp_ip)));
-      rsp_icmp.checksum = htons(ip_checksum(&rsp_icmp, sizeof(rsp_icmp)));
+        memcpy(&icmp, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
+               sizeof(icmp));
+        memcpy(rsp_eth.h_dest, hdr_eth.h_source, ETH_ALEN);
+        memcpy(rsp_eth.h_source, br->br_tap_mac, ETH_ALEN);
+        rsp_eth.h_proto = htons(ETH_P_IP);
 
-      switch ( icmp.type ) {
-      case ICMP_ECHO: {
-        struct iovec iov[] = {
-          { .iov_base = &rsp_eth, .iov_len = sizeof(rsp_eth) },
-          { .iov_base = &rsp_ip, .iov_len = sizeof(rsp_ip) },
-          { .iov_base = &rsp_icmp, .iov_len = sizeof(rsp_icmp) },
-          { .iov_base = br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr),
-            .iov_len = sz - sizeof(struct ethhdr) - sizeof(struct iphdr) - sizeof(struct icmphdr) }
-        };
-        bridge_write_tap_pktv(br, iov, sizeof(iov) / sizeof(iov[0]));
+        rsp_ip.version = 4;
+        rsp_ip.ihl = 5;
+        rsp_ip.tos = 0x00;
+        rsp_ip.tot_len = sz - sizeof(rsp_eth);
+        rsp_ip.tot_len = 2 * ((rsp_ip.tot_len + 1) / 2);
+        rsp_ip.tot_len = htons(rsp_ip.tot_len);
+        rsp_ip.id = hdr_ip.id;
+        rsp_ip.frag_off = htons(IP_DF);
+        rsp_ip.ttl = 64;
+        rsp_ip.protocol = IPPROTO_ICMP;
+        rsp_ip.check = 0;
+        rsp_ip.saddr = br->br_tap_addr.s_addr;
+        rsp_ip.daddr = hdr_ip.saddr;
+        rsp_icmp.type = ICMP_ECHOREPLY;
+        rsp_icmp.code = 0;
+        rsp_icmp.checksum = 0;
+        rsp_icmp.un.echo.id = icmp.un.echo.id;
+        rsp_icmp.un.echo.sequence = icmp.un.echo.sequence;
+
+        rsp_ip.check = htons(ip_checksum(&rsp_ip, sizeof(rsp_ip)));
+        rsp_icmp.checksum = htons(ip_checksum(&rsp_icmp, sizeof(rsp_icmp)));
+
+        switch ( icmp.type ) {
+        case ICMP_ECHO: {
+          struct iovec iov[] = {
+            { .iov_base = &rsp_eth, .iov_len = sizeof(rsp_eth) },
+            { .iov_base = &rsp_ip, .iov_len = sizeof(rsp_ip) },
+            { .iov_base = &rsp_icmp, .iov_len = sizeof(rsp_icmp) },
+            { .iov_base = br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr),
+              .iov_len = sz - sizeof(struct ethhdr) - sizeof(struct iphdr) - sizeof(struct icmphdr) }
+          };
+          bridge_write_tap_pktv(br, iov, sizeof(iov) / sizeof(iov[0]));
+          break;
+        }
+
+        case ICMP_ECHOREPLY:
+          fprintf(stderr, "bridge_process_ip: got ICMP echo reply\n");
+          break;
+
+        default:
+          fprintf(stderr, "bridge_process_ip: unrecognized ICMP message %02x\n", icmp.type);
+          break;
+        }
+
         break;
       }
 
-      case ICMP_ECHOREPLY:
-        fprintf(stderr, "bridge_process_ip: got ICMP echo reply\n");
+      case IPPROTO_SCTP:
+        //      fprintf(stderr, "bridge_process_ip: got SCTP message\n");
+        if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + 2) ) {
+          fprintf(stderr, "bridge_process_ip: SCTP packet is too short\n");
+        } else {
+          if ( pthread_rwlock_rdlock(&br->br_sctp_mutex) == 0 ) {
+            struct sctpentry *se;
+            struct sockaddr_in source;
+
+            memset(&source, 0, sizeof(source));
+            source.sin_addr.s_addr = hdr_ip.saddr;
+            memcpy(&source.sin_port,
+                   br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
+                   2);
+
+            HASH_FIND(se_hh, br->br_sctp_table, &source, sizeof(source), se);
+            if ( se ) {
+              se->se_on_packet(se, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
+                               sz - sizeof(struct ethhdr) - sizeof(struct iphdr));
+            }
+            pthread_rwlock_unlock(&br->br_sctp_mutex);
+          } else
+            fprintf(stderr, "bridge_process_ip: drop SCTP packet because we could not acquire lock\n");
+        }
+        break;
+
+      case IPPROTO_UDP:
+        bridge_process_udp(br, el, sz, &hdr_eth, &hdr_ip);
         break;
 
       default:
-        fprintf(stderr, "bridge_process_ip: unrecognized ICMP message %02x\n", icmp.type);
+        fprintf(stderr, "bridge_process_ip: got Unknown packet %02x\n", hdr_ip.protocol);
         break;
       }
-
-      break;
-    }
-
-    case IPPROTO_SCTP:
-      //      fprintf(stderr, "bridge_process_ip: got SCTP message\n");
-      if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + 2) ) {
-        fprintf(stderr, "bridge_process_ip: SCTP packet is too short\n");
-      } else {
-        if ( pthread_rwlock_rdlock(&br->br_sctp_mutex) == 0 ) {
-          struct sctpentry *se;
-          struct sockaddr_in source;
-
-          memset(&source, 0, sizeof(source));
-          source.sin_addr.s_addr = hdr_ip.saddr;
-          memcpy(&source.sin_port,
-                 br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
-                 2);
-
-          HASH_FIND(se_hh, br->br_sctp_table, &source, sizeof(source), se);
-          if ( se ) {
-            se->se_on_packet(se, br->br_tap_pkt + sizeof(struct ethhdr) + sizeof(struct iphdr),
-                             sz - sizeof(struct ethhdr) - sizeof(struct iphdr));
-          }
-//          else
-//            fprintf(stderr, "bridge_process_ip: warning: received SCTP to nowhere\n");
-          pthread_rwlock_unlock(&br->br_sctp_mutex);
-        } else
-          fprintf(stderr, "bridge_process_ip: drop SCTP packet because we could not acquire lock\n");
-      }
-      break;
-
-    case IPPROTO_UDP:
-      bridge_process_udp(br, el, sz, &hdr_eth, &hdr_ip);
-      break;
-
-    default:
-      fprintf(stderr, "bridge_process_ip: got Unknown packet %02x\n", hdr_ip.protocol);
-      break;
+    } else {
+      bridge_try_nat(br, el, sz, &hdr_eth, &hdr_ip);
     }
   }
 //  else {
@@ -770,6 +750,33 @@ int bridge_write_tap_pkt(struct brstate *br, const unsigned char *pkt, uint16_t 
   };
 
   return bridge_write_tap_pktv(br, iov, 1);
+}
+
+int bridge_write_ip_pkt_from_bridge(struct brstate *br, struct in_addr *dst,
+                                    const unsigned char *tap_pkt, uint16_t tap_sz) {
+  struct arpentry *arp;
+  struct ethhdr mac;
+
+  struct iovec iov[2] = {
+    { .iov_base = &mac, .iov_len = sizeof(mac) },
+    { .iov_base = (void *) tap_pkt, .iov_len = tap_sz }
+  };
+
+  if ( pthread_rwlock_rdlock(&br->br_arp_mutex) == 0 ) {
+    HASH_FIND(ae_hh, br->br_arp_table, dst, sizeof(*dst), arp);
+    pthread_rwlock_unlock(&br->br_arp_mutex);
+  } else return -1;
+
+  if ( !arp ) {
+    fprintf(stderr, "bridge_write_ip_pkt_from_bridge: no entry for dest\n");
+    return -1;
+  }
+
+  memcpy(mac.h_dest, arp->ae_mac, ETH_ALEN);
+  memcpy(mac.h_source, br->br_tap_mac, ETH_ALEN);
+  mac.h_proto = htons(ETH_P_IP);
+
+  return bridge_write_tap_pktv(br, iov, 2);
 }
 
 int bridge_write_from_foreign_pkt(struct brstate *br, struct container *dst,
@@ -2721,3 +2728,70 @@ int bridge_setup_container(struct brstate *br, int port_ix,
     return -1;
 }
 
+
+static int bridge_try_nat(struct brstate *br, struct eventloop *el, int sz,
+                           struct ethhdr *eth, struct iphdr *ip) {
+  if ( pthread_rwlock_rdlock(&br->br_sctp_mutex) == 0 ) {
+    struct in_addr daddr;
+    struct vlannat *nat;
+    int ret = 0;
+
+    daddr.s_addr = ip->daddr;
+
+    HASH_FIND(vn_hh, br->br_nat_table, &daddr, sizeof(daddr), nat);
+    if ( nat ) {
+      unsigned char *ippkt = br->br_tap_pkt + sizeof(*eth);
+      int ippkt_sz = sz - sizeof(*eth);
+
+      if ( vlannat_rewrite_pkt_to_gw(nat, (char *) ippkt, ippkt_sz) > 0 ) {
+        nat->vn_on_recv_pkt(nat, ippkt, ippkt_sz);
+      }
+    } else
+      ret = -1;
+
+    pthread_rwlock_unlock(&br->br_sctp_mutex);
+    return ret;
+  } else return -1;
+}
+
+int bridge_register_vlan(struct brstate *br, struct vlannat *nat) {
+  struct vlannat *old;
+  if ( pthread_rwlock_wrlock(&br->br_sctp_mutex) == 0 ) {
+    int ret = 0;
+    HASH_FIND(vn_hh, br->br_nat_table, &nat->vn_internal, sizeof(nat->vn_internal), old);
+    if ( old ) {
+      fprintf(stderr, "bridge_register_vlan: already have this association\n");
+      ret = -1;
+    } else {
+      HASH_ADD(vn_hh, br->br_nat_table, vn_internal, sizeof(nat->vn_internal), nat);
+    }
+    pthread_rwlock_unlock(&br->br_sctp_mutex);
+
+    if ( ret == 0 ) {
+      memcpy(&nat->vn_arpentry.ae_mac, br->br_tap_mac, sizeof(nat->vn_arpentry.ae_mac));
+      return bridge_add_arp(br, &nat->vn_arpentry);
+    } else
+      return ret;
+  } else
+    return -1;
+}
+
+int bridge_unregister_vlan(struct brstate *br, struct vlannat *nat) {
+  struct vlannat *old;
+  if ( pthread_rwlock_wrlock(&br->br_sctp_mutex) == 0 ) {
+    int ret = 0;
+    HASH_FIND(vn_hh, br->br_nat_table, &nat->vn_internal, sizeof(nat->vn_internal), old);
+    if ( old != nat ) {
+      fprintf(stderr, "bridge_unregister_vlan: not in table\n");
+      ret = -1;
+    } else {
+      HASH_DELETE(vn_hh, br->br_nat_table, nat);
+    }
+    pthread_rwlock_unlock(&br->br_sctp_mutex);
+
+    if ( ret == 0 )
+      bridge_del_arp(br, &nat->vn_arpentry);
+    return ret;
+  } else
+    return -1;
+}

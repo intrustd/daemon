@@ -42,7 +42,7 @@ static int appstate_certificate_digest(X509 *cert, unsigned char *digest) {
   unsigned char *pubkey_raw = NULL;
   int err;
 
-  pubkey = X509_get_pubkey(cert);
+  pubkey = X509_get0_pubkey(cert);
   cert = NULL;
   if ( !pubkey ) {
     fprintf(stderr, "appstate_certificate_digest: No public key in SSL certificate\n");
@@ -52,6 +52,7 @@ static int appstate_certificate_digest(X509 *cert, unsigned char *digest) {
   err = i2d_PublicKey(pubkey, &pubkey_raw);
   if ( err < 0 ) {
     fprintf(stderr, "appstate_certificate_digest: Could not write public key in DER format\n");
+    EVP_PKEY_free(pubkey);
     return -1;
   }
 

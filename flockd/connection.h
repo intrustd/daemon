@@ -74,6 +74,7 @@ struct connection {
 
   // A random non-zero 64-bit integer that uniquely identifies this connection
   uint64_t conn_id;
+  uint8_t conn_format;
 
   connectionfn conn_control;
 

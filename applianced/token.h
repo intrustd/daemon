@@ -13,6 +13,8 @@
 #define TOKEN_ID_LENGTH 32
 #define SITE_ID_MAX_LENGTH 32
 
+struct pconn;
+
 // A permission is a string. For memory purposes, these strings are
 // interned, in this structure. Then, permissions can be compared via
 // pointer comparison.
@@ -93,5 +95,6 @@ int token_check_permission_ex(struct token *tok, const char *perm, size_t perm_s
 int token_verify_hash(FILE *fl, const char *hash_hex, size_t hash_sz);
 
 int token_is_valid_now(struct token *tok);
+int token_is_valid_for_site(struct token *tok, struct pconn *pc);
 
 #endif

@@ -41,9 +41,11 @@ struct stunmsg {
 
 #define STUN_RESPONSE          0x0100
 #define STUN_ERROR             0x0010
+#define STUN_INDICATION        0x0010
 
 #define STUN_MESSAGE_TYPE(hdr) ntohs((hdr)->sm_type)
 #define STUN_REQUEST_TYPE(hdr) (STUN_MESSAGE_TYPE(hdr) & ~(STUN_RESPONSE | STUN_ERROR))
+#define STUN_MSG_CLASS(hdr) (STUN_MESSAGE_TYPE(hdr) & (STUN_RESPONSE | STUN_INDICATION))
 
 struct stunattr {
   uint16_t sa_name;
@@ -124,6 +126,7 @@ struct stunattr {
 #define STUN_ATTR_INTRUSTD_PERSONAS_DATA 0x0048
 #define STUN_ATTR_INTRUSTD_ANSWER        0x0049
 #define STUN_ATTR_INTRUSTD_ANSWER_OFFSET 0x004A
+#define STUN_ATTR_INTRUSTD_FORMAT        0x004B
 
 #define STUN_ATTR_REQUIRED(attr)     (((attr) & 0x8000) == 0)
 #define STUN_ATTR_OPTIONAL(attr)     (((attr) & 0x8000) != 0)
@@ -152,6 +155,9 @@ struct stunattr {
 #define STUN_REQUEST_MISMATCH   0x10001
 #define STUN_TX_ID_MISMATCH     0x10002
 
+#define STUN_INTRUSTD_FORMAT_WEBRTC 0x1
+#define STUN_INTRUSTD_FORMAT_VLAN   0x2
+
 typedef int(*stunusercb)(const char *, size_t, const char **, size_t *, void *);
 typedef int(*stunattrcb)(uint16_t, const char *, size_t, void *);
 
@@ -168,6 +174,8 @@ int stun_accept_unknown(uint16_t attr, const char *data, size_t sz, void *a);
 #define STUN_VALIDATE_TX_ID         0x80
 #define STUN_VALIDATE_REQUEST       0x100
 #define STUN_HAD_USERNAME           0x200
+#define STUN_ACCEPT_INDICATION      0x400
+#define STUN_IS_INDICATION          0x800
 
 struct stunvalidation {
   int        sv_flags;

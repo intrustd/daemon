@@ -11,6 +11,7 @@
 #include "flock.h"
 #include "state.h"
 #include "token.h"
+#include "nat.h"
 
 #define DEFAULT_SCTP_PORT 5000
 
@@ -159,6 +160,8 @@ static int icecand_parse(struct icecand *ic, const char *vls, const char *vle);
 #define OP_PCONN_CONN_CHECK_TIMER_RINGS (EVT_CTL_CUSTOM + 4)
 #define OP_PCONN_CONN_CHECK_TIMEOUT (EVT_CTL_CUSTOM + 5)
 #define OP_PCONN_NEW_TOKEN (EVT_CTL_CUSTOM + 6)
+#define OP_PCONN_DTLS_TIMEOUT (EVT_CTL_CUSTOM + 7)
+#define OP_PCONN_CHECK_PERM (EVT_CTL_CUSTOM + 8)
 
 static void pconn_fn(struct eventloop *el, int op, void *arg);
 static void pconn_free(struct pconn *pc);
@@ -167,10 +170,13 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
 
 // Call when the pc->pc_state may have changed
 static void pconn_ice_gathering_state_may_change(struct pconn *pc);
+static void pconn_reset_dtls_timer(struct pconn *pc);
 static void pconn_reset_connectivity_check_timer(struct pconn *pc);
 static void pconn_reset_connectivity_check_timeout(struct pconn *pc);
 
 static void pconn_teardown_established(struct pconn *pc);
+
+static int pconn_check_permission(struct pconn *pc, struct brpermrequest *perm);
 
 static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix, int flags);
 
@@ -192,6 +198,7 @@ static void pconn_enable_traffic_deferred(struct pconn *pc);
 static int pconn_add_ice_candidate(struct pconn *pc, int cand_type, struct icecand *cand);
 
 static void pconn_on_established(struct pconn *pc);
+static void pconn_on_natted_packet(struct vlannat *nat, const void *buf, size_t sz);
 static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t sz);
 
 // Find the candidate pair belonging to the given peer_addr on the given candsrc.
@@ -211,6 +218,8 @@ static int pconn_sdp_media_ctl_fn(void *pc_, int, void *arg);
 static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
                                const char *vls, const char *vle);
 static int pconn_parse_remote_fingerprint(struct pconn *pc, const char *vls, const char *vle);
+static void pconn_release_vlan(struct pconn *pc);
+static void pconn_update_vlan_nat(struct pconn *pc);
 
 // Returns the index of candsrc cs in pc or -1 on error
 static int pconn_cs_idx(struct pconn *pc, struct candsrc *cs);
@@ -554,9 +563,9 @@ static int candsrc_handle_response(struct candsrc *cs) {
     } else {
       (void) BIO_reset(SSL_get_rbio(cs->cs_pconn->pc_dtls));
       BIO_STATIC_SET_READ_SZ(&cs->cs_pconn->pc_static_pkt_bio, pkt_sz);
-      //fprintf(stderr, "Accepting DTLS packet of size %d\n", pkt_sz);
       if ( cs->cs_pconn->pc_state == PCONN_STATE_ESTABLISHED ) {
 	unsigned char my_buf[sizeof(cs->cs_pconn->pc_incoming_pkt)];
+
 	pkt_sz = SSL_read(cs->cs_pconn->pc_dtls, my_buf, sizeof(my_buf));
 	if ( pkt_sz <= 0 ) {
 	  fprintf(stderr, "error while trying to read packet: %d\n", pkt_sz);
@@ -567,10 +576,26 @@ static int candsrc_handle_response(struct candsrc *cs) {
 	  // Only write the packet if the webrtc-proxy is up
 	  //fprintf(stderr, "Writing packett to bridge of size %u (webrtc proxy %d)\n", pkt_sz, cs->cs_pconn->pc_webrtc_proxy);
 
-	  bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
-					&cs->cs_pconn->pc_container,
-					&peer_addr.sa, peer_addr_sz,
-					my_buf, pkt_sz);
+          if ( cs->cs_pconn->pc_type == PCONN_TYPE_WEBRTC ) {
+            bridge_write_from_foreign_pkt(&cs->cs_pconn->pc_appstate->as_bridge,
+                                          &cs->cs_pconn->pc_container,
+                                          &peer_addr.sa, peer_addr_sz,
+                                          my_buf, pkt_sz);
+          } else {
+            // Do NAT translation
+
+            if ( cs->cs_pconn->pc_vlan_nat ) {
+              struct in_addr local_dest;
+              if ( vlannat_rewrite_pkt_from_gw(cs->cs_pconn->pc_vlan_nat,
+                                               (char *)my_buf, pkt_sz,
+                                               &local_dest) ) {
+                bridge_write_ip_pkt_from_bridge(&cs->cs_pconn->pc_appstate->as_bridge,
+                                                &local_dest,
+                                                my_buf, pkt_sz);
+              }
+            } else
+              fprintf(stderr, "Ignoring NAT packet because no NAT rules have been set up\n");
+          }
 	}
       } else {
 	pconn_dtls_handshake(cs->cs_pconn);
@@ -611,7 +636,8 @@ static int candsrc_handle_response(struct candsrc *cs) {
       if ( PCONN_READY_FOR_ICE(cs->cs_pconn) ) {
         uint16_t unknown_attrs[16];
 
-        sv.sv_flags = STUN_VALIDATE_REQUEST | STUN_NEED_FINGERPRINT | STUN_NEED_MESSAGE_INTEGRITY;
+        sv.sv_flags = STUN_VALIDATE_REQUEST | STUN_NEED_FINGERPRINT |
+          STUN_NEED_MESSAGE_INTEGRITY | STUN_ACCEPT_INDICATION;
         sv.sv_unknown_attrs = unknown_attrs;
         sv.sv_unknown_attrs_sz = sizeof(unknown_attrs) / sizeof(unknown_attrs[0]);
         err = stun_validate(cs->cs_pconn->pc_incoming_pkt, pkt_sz, &sv);
@@ -620,10 +646,15 @@ static int candsrc_handle_response(struct candsrc *cs) {
 
           //fprintf(stderr, "Received binding request\n");
           if ( STUN_REQUEST_TYPE(msg) == STUN_BINDING ) {
-            candsrc_send_binding_response(cs, msg, &peer_addr.sa, peer_addr_sz);
+            if ( sv.sv_flags & STUN_IS_INDICATION ) {
+              fprintf(stderr, "Received binding indication\n");
+              pconn_reset_connectivity_check_timeout(cs->cs_pconn);
+            } else
+              candsrc_send_binding_response(cs, msg, &peer_addr.sa, peer_addr_sz);
           } else
             fprintf(stderr, "STUN message of unknown type %04x\n", STUN_REQUEST_TYPE(msg));
         } else if ( err > 0 ) { // Error to send back
+          fprintf(stderr, "Sending error: %d\n", err);
           candsrc_send_error_response(cs, (struct stunmsg *) cs->cs_pconn->pc_incoming_pkt,
                                       err, &sv, &peer_addr.sa, peer_addr_sz);
         } else {
@@ -691,6 +722,7 @@ static void candsrc_send_outgoing(struct candsrc *cs) {
         err = SSL_get_error(cs->cs_pconn->pc_dtls, err);
         if ( err == SSL_ERROR_WANT_WRITE ) {
           fprintf(stderr, "candsrc_send_outgoing: needs write\n");
+          CANDSRC_SUBSCRIBE_WRITE(cs);
           break;
         } else {
           fprintf(stderr, "candsrc_send_outgoing: unknown ssl error %d\n", err);
@@ -985,6 +1017,7 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
   struct fdevent *fde = (struct fdevent *) arg;
   struct pconn *pc;
   struct candsrc *cs;
+  struct brpermrequest *perm;
   int has_error = 0, cs_idx;
 
   switch ( op ) {
@@ -1020,16 +1053,19 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
       PCONN_UNREF(pc);
     }
     break;
+
   case OP_PCONN_CONN_CHECK_TIMEOUT:
     pc = STRUCT_FROM_BASE(struct pconn, pc_conn_check_timeout_timer, evt->qde_sub);
     if ( PCONN_LOCK(pc) == 0 ) {
       SAFE_MUTEX_LOCK(&pc->pc_mutex);
+      fprintf(stderr, "Teardown pconn because of conn check timeout\n");
       pconn_teardown_established(pc);
       pthread_mutex_unlock(&pc->pc_mutex);
       PCONN_UNREF(pc);
     }
 
     break;
+
   case OP_PCONN_CONN_CHECK_TIMER_RINGS:
     pc = STRUCT_FROM_BASE(struct pconn, pc_conn_check_timer, evt->qde_sub);
     if ( PCONN_LOCK(pc) == 0 ) {
@@ -1116,8 +1152,20 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
                   pc->pc_state == PCONN_STATE_ESTABLISHED &&
                   pconn_cs_idx(pc, cs) == local_cand->ic_candsrc_ix &&
                   pc->pc_outgoing_size > 0 ) {
-        //        fprintf(stderr, "candsrc_send_outgoing being called\n");
-        candsrc_send_outgoing(cs);
+        int err = DTLSv1_handle_timeout(pc->pc_dtls);
+        if ( err < 0 ) {
+          err = SSL_get_error(cs->cs_pconn->pc_dtls, err);
+          if ( err == SSL_ERROR_WANT_WRITE ) {
+            fprintf(stderr, "DTLS timeout needs write\n");
+            CANDSRC_SUBSCRIBE_WRITE(cs);
+          } else {
+            fprintf(stderr, "Unknown error during DTLSv1_handle_timeout: %d\n", err);
+            ERR_print_errors_fp(stderr);
+          }
+        } else {
+          //        fprintf(stderr, "candsrc_send_outgoing being called\n");
+          candsrc_send_outgoing(cs);
+        }
       }
 
       if ( cs->cs_scheduled_connectivity_check ) {
@@ -1150,6 +1198,25 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
       CANDSRC_SUBSCRIBE_READ(cs);
     }
     break;
+
+  case OP_PCONN_DTLS_TIMEOUT:
+    // TODO set write on active candidate source
+    break;
+
+  case OP_PCONN_CHECK_PERM:
+    perm = STRUCT_FROM_BASE(struct brpermrequest, bpr_start_event, evt->qde_sub);
+    pc = perm->bpr_user_data;
+
+    if ( PCONN_LOCK(pc) ) {
+      perm->bpr_sts = pconn_check_permission(pc, perm);
+      PCONN_UNREF(pc);
+    } else
+      perm->bpr_sts = -1;
+
+    eventloop_queue(perm->bpr_el, &perm->bpr_finished_event);
+
+    break;
+
   default:
     fprintf(stderr, "pconn_fn: Unknown op %d\n", op);
   }
@@ -1187,6 +1254,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_dtls_needs_write = ret->pc_dtls_needs_read = 0;
   ret->pc_is_logged_in = 0;
   ret->pc_is_guest = 0;
+  DLIST_INIT(&ret->pc_app_nat);
 
   // Generate user fragment and password
   if ( !random_printable_string(ret->pc_our_ufrag, sizeof(ret->pc_our_ufrag)) ||
@@ -1227,8 +1295,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   ret->pc_ice_role = ICE_ROLE_CONTROLLING;
   ret->pc_personaset = NULL;
   ret->pc_persona = NULL;
-  ret->pc_sctp_capture.se_on_packet = pconn_on_sctp_packet;
-  memset(&ret->pc_sctp_capture.se_source, 0, sizeof(ret->pc_sctp_capture.se_source));
+
   ret->pc_offer_line = 0;
   ret->pc_last_offer_line = -1;
   ret->pc_answer_offset = -1;
@@ -1244,6 +1311,20 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
 
   ret->pc_tokens = NULL;
   ret->pc_apps = NULL;
+
+  switch ( type ) {
+  case PCONN_TYPE_WEBRTC:
+    ret->pc_sctp_capture.se_on_packet = pconn_on_sctp_packet;
+    memset(&ret->pc_sctp_capture.se_source, 0, sizeof(ret->pc_sctp_capture.se_source));
+    break;
+
+  case PCONN_TYPE_VLAN:
+    DLIST_INIT(&ret->pc_app_nat);
+    ret->pc_vlan_nat = NULL;
+    break;
+
+  default: break;
+  }
 
   ret->pc_static_pkt_bio.bs_buf = ret->pc_incoming_pkt;
   BIO_STATIC_SET_READ_SZ(&ret->pc_static_pkt_bio, 0);
@@ -1269,6 +1350,7 @@ struct pconn *pconn_alloc(uint64_t conn_id, struct flock *f, struct appstate *as
   timersub_init_from_now(&ret->pc_timeout, PCONN_TIMEOUT, OP_PCONN_EXPIRES, pconn_fn);
   timersub_init_default(&ret->pc_conn_check_timer, OP_PCONN_CONN_CHECK_TIMER_RINGS, pconn_fn);
   timersub_init_default(&ret->pc_conn_check_timeout_timer, OP_PCONN_CONN_CHECK_TIMEOUT, pconn_fn);
+  timersub_init_default(&ret->pc_dtls_timer, OP_PCONN_DTLS_TIMEOUT, pconn_fn);
   qdevtsub_init(&ret->pc_start_evt, OP_PCONN_STARTS, pconn_fn);
   qdevtsub_init(&ret->pc_new_token_evt, OP_PCONN_NEW_TOKEN, pconn_fn);
 
@@ -1345,6 +1427,16 @@ static void pconn_free(struct pconn *pc) {
   if ( pc->pc_dtls ) {
     SSL_free(pc->pc_dtls);
     pc->pc_dtls = NULL;
+  }
+
+  switch ( pc->pc_type ) {
+  case PCONN_TYPE_VLAN:
+    pconn_release_vlan(pc);
+    break;
+
+  case PCONN_TYPE_WEBRTC:
+  default:
+    break;
   }
 
   pthread_mutex_unlock(&pc->pc_mutex);
@@ -1453,7 +1545,11 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
   case 5:
     OFFER_LINE("a=msid-semantic: WMS");
   case 6:
-    OFFER_LINE("m=application 9 DTLS/SCTP webrtc-datachannel");
+    if ( pc->pc_type == PCONN_TYPE_WEBRTC ) {
+      OFFER_LINE("m=application 9 DTLS/SCTP webrtc-datachannel");
+    } else {
+      OFFER_LINE("m=application 9 DTLS vlan");
+    }
   case 7:
     OFFER_LINE("c=IN %s %s", addrty, addr_buf);
   case 8:
@@ -1771,7 +1867,7 @@ void pconn_recv_startconn(struct pconn *pc, const char *persona_id,
         pconn_auth_fails(pc);
       } else {
         // Ensure the persona credential validates
-        if ( persona_credential_validates(p, pc, credential, cred_sz) != 1 ) {
+        if ( persona_credential_validates(p, pc, credential, cred_sz, PAUTH_FLAG_LOGIN) != 1 ) {
           pc->pc_persona = NULL;
           PERSONA_UNREF(p);
           pconn_auth_fails(pc);
@@ -1859,6 +1955,13 @@ static void pconn_candpair_activated(struct pconn *pc) {
 
   pc->pc_state = PCONN_STATE_DTLS_STARTING;
 
+  fprintf(stderr, "pconn_candpair activated\n");
+
+  if ( pc->pc_answer_flags & PCONN_ANSWER_IS_PASSIVE ) {
+    pconn_ensure_dtls(pc);
+    pconn_dtls_handshake(pc);
+  }
+
   // Launch persona container, and start routing traffic throug
 }
 
@@ -1919,6 +2022,22 @@ static void pconn_connectivity_check_succeeds(struct pconn *pc, int cand_pair_ix
   }
 }
 
+static void pconn_reset_dtls_timer(struct pconn *pc) {
+  struct timeval time_left;
+  if ( pc->pc_dtls &&
+       DTLSv1_get_timeout(pc->pc_dtls, &time_left) ) {
+
+    if ( !eventloop_cancel_timer(&pc->pc_appstate->as_eventloop,
+                                 &pc->pc_dtls_timer) ) {
+      PCONN_WREF(pc);
+    }
+
+    timersub_set_from_now(&pc->pc_dtls_timer, time_left.tv_sec * 1000 + time_left.tv_usec / 1000);
+    eventloop_subscribe_timer(&pc->pc_appstate->as_eventloop,
+                              &pc->pc_dtls_timer);
+  }
+}
+
 static void pconn_reset_connectivity_check_timer(struct pconn *pc) {
   if ( !eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timer) ) {
     PCONN_WREF(pc);
@@ -1932,14 +2051,15 @@ static void pconn_reset_connectivity_check_timer(struct pconn *pc) {
 }
 
 static void pconn_reset_connectivity_check_timeout(struct pconn *pc) {
-  eventloop_dbg_verify_timers(&pc->pc_appstate->as_eventloop);
+
+  fprintf(stderr, "Reset conn check timer\n");
   if ( !eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timeout_timer) ) {
     PCONN_WREF(pc);
   }
 
   timersub_set_from_now(&pc->pc_conn_check_timeout_timer,
                         PCONN_CONNECTIVITY_CHECK_TIMEOUT);
-  eventloop_subscribe_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timeout_timer);
+  //  eventloop_subscribe_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timeout_timer);
 }
 
 static int cmp_candidates(const void *app, const void *bpp) {
@@ -2351,15 +2471,18 @@ static int pconn_sdp_new_media_fn(void *pc_) {
     pc->pc_answer_flags &= ~(PCONN_ANSWER_HAS_UFRAG | PCONN_ANSWER_HAS_PASSWORD |
                              PCONN_ANSWER_ICE_TRICKLE | PCONN_ANSWER_HAS_FINGERPRINT |
                              PCONN_ANSWER_IS_ACTIVE | PCONN_ANSWER_IS_PASSIVE |
-                             PCONN_ANSWER_HAS_SCTP_PORT);
+                             PCONN_ANSWER_HAS_SCTP_PORT | PCONN_ANSWER_HAS_VLAN_SRC);
     pc->pc_remote_ufrag[0] = '\0';
     pc->pc_remote_pwd[0] = '\0';
     pc->pc_answer_sctp = 0;
+
+    pconn_release_vlan(pc);
   }
 
   pc->pc_answer_flags |= PCONN_ANSWER_IN_MEDIA_STREAM;
   pc->pc_answer_flags &= ~(PCONN_ANSWER_IN_DATA_CHANNEL | PCONN_ANSWER_IS_APP_CHANNEL |
-                           PCONN_ANSWER_IS_WEBRTC_CHAN | PCONN_ANSWER_IS_DTLS_SCTP );
+                           PCONN_ANSWER_IS_WEBRTC_CHAN | PCONN_ANSWER_IS_VLAN_CHAN |
+                           PCONN_ANSWER_IS_VALID_PROTO | PCONN_ANSWER_HAS_VLAN_SRC);
   return 0;
 }
 
@@ -2379,23 +2502,38 @@ static int pconn_sdp_media_ctl_fn(void *pc_, int op, void *arg) {
       pc->pc_answer_flags |= PCONN_ANSWER_IS_APP_CHANNEL;
     return 0;
   case SPS_MEDIA_SET_PROTOCOL:
-    if ( strcmp(arg, "DTLS/SCTP") != 0 )
-      fprintf(stderr, "Expected 'DTLS/SCTP' as media protocol, got %s\n", (char *)arg);
-    else
-      pc->pc_answer_flags |= PCONN_ANSWER_IS_DTLS_SCTP;
+    if ( pc->pc_type == PCONN_TYPE_WEBRTC ) {
+      if ( strcmp(arg, "DTLS/SCTP") != 0 )
+        fprintf(stderr, "Expected 'DTLS/SCTP' as media protocol, got %s\n", (char *)arg);
+      else
+        pc->pc_answer_flags |= PCONN_ANSWER_IS_VALID_PROTO;
+    } else if ( pc->pc_type == PCONN_TYPE_VLAN ) {
+      if ( strcmp(arg, "DTLS") != 0 )
+        fprintf(stderr, "Expected 'DTLS' as media protocol for vlan, got %s\n", (char *)arg);
+      else
+        pc->pc_answer_flags |= PCONN_ANSWER_IS_VALID_PROTO;
+    }
     return 0;
   case SPS_MEDIA_SET_FORMAT:
-    if ( strcmp(arg, "webrtc-datachannel") != 0 ) {
-      int port;
-      if ( parse_decimal(&port, arg, strlen(arg)) < 0 ) {
-        fprintf(stderr, "Expected 'webrtc-datachannel' or port as format, got %s\n", (char *)arg);
+    if ( pc->pc_type == PCONN_TYPE_WEBRTC ) {
+      if ( strcmp(arg, "webrtc-datachannel") != 0 ) {
+        int port;
+        if ( parse_decimal(&port, arg, strlen(arg)) < 0 ) {
+          fprintf(stderr, "Expected 'webrtc-datachannel' or port as format, got %s\n", (char *)arg);
+          return -1;
+        } else {
+          pc->pc_answer_sctp = port;
+          pc->pc_answer_flags |= PCONN_ANSWER_NEEDS_SCTPMAP;
+        }
+      } else
+        pc->pc_answer_flags |= PCONN_ANSWER_IS_WEBRTC_CHAN;
+    } else {
+      if ( strcmp(arg, "vlan") != 0 ) {
+        fprintf(stderr, "Expected 'vlan' as vlan format, got %s\n", (char *)arg);
         return -1;
-      } else {
-        pc->pc_answer_sctp = port;
-        pc->pc_answer_flags |= PCONN_ANSWER_NEEDS_SCTPMAP;
-      }
-    } else
-      pc->pc_answer_flags |= PCONN_ANSWER_IS_WEBRTC_CHAN;
+      } else
+        pc->pc_answer_flags |= PCONN_ANSWER_IS_VLAN_CHAN;
+    }
     return 0;
   case SPS_MEDIA_SET_PORTS:
     fprintf(stderr, "Set media ports %d %d\n", ((uint16_t *) arg)[0], ((uint16_t *)arg)[1]);
@@ -2488,8 +2626,10 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
             (int) (nme - nms), nms);
     return 0;
   } else if ( (pc->pc_answer_flags & PCONN_ANSWER_IS_APP_CHANNEL) == 0 ||
-              (pc->pc_answer_flags & (PCONN_ANSWER_IS_WEBRTC_CHAN | PCONN_ANSWER_NEEDS_SCTPMAP)) == 0 ||
-              (pc->pc_answer_flags & PCONN_ANSWER_IS_DTLS_SCTP) == 0 ) {
+              (pc->pc_answer_flags & (PCONN_ANSWER_IS_WEBRTC_CHAN |
+                                      PCONN_ANSWER_IS_VLAN_CHAN |
+                                      PCONN_ANSWER_NEEDS_SCTPMAP)) == 0 ||
+              (pc->pc_answer_flags & PCONN_ANSWER_IS_VALID_PROTO) == 0 ) {
     fprintf(stderr, "Skipping attribute %.*s because this is not an application, WebRTC channel, or DTLS/SCTP channel\n",
             (int) (nme - nms), nms);
     return 0;
@@ -2588,10 +2728,61 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
 
       err = pconn_add_ice_candidate(pc, PCONN_REMOTE_CANDIDATE, &cand);
       if ( err < 0 ) {
-        fprintf(stderr, "could not addd ice candidate\n");
+        fprintf(stderr, "could not add ice candidate\n");
         return -1;
       }
 
+    } else if ( ATTR_IS("vlansrc") && vls && vle && vls != vle &&
+                pc->pc_type == PCONN_TYPE_VLAN ) {
+      char ip[INET6_ADDRSTRLEN];
+      if ( (vle - vls) >= sizeof(ip) ) {
+        fprintf(stderr, "IP address too long\n");
+        return -1;
+      }
+
+      memset(ip, 0, sizeof(ip));
+      memcpy(ip, vls, vle - vls);
+      if ( inet_pton(AF_INET, ip, &pc->pc_vlan_src) <= 0 ) {
+        fprintf(stderr, "Invalid IPv4 address: %s\n", ip);
+        return -1;
+      }
+
+      pc->pc_answer_flags |= PCONN_ANSWER_HAS_VLAN_SRC;
+    } else if ( ATTR_IS("vlanmap") && vls && vle && vls != vle &&
+                pc->pc_type == PCONN_TYPE_VLAN ) {
+      // Parse until first space
+      struct pconnnat *entry;
+      char ip[INET6_ADDRSTRLEN];
+      char *end_of_ip = memchr(vls, ' ', vle - vls);
+      if ( !end_of_ip ) {
+        fprintf(stderr, "Invalid vlanmap value\n");
+        return -1;
+      }
+
+      if ( (end_of_ip - vls) >= sizeof(ip) ) {
+        fprintf(stderr, "IP address too long\n");
+        return -1;
+      }
+
+      memset(ip, 0, sizeof(ip));
+      memcpy(ip, vls, end_of_ip - vls);
+
+      entry = malloc(sizeof(*entry) + vle - end_of_ip);
+      if ( !entry ) return -1;
+
+      if ( inet_pton(AF_INET, ip, &entry->gw_ip) <= 0 ) {
+        free(entry);
+        fprintf(stderr, "%s is not a valid IPv4 address\n", ip);
+        return -1;
+      }
+
+      DLIST_ENTRY_CLEAR(&entry->vlan_dl);
+      memcpy(entry->app_id, end_of_ip + 1, vle - end_of_ip - 1);
+      entry->app_id[vle - end_of_ip] = '\0';
+
+      DLIST_INSERT(&pc->pc_app_nat, vlan_dl, entry);
+
+      pconn_update_vlan_nat(pc);
     } else if ( ATTR_IS("fingerprint") && vls && vle && vls != vle ) {
       if ( pconn_parse_remote_fingerprint(pc, vls, vle) < 0 ) {
         fprintf(stderr, "could not parse fingerprint\n");
@@ -2680,6 +2871,15 @@ static int pconn_ensure_dtls(struct pconn *pc) {
   return -1;
 }
 
+static int pconn_verify_tokens(struct pconn *pc) {
+  struct pconntoken *cur, *tmp;
+  HASH_ITER(pct_hh, pc->pc_tokens, cur, tmp) {
+    if ( !token_is_valid_for_site(cur->pct_token, pc) )
+      return 0;
+  }
+  return 1;
+}
+
 static void pconn_dtls_handshake(struct pconn *pc) {
   int err;
   struct icecandpair *active;
@@ -2709,6 +2909,8 @@ static void pconn_dtls_handshake(struct pconn *pc) {
   }
 
   pc->pc_dtls_needs_write = pc->pc_dtls_needs_read = 0;
+
+  pconn_reset_dtls_timer(pc);
 
   switch ( pc->pc_state ) {
   case PCONN_STATE_DTLS_LISTENING:
@@ -2767,10 +2969,13 @@ static void pconn_dtls_handshake(struct pconn *pc) {
         return;
       }
     } else {
+      fprintf(stderr, "Ran ssl_accept\n");
       pc->pc_state = PCONN_STATE_ESTABLISHED;
+      if ( pconn_verify_tokens(pc) )
+        pconn_on_established(pc);
+      else
+        pconn_finish(pc);
     }
-
-    pconn_on_established(pc);
 
     return;
 
@@ -2795,9 +3000,11 @@ static void pconn_dtls_handshake(struct pconn *pc) {
     } else {
       fprintf(stderr, "Successfully ran SSL_connect\n");
       pc->pc_state = PCONN_STATE_ESTABLISHED;
+      if ( pconn_verify_tokens(pc) )
+        pconn_on_established(pc);
+      else
+        pconn_finish(pc);
     }
-
-    pconn_on_established(pc);
     return;
 
   default:
@@ -2854,21 +3061,23 @@ static void pconn_on_established(struct pconn *pc) {
     }
     break;
 
+  case PCONN_TYPE_VLAN:
+    PCONN_WREF(pc);
+    pconn_enable_traffic_deferred(pc);
+    if ( pc->pc_vlan_nat ) {
+      if ( bridge_register_vlan(&pc->pc_appstate->as_bridge, pc->pc_vlan_nat) < 0 ) {
+        fprintf(stderr, "pconn_on_established: could not register nat with bridge\n");
+      } else
+        PCONN_WREF(pc);
+    }
+    break;
+
   default:
     fprintf(stderr, "pconn_on_established: unknown type %d\n", pc->pc_type);
   }
 }
 
-static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t sz) {
-  struct pconn *pc = STRUCT_FROM_BASE(struct pconn, pc_sctp_capture, se);
-
-  if ( sz > PCONN_MAX_PACKET_SIZE ) {
-    fprintf(stderr, "pconn_on_sctp_packet: packet is too large\n");
-    return;
-  }
-
-  //fprintf(stderr, "pconn_on_sctp_packet: receive sctp packet\n");
-
+static void pconn_on_local_packet(struct pconn *pc, const void *buf, size_t sz) {
   if ( pthread_mutex_lock(&pc->pc_mutex) == 0 ) {
     size_t aligned_sz = ((sz + 3) / 4) * 4;
     size_t cur_write_head = pc->pc_outgoing_offs + pc->pc_outgoing_size;
@@ -2938,27 +3147,84 @@ static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t s
     fprintf(stderr, "pconn_on_sctp_packet: can't lock mutex\n");
 }
 
+static void pconn_on_natted_packet(struct vlannat *nat, const void *buf, size_t sz) {
+  struct pconn *pc = nat->vn_user_data;
+
+  if ( sz > PCONN_MAX_PACKET_SIZE ) {
+    fprintf(stderr, "pconn_on_natted_packet: packet is too large\n");
+    return;
+  }
+
+  pconn_on_local_packet(pc, buf, sz);
+}
+
+static void pconn_on_sctp_packet(struct sctpentry *se, const void *buf, size_t sz) {
+  struct pconn *pc = STRUCT_FROM_BASE(struct pconn, pc_sctp_capture, se);
+
+  if ( sz > PCONN_MAX_PACKET_SIZE ) {
+    fprintf(stderr, "pconn_on_sctp_packet: packet is too large\n");
+    return;
+  }
+
+  //fprintf(stderr, "pconn_on_sctp_packet: receive sctp packet\n");
+
+  pconn_on_local_packet(pc, buf, sz);
+}
+
 static void pconn_teardown_established(struct pconn *pc) {
   if ( pc->pc_state == PCONN_STATE_ESTABLISHED ) {
     pc->pc_state = PCONN_STATE_DISCONNECTED;
 
-    SHARED_DEBUG(&pc->pc_shared, "on pconn teardown");
+    //SHARED_DEBUG(&pc->pc_shared, "on pconn teardown");
 
-    if ( bridge_unregister_sctp(&pc->pc_appstate->as_bridge, &pc->pc_sctp_capture) < 0 ) {
-      fprintf(stderr, "pconn_teardown_established: failed to unregister sctp capture\n");
-      return;
+    switch ( pc->pc_type ) {
+    case PCONN_TYPE_WEBRTC:
+      if ( bridge_unregister_sctp(&pc->pc_appstate->as_bridge, &pc->pc_sctp_capture) < 0 ) {
+        fprintf(stderr, "pconn_teardown_established: failed to unregister sctp capture\n");
+        return;
+      }
+      PCONN_WUNREF(pc); // For bridge capture
+      assert( container_release_running(&pc->pc_container, &pc->pc_appstate->as_eventloop) );
+      break;
+
+    case PCONN_TYPE_VLAN:
+      if ( pc->pc_vlan_nat ) {
+        if ( bridge_unregister_vlan(&pc->pc_appstate->as_bridge, pc->pc_vlan_nat) < 0 ) {
+          fprintf(stderr, "pconn_teardown_established: failed to unregister nat capture\n");
+          return;
+        }
+      }
+      PCONN_WUNREF(pc); // For bridge capture
+      break;
+
+    default:
+      break;
     }
-
-    PCONN_WUNREF(pc); // For bridge capture
-    SHARED_DEBUG(&pc->pc_shared, "after bridge unregister");
-
-    assert( container_release_running(&pc->pc_container, &pc->pc_appstate->as_eventloop) );
+    //SHARED_DEBUG(&pc->pc_shared, "after bridge unregister");
 
     pconn_finish(pc);
   }
 }
 
 #define MAX_PORT_SZ 5
+
+static int pconn_check_permission(struct pconn *pc, struct brpermrequest *perm) {
+  if ( perm->bpr_perm.bp_type == BR_PERM_APPLICATION ) {
+    PERSONA_REF(pc->pc_persona);
+    perm->bpr_persona = pc->pc_persona;
+  }
+  return 0;
+}
+
+static int pconn_describe(struct pconn *pc, struct arpdesc *desc) {
+  desc->ad_container_type = ARP_DESC_PERSONA;
+  memcpy(desc->ad_persona.ad_persona_id, pc->pc_persona->p_persona_id,
+         sizeof(desc->ad_persona.ad_persona_id));
+  desc->ad_persona.ad_pconn = pc;
+  PCONN_REF(pc);
+  return 0;
+}
+
 static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t argl) {
   struct pconn *pc = STRUCT_FROM_BASE(struct pconn, pc_container, c);
   struct brpermrequest *perm;
@@ -2971,21 +3237,11 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
   switch ( op ) {
   case CONTAINER_CTL_DESCRIBE:
     desc = argp;
-    desc->ad_container_type = ARP_DESC_PERSONA;
-    memcpy(desc->ad_persona.ad_persona_id, pc->pc_persona->p_persona_id,
-           sizeof(desc->ad_persona.ad_persona_id));
-    desc->ad_persona.ad_pconn = pc;
-    PCONN_REF(pc);
-    return 0;
+    return pconn_describe(pc, desc);
 
   case CONTAINER_CTL_CHECK_PERMISSION:
     perm = argp;
-    if ( perm->bpr_perm.bp_type == BR_PERM_APPLICATION ) {
-      PERSONA_REF(pc->pc_persona);
-      perm->bpr_persona = pc->pc_persona;
-      return 0;
-    }
-    return 0;
+    return pconn_check_permission(pc, perm);
 
   case CONTAINER_CTL_GET_INIT_PATH:
     cp = argp;
@@ -3147,6 +3403,82 @@ static int pconnapp_enable_traffic(struct pconn *pc, struct pconnapp *pca) {
   }
 }
 
+static int pconn_vlan_arpfn(struct arpentry *ae, int op, void *argp, ssize_t argl) {
+  struct vlannat *vn = STRUCT_FROM_BASE(struct vlannat, vn_arpentry, ae);
+  struct pconn *pc = (struct pconn *) vn->vn_user_data;
+  struct brpermrequest *perm;
+  struct arpdesc *desc;
+
+  switch ( op ) {
+  case ARP_ENTRY_CHECK_PERMISSION:
+    perm = argp;
+    perm->bpr_user_data = pc;
+    PCONN_WREF(pc);
+    qdevtsub_init(&perm->bpr_start_event, OP_PCONN_CHECK_PERM, pconn_fn);
+    eventloop_queue(&pc->pc_appstate->as_eventloop, &perm->bpr_start_event);
+    return 0;
+
+  case ARP_ENTRY_DESCRIBE:
+    desc = argp;
+    return pconn_describe(pc, desc);
+
+  default:
+    fprintf(stderr, "pconn_vlan_arpfn: Unknown op %d\n", op);
+    return -2;
+  }
+}
+
+static void pconn_add_nat_rule(struct pconn *pc, struct in_addr *gw_ip, struct in_addr *internal_ip) {
+  if ( !pc->pc_vlan_nat ) {
+    pc->pc_vlan_nat = malloc(sizeof(*pc->pc_vlan_nat));
+    if ( !pc->pc_vlan_nat ) {
+      fprintf(stderr, "pconn_add_nat_rule: out of memory\n");
+      return;
+    }
+
+    vlannat_init(pc->pc_vlan_nat, &pc->pc_vlan_src, &pc->pc_container.c_ip);
+    pc->pc_vlan_nat->vn_user_data = pc;
+    pc->pc_vlan_nat->vn_on_recv_pkt = pconn_on_natted_packet;
+    pc->pc_vlan_nat->vn_arpentry.ae_ctlfn = pconn_vlan_arpfn;
+  }
+
+  if ( vlannat_add_rule(pc->pc_vlan_nat, gw_ip, internal_ip) < 0 ) {
+    fprintf(stderr, "pconn_add_nat_rule: failed\n");
+  }
+}
+
+static void pconn_update_vlan_nat(struct pconn *pc) {
+  struct pconnnat *cur, *tmp;
+
+  if ( pc->pc_type != PCONN_TYPE_VLAN ) return;
+
+  fprintf(stderr, "Update vlan nat\n");
+  DLIST_ITER(&pc->pc_app_nat, vlan_dl, cur, tmp) {
+    struct pconnapp *existing;
+    HASH_FIND(pca_hh, pc->pc_apps, cur->app_id, strlen(cur->app_id), existing);
+
+    fprintf(stderr, "Vlan nat rule: %p\n", cur);
+
+    if ( !existing && pc->pc_is_logged_in ) {
+      // If this is a logged in pconn, we should probably launch this app
+      int err = pconn_launch_app(pc, cur->app_id, &existing);
+      if ( err < 0 ) {
+        fprintf(stderr, "pconn_update_vlan_nat: could not launch app %s\n", cur->app_id);
+        existing = NULL;
+      }
+    }
+
+    if ( existing ) {
+      pconn_add_nat_rule(pc, &cur->gw_ip, &existing->pca_app->inst_container.c_ip);
+    } else {
+      fprintf(stderr, "Could not find %s\n", cur->app_id);
+    }
+
+    DLIST_REMOVE(&pc->pc_app_nat, vlan_dl, cur);
+    free(cur);
+  }
+}
+
 static void pconn_on_new_tokens(struct pconn *pc) {
   struct pconntoken *tok, *tmp;
   int i;
@@ -3175,6 +3507,8 @@ static void pconn_on_new_tokens(struct pconn *pc) {
       }
     }
   }
+
+  pconn_update_vlan_nat(pc);
 }
 
 static void pconn_enable_traffic_deferred(struct pconn *pc) {
@@ -3186,7 +3520,24 @@ static void pconn_enable_traffic_deferred(struct pconn *pc) {
       fprintf(stderr, "pconn_enable_traffic_deferred: pconn_app_enable_traffic failed\n");
     } else if ( err == 0 ) {
       fprintf(stderr, "pconn_enable_traffic_deferred: container not running!\n");
-      abort();
+      if ( pc->pc_type == PCONN_TYPE_WEBRTC )
+        abort();
     }
+  }
+}
+
+static void pconn_release_vlan(struct pconn *pc) {
+  if ( pc->pc_type == PCONN_TYPE_VLAN ) {
+    struct pconnnat *cur, *tmp;
+    DLIST_ITER(&pc->pc_app_nat, vlan_dl, cur, tmp) {
+      DLIST_REMOVE(&pc->pc_app_nat, vlan_dl, cur);
+      free(cur);
+    }
+
+    if ( pc->pc_vlan_nat ) {
+      vlannat_release(pc->pc_vlan_nat);
+      free(pc->pc_vlan_nat);
+    }
+    pc->pc_vlan_nat = NULL;
   }
 }

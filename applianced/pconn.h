@@ -25,8 +25,8 @@
 #define PCONN_MAX_PASSWORD_SIZE 128
 #define PCONN_MAX_CANDIDATES 32 // Accept 32 candidates each
 
-// Send connectivity checks every 100 milliseconds
-#define PCONN_CONNECTIVITY_CHECK_INTERVAL 100
+// Send connectivity checks every 250 milliseconds
+#define PCONN_CONNECTIVITY_CHECK_INTERVAL 250
 // After we've connected, send a check every 500 milliseconds
 #define PCONN_CONNECTIVITY_CHECK_CONNECTED_INTERVAL 500
 
@@ -102,6 +102,14 @@ struct pconnapp {
   struct brtunnel *pca_tun;
 };
 
+// Maps a vlan ip to an app. We store the table here until tokens have
+// been added, at which point the resolved ones are transfered to the vlannat
+struct pconnnat {
+  DLIST(struct pconnnat) vlan_dl;
+  struct in_addr gw_ip;
+  char app_id[];
+};
+
 struct pconn {
   struct shared pc_shared;
 
@@ -175,7 +183,8 @@ struct pconn {
   // entry in f_pconns hash table
   UT_hash_handle pc_hh;
 
-  struct timersub pc_timeout, pc_conn_check_timer, pc_conn_check_timeout_timer;
+  struct timersub pc_timeout, pc_conn_check_timer,
+    pc_conn_check_timeout_timer, pc_dtls_timer;
 
   struct personaset *pc_personaset;
 
@@ -184,7 +193,14 @@ struct pconn {
   // Entry in struct flock f_pconns_with_response
   DLIST(struct pconn) pc_pconns_with_response_dl;
 
-  struct sctpentry pc_sctp_capture;
+  union {
+    struct {
+      DLIST_HEAD(struct pconnnat) pc_app_nat;
+      struct vlannat *pc_vlan_nat;
+      struct in_addr pc_vlan_src;
+    };
+    struct sctpentry pc_sctp_capture;
+  };
 
   struct BIO_static pc_static_pkt_bio;
   char pc_incoming_pkt[PCONN_MAX_PACKET_SIZE];
@@ -206,6 +222,7 @@ struct pconn {
 
 // Establish a WebRTC connection
 #define PCONN_TYPE_WEBRTC 0x1
+#define PCONN_TYPE_VLAN   0x2
 
 // States
 
@@ -254,8 +271,10 @@ struct pconn {
 #define PCONN_ANSWER_IN_DATA_CHANNEL 0x0200
 #define PCONN_ANSWER_IS_APP_CHANNEL  0x0400
 #define PCONN_ANSWER_IS_WEBRTC_CHAN  0x0800
-#define PCONN_ANSWER_IS_DTLS_SCTP    0x1000
-#define PCONN_ANSWER_NEEDS_SCTPMAP   0x2000
+#define PCONN_ANSWER_IS_VLAN_CHAN    0x1000
+#define PCONN_ANSWER_IS_VALID_PROTO  0x2000
+#define PCONN_ANSWER_NEEDS_SCTPMAP   0x4000
+#define PCONN_ANSWER_HAS_VLAN_SRC    0x8000
 
 #define PCONN_DATACHANNEL_MID "data"
 

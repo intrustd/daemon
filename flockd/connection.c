@@ -157,6 +157,7 @@ int connection_init(struct connection *conn, struct flockservice *svc, connectio
   SHARED_INIT(&conn->conn_shared, connectionfreefn);
 
   conn->conn_id = 0;
+  conn->conn_format = STUN_INTRUSTD_FORMAT_WEBRTC;
   conn->conn_control = ctl;
   conn->conn_svc = svc;
   conn->conn_el = NULL;
@@ -404,6 +405,10 @@ static int connection_write_request(struct fcspktwriter *fcspw, char *req_buf, i
       STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_CONN_ID, sizeof(conn->conn_id));
       if ( !STUN_ATTR_IS_VALID(attr, msg, max_req_sz) ) { err = -1; goto error; }
       *((uint64_t *) STUN_ATTR_DATA(attr)) = htonll(conn->conn_id);
+
+      attr = STUN_NEXTATTR(attr);
+      STUN_INIT_ATTR(attr, STUN_ATTR_INTRUSTD_FORMAT, sizeof(conn->conn_format));
+      memcpy(STUN_ATTR_DATA(attr), &conn->conn_format, sizeof(conn->conn_format));
 
       if ( conn->conn_ai_state == CONN_AI_STATE_AUTHENTICATING ) {
         attr = STUN_NEXTATTR(attr);

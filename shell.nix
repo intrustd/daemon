@@ -73,7 +73,7 @@ in pkgs.stdenv.mkDerivation {
     uriparser nodejs-8_x
     uthash zlib check
 
-    ncat
+    ncat cacert
 
     valgrind stun graphviz awscli
 

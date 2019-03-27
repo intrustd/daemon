@@ -390,7 +390,7 @@ static const char pwd_prefix[] = { 'p', 'w', 'd', ':' };
 static const char token_prefix[] = { 't', 'o', 'k', 'e', 'n', ':' };
 
 static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth *p,
-                        const char *cred, size_t cred_sz) {
+                        const char *cred, size_t cred_sz, int flags) {
 
   unsigned char expected_sha256[SHA256_DIGEST_LENGTH];
 
@@ -418,16 +418,18 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
       struct token *tok;
       const char *cred_start = cred + sizeof(token_prefix);
 
-
       tok = appstate_open_token_ex(persona->p_appstate,
                                    cred_start, cred_sz - sizeof(token_prefix));
       if ( !tok ) return 0;
 
       // Check that the token has the login permission and is still valid
       if ( token_is_valid_now(tok) &&
-           token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
-           (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) &&
-           memcmp(tok->tok_persona_id, persona->p_persona_id, PERSONA_ID_LENGTH) == 0 ) {
+           (pc->pc_state != PCONN_STATE_ESTABLISHED ||
+            token_is_valid_for_site(tok, pc)) &&
+           ((flags & PAUTH_FLAG_LOGIN) == 0 ||
+            (token_check_permission(tok, TOKEN_LOGIN_PERM_URL) == 0 &&
+             (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) &&
+             memcmp(tok->tok_persona_id, persona->p_persona_id, PERSONA_ID_LENGTH) == 0)) ) {
         // Save token and return
         if ( pconn_add_token_unlocked(pc, tok) == 0 ) {
           TOKEN_UNREF(tok);
@@ -450,12 +452,12 @@ static int pauth_verify(struct persona *persona, struct pconn *pc, struct pauth 
 
 // pc mutex should be locked
 int persona_credential_validates(struct persona *p, struct pconn *pc,
-                                 const char *cred, size_t cred_sz) {
+                                 const char *cred, size_t cred_sz, int flag) {
   int ret = -1;
   struct pauth *auth;
   if ( pthread_mutex_lock(&p->p_mutex) == 0 ) {
     for ( auth = p->p_auths; auth; auth = auth->pa_next ) {
-      if ( pauth_verify(p, pc, auth, cred, cred_sz) ) {
+      if ( pauth_verify(p, pc, auth, cred, cred_sz, flag) ) {
         ret = 1;
         break;
       }
@@ -482,6 +484,8 @@ int persona_lookup_guest_credential(struct persona **p, struct pconn *pc,
     if ( !tok ) return 0;
 
     if ( token_is_valid_now(tok) &&
+         (pc->pc_state != PCONN_STATE_ESTABLISHED ||
+          token_is_valid_for_site(tok, pc)) &&
          token_check_permission(tok, TOKEN_GUEST_PERM_URL) == 0 &&
          (tok->tok_flags & TOKEN_FLAG_PERSONA_SPECIFIC) ) {
       // Lookup persona

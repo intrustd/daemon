@@ -3,9 +3,14 @@
 #include <pthread.h>
 #include <openssl/sha.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
 
 #include "jsmn.h"
 #include "token.h"
+#include "pconn.h"
 
 static pthread_mutex_t g_perms_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct perm * g_perms = NULL;
@@ -542,4 +547,36 @@ int token_is_valid_now(struct token *tok) {
     time_t now = time(NULL);
     return difftime(tok->tok_expiration, now) > 0;
   }
+}
+
+int token_is_valid_for_site(struct token *tok, struct pconn *pc) {
+  if ( tok->tok_flags & TOKEN_FLAG_SITE_SPECIFIC ) {
+    X509 *peer_cert;
+
+    unsigned char real_digest[SITE_ID_MAX_LENGTH];
+    unsigned int real_digest_sz = sizeof(real_digest);
+
+    char exp_digest_str[SITE_ID_MAX_LENGTH * 2 + 1], act_digest_str[SITE_ID_MAX_LENGTH * 2 + 1], tok_id_str[TOKEN_ID_LENGTH * 2 + 1];
+
+    fprintf(stderr, "Is valid for site: %p\n", tok->tok_site_digest);
+    if ( !tok->tok_site_digest )
+      return 0;
+
+    peer_cert = SSL_get_peer_certificate(pc->pc_dtls);
+    if ( !peer_cert ) return 0;
+    fprintf(stderr, "Got bio cert: %p\n", peer_cert);
+
+    if ( !X509_digest(peer_cert, tok->tok_site_digest, real_digest, &real_digest_sz) ) {
+      X509_free(peer_cert);
+      return 0;
+    }
+
+    fprintf(stderr, "Valid for site (token %s). Got %s, expected %s\n",
+            hex_digest_str((unsigned char *) tok->tok_token_id, tok_id_str, TOKEN_ID_LENGTH),
+            hex_digest_str(real_digest, act_digest_str, real_digest_sz),
+            hex_digest_str((unsigned char *)tok->tok_site_id, exp_digest_str, real_digest_sz));
+
+    return memcmp(real_digest, tok->tok_site_id, real_digest_sz) == 0;
+  } else
+    return 1;
 }

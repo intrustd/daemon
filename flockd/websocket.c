@@ -48,6 +48,9 @@ struct wsconnection {
 #define WSC_PROTO_GET_CREDENTIAL    4
 #define WSC_PROTO_RECEIVING_ANSWER  5
 
+#define WSC_PROTO_FORMAT_WEBRTC     1
+#define WSC_PROTO_FORMAT_VLAN       2
+
 #define WSC_NL_NONE 0
 #define WSC_NL_CR1  1
 #define WSC_NL_NL1  2
@@ -55,7 +58,8 @@ struct wsconnection {
 
 #define WSC_PROTO_MODE_NEEDS_LINE(mode) ((mode) != WSC_PROTO_RECEIVING_ANSWER)
 
-#define WSC_PROTO_HANDSHAKE_VALUE "start"
+#define WSC_PROTO_WEBRTC_HANDSHAKE_VALUE "start"
+#define WSC_PROTO_VLAN_HANDSHAKE_VALUE "vlan"
 
 #define WSC_REF(wsc)   CONN_REF(&(wsc)->wsc_conn)
 #define WSC_WREF(wsc)  CONN_WREF(&(wsc)->wsc_conn)
@@ -229,17 +233,21 @@ static int wsconnection_onprotoline(struct wsconnection *wsc, struct eventloop *
   struct applianceinfo *appliance;
   unsigned char persona_id[SHA256_DIGEST_LENGTH];
 
-  fprintf(stderr, "Got line %.*s\n", next_newline, buf);
-
   switch ( wsc->wsc_proto_mode ) {
   case WSC_PROTO_HANDSHAKE:
     if ( strcmp_fixed(buf, next_newline,
-                      WSC_PROTO_HANDSHAKE_VALUE, static_strlen(WSC_PROTO_HANDSHAKE_VALUE)) == 0 ) {
+                      WSC_PROTO_WEBRTC_HANDSHAKE_VALUE,
+                      static_strlen(WSC_PROTO_WEBRTC_HANDSHAKE_VALUE)) == 0 ) {
       wsc->wsc_proto_mode = WSC_PROTO_GET_APPLIANCE;
-      fprintf(stderr, "Transitioning to get appliance\n");
+      wsc->wsc_conn.conn_format = STUN_INTRUSTD_FORMAT_WEBRTC;
+      wsconnection_respond_line(wsc, el, "100 Continue");
+    } else if ( strcmp_fixed(buf, next_newline, WSC_PROTO_VLAN_HANDSHAKE_VALUE,
+                             static_strlen(WSC_PROTO_VLAN_HANDSHAKE_VALUE)) == 0 ) {
+      wsc->wsc_proto_mode = WSC_PROTO_GET_APPLIANCE;
+      wsc->wsc_conn.conn_format = STUN_INTRUSTD_FORMAT_VLAN;
       wsconnection_respond_line(wsc, el, "100 Continue");
     } else {
-      wsconnection_respond_line(wsc, el, "400 Must use 'start'");
+      wsconnection_respond_line(wsc, el, "400 Must use 'start' or 'vlan'");
     }
     WSC_SUBSCRIBE_READ(wsc);
     return 0;
@@ -805,7 +813,6 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
   case CONNECTION_OP_COMPLETE_ICE_CANDIDATES:
   case CONNECTION_OP_COMPLETE_OFFER:
     wsconnection_remove_cork(wsc);
-    fprintf(stderr, "offer completed... removed cork\n");
     if ( op == CONNECTION_OP_COMPLETE_OFFER )
       wsconnection_respond_line(wsc, wsc->wsc_conn.conn_el, "150 Offer Complete");
     else

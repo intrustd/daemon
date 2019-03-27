@@ -62,6 +62,9 @@ struct persona {
 #define PERSONA_REF(p) SHARED_REF(&(p)->p_shared)
 #define PERSONA_UNREF(p) SHARED_UNREF(&(p)->p_shared)
 
+// For persona_credential_validates
+#define PAUTH_FLAG_LOGIN 0x00000001
+
 int persona_init(struct persona *p, struct appstate *as,
                  const char *display_name,
                  int display_name_sz,
@@ -81,7 +84,7 @@ int persona_write_as_vcard(struct persona *p, struct buffer *b);
 
 // pc->pc_mutex must be held!!
 int persona_credential_validates(struct persona *p, struct pconn *pc,
-                                 const char *cred, size_t cred_sz);
+                                 const char *cred, size_t cred_sz, int flag);
 // pc->pc_mutex must be held!
 int persona_lookup_guest_credential(struct persona **p, struct pconn *pc,
                                     const char *cred, size_t cred_sz);

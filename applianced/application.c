@@ -765,7 +765,7 @@ static void freeinstfn(const struct shared *sh, int level) {
 static int appinstance_container_ctl(struct container *c, int op, void *argp, ssize_t argl) {
   struct appinstance *ai = STRUCT_FROM_BASE(struct appinstance, inst_container, c);
   const char **cp;
-  char *persona_id;
+  char *persona_id, *ip;
 
   struct arpdesc *desc;
 
@@ -790,7 +790,7 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
     return 0;
 
   case CONTAINER_CTL_GET_ARGS:
-    if ( argl < 3 ) {
+    if ( argl < 4 ) {
       fprintf(stderr, "appinstance_container_ctl: not enough space for args\n");
       return -1;
     }
@@ -806,7 +806,13 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
 
     cp[1] = ai->inst_app->app_domain;
     cp[2] = ai->inst_app->app_current_manifest->am_nix_closure;
-    return 3;
+
+    cp[3] = ip = malloc(INET6_ADDRSTRLEN);
+    if ( !cp[3] )
+      return -1;
+
+    inet_ntop(AF_INET, &c->c_ip, ip, INET6_ADDRSTRLEN);
+    return 4;
 
   case CONTAINER_CTL_GET_HOSTNAME:
     cp = argp;
@@ -819,7 +825,8 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
     return 0;
 
   case CONTAINER_CTL_RELEASE_ARG:
-    if ( argl == 0 )
+    if ( (ai->inst_persona && argl == 0) ||
+         argl == 3 )
       free((char *)argp);
     return 0;
 

@@ -371,3 +371,98 @@ const EVP_MD *digest_scheme(const char *nm, size_t nm_sz) {
   } else
     return NULL;
 }
+
+void checksum_update(struct checksumst *css, const void *buf, size_t sz) {
+  uint16_t word;
+  uint8_t b;
+
+  if ( sz == 0 ) return;
+
+  if ( css->css_carry ) {
+    fprintf(stderr, "Got carry update\n");
+    memcpy(&b, buf, 1);
+
+    word = ((css->css_carry & 0xFF) << 8) | b;
+    css->css_sum += word;
+    sz --;
+    buf ++;
+
+    css->css_carry = 0;
+  }
+
+  while ( sz >= sizeof(word) ) {
+    memcpy(&word, buf, sizeof(word));
+    css->css_sum += htons(word);
+
+    sz -= 2;
+    buf += 2;
+  }
+
+  if ( sz ) {
+    memcpy(&b, buf, 1);
+    css->css_carry = 0xFF00 | b;
+  }
+}
+
+uint16_t checksum_finish(struct checksumst *css) {
+  //uint8_t carry;
+  //uint16_t cs;
+  uint32_t sum;
+
+  if ( css->css_carry ) {
+    css->css_sum += (css->css_carry & 0xFF) << 8;
+  }
+
+  sum = css->css_sum;
+  while (sum>>16) {
+
+      sum = (sum & 0xffff) + (sum >> 16);
+
+  }
+
+  sum = ~sum;
+
+  return sum;
+//
+//  carry = (css->css_sum >> 16) & 0xF;
+//
+//  css->css_sum &= 0xFFFF;
+//  cs = css->css_sum;
+//  cs += carry;
+//
+//  return ~cs;
+}
+
+uint16_t ip_checksum(const void *buf, size_t sz) {
+  struct checksumst css;
+
+  assert((sz % 2) == 0);
+
+  checksum_init(&css);
+  checksum_update(&css, buf, sz);
+  return checksum_finish(&css);
+}
+/* uint16_t ip_checksum(const void *buf, size_t sz) { */
+/*   size_t i; */
+/*   uint32_t a; */
+/*   uint16_t cs; */
+/*   uint8_t carry; */
+
+/*   assert((sz % 2) == 0); */
+
+/*   for ( i = 0, a = 0; i < sz; i += 2 ) { */
+/*     uint16_t word; */
+/*     memcpy(&word, buf + i, sizeof(word)); */
+
+/*     a += htons(word); */
+/*   } */
+
+/*   carry = (a >> 16) & 0xF; */
+
+/*   a &= 0xFFFF; */
+
+/*   cs = a; */
+/*   cs += carry; */
+
+/*   return ~cs; */
+/* } */

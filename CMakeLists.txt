@@ -45,7 +45,7 @@ target_compile_options(flockd PUBLIC -Wall ${INTRUSTD_CFLAGS})
 add_library(libapplianced STATIC  applianced/configuration.c applianced/state.c
   applianced/bridge.c applianced/local.c applianced/flock.c applianced/persona.c
   applianced/pconn.c applianced/container.c applianced/update.c applianced/application.c
-  applianced/token.c)
+  applianced/token.c applianced/nat.c)
 target_compile_options(libapplianced PUBLIC -Wall ${INTRUSTD_CFLAGS})
 target_link_libraries(libapplianced PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
 

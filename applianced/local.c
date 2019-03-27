@@ -1210,14 +1210,10 @@ static void localsock_get_container(struct localapi *api, struct eventloop *el,
           attr->ala_length = htons(ALA_SIZE(hash_name_len + 2 * hash_len));
           assert(ALA_DATA(attr, ret_buf, sizeof(ret_buf)));
           memcpy(ALA_DATA_UNSAFE(attr, char *), hash_sn, hash_name_len - 1);
-          (ALA_DATA_UNSAFE(attr, char *))[hash_name_len] = ':';
+          (ALA_DATA_UNSAFE(attr, char *))[hash_name_len - 1] = ':';
           hex_digest_str((unsigned char *) desc.ad_persona.ad_pconn->pc_remote_cert_fingerprint,
                          ALA_DATA_UNSAFE(attr, char *) + hash_name_len,
                          hash_len);
-          memcpy(ALA_DATA_UNSAFE(attr, char *) + hash_name_len - 1,
-                 ALA_DATA_UNSAFE(attr, char *) + hash_name_len,
-                 2 * hash_len);
-          (ALA_DATA_UNSAFE(attr, char *))[hash_name_len - 1] = ':';
           ALM_SIZE_ADD_ATTR(rspsz, attr);
 
           // Each pconn may have one or more tokens
@@ -1529,9 +1525,10 @@ static void localsock_update_container(struct localapi *api, struct eventloop *e
     switch ( desc.ad_container_type ) {
     case ARP_DESC_PERSONA:
       if ( pthread_mutex_lock(&desc.ad_persona.ad_pconn->pc_mutex) == 0 ) {
+        fprintf(stderr, "Applying credential %.*s\n", (int) credsz, cred);
         err = persona_credential_validates(desc.ad_persona.ad_pconn->pc_persona,
                                            desc.ad_persona.ad_pconn,
-                                           cred, credsz);
+                                           cred, credsz, 0);
         pthread_mutex_unlock(&desc.ad_persona.ad_pconn->pc_mutex);
         if ( err <= 0 ) {
           localsock_return_simple(api, el, msg, ALE_NOT_ALLOWED);

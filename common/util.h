@@ -358,6 +358,20 @@ void print_hex_dump_fp(FILE *fp, const unsigned char *data, int data_sz);
 
 int fread_base64(FILE *sig, void **buf, size_t *buf_len);
 
+struct checksumst {
+  uint32_t css_sum;
+  uint16_t css_carry;
+};
+
+#define checksum_init(css) do {                 \
+    (css)->css_sum = (css)->css_carry = 0;      \
+  } while (0)
+
+void checksum_update(struct checksumst *css, const void *buf, size_t sz);
+uint16_t checksum_finish(struct checksumst *css);
+
+uint16_t ip_checksum(const void *buf, size_t sz);
+
 // fixed strings
 //struct fixedstr {
 //  char *fs_start, *fs_end;

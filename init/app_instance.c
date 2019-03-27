@@ -25,6 +25,7 @@ extern char **environ;
 char *g_persona_id;
 char *g_app_url;
 char *g_nix_closure;
+char *g_container_ip;
 
 pid_t g_start_pid = 0;
 pid_t g_hc_pid = 0;
@@ -77,6 +78,7 @@ void update_hosts() {
   fprintf(f, "::1 localhost\n");
   fprintf(f, "127.0.0.1 %s.app.local\n", g_app_url);
   fprintf(f, "::1 %s.app.local\n", g_app_url);
+  fprintf(f, "%s app-instance\n", g_container_ip);
 
   DLIST_ITER(&g_hosts, ls, h, tmp) {
     fprintf(f, "%s %s.app.local\n", h->target, h->domain);
@@ -502,7 +504,7 @@ static void clear_tmp() {
 
 void usage() {
   fprintf(stderr, "app-instance-init - intrustd init process for app instance containers\n");
-  fprintf(stderr, "usage: app-instance-init <persona-id> <app-name> <app-domain>\n");
+  fprintf(stderr, "usage: app-instance-init <persona-id> <app-name> <app-domain> <app-ip>\n");
 }
 
 int main(int argc, char **argv) {
@@ -511,7 +513,7 @@ int main(int argc, char **argv) {
   int n;
   int8_t sts = 1;
 
-  if ( argc < 4 ) {
+  if ( argc < 5 ) {
     usage();
     return 1;
   }
@@ -521,6 +523,7 @@ int main(int argc, char **argv) {
   g_persona_id = argv[1];
   g_app_url = argv[2];
   g_nix_closure = argv[3];
+  g_container_ip = argv[4];
 
   g_status = NOT_STARTED;
   fcntl(COMM, F_SETFD, FD_CLOEXEC);
