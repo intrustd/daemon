@@ -37,6 +37,10 @@ int g_openssl_appstate_ix;
 int g_openssl_flock_data_ix;
 int g_openssl_pconn_data_ix;
 
+static const unsigned char intrustd_alpn_protos[] =
+  { 6, 'w', 'e', 'b', 'r', 't', 'c'
+};
+
 static int appstate_certificate_digest(X509 *cert, unsigned char *digest) {
   EVP_PKEY *pubkey = NULL;
   unsigned char *pubkey_raw = NULL;
@@ -62,6 +66,21 @@ static int appstate_certificate_digest(X509 *cert, unsigned char *digest) {
   free(pubkey_raw);
 
   return 0;
+}
+
+static int appstate_alpn_select_callback(SSL *ssl, const unsigned char **out,
+                                         unsigned char *outlen,
+                                         const unsigned char *in,
+                                         unsigned int inlen,
+                                         void *arg) {
+  int success;
+  fprintf(stderr, "Got ALPN protos %.*s\n", inlen, in);
+  success =  SSL_select_next_proto((unsigned char **)out, outlen, in, inlen,
+                                   intrustd_alpn_protos, sizeof(intrustd_alpn_protos));
+  if ( success )
+    return SSL_TLSEXT_ERR_OK;
+  else
+    return SSL_TLSEXT_ERR_NOACK;
 }
 
 static int appstate_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
@@ -631,6 +650,22 @@ static int appstate_create_dtls_ctx(struct appstate *as) {
     return -1;
   }
 
+  if ( SSL_CTX_set_alpn_protos(as->as_dtls_ctx, intrustd_alpn_protos, sizeof(intrustd_alpn_protos)) != 0 ) {
+    fprintf(stderr, "appstate_create_dtls_ctx: could not set ALPN protos\n");
+    ERR_print_errors_fp(stderr);
+    SSL_CTX_free(as->as_dtls_ctx);
+    return -1;
+  }
+
+  // For firefox
+  if ( SSL_CTX_set_tlsext_use_srtp(as->as_dtls_ctx, "SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32:SRTP_AEAD_AES_128_GCM:SRTP_AEAD_AES_256_GCM") != 0 ) {
+    fprintf(stderr, "appstate_create_dtls_ctx: Could not set use-srtp\n");
+    ERR_print_errors_fp(stderr);
+    SSL_CTX_free(as->as_dtls_ctx);
+    return -1;
+  }
+
+  SSL_CTX_set_alpn_select_cb(as->as_dtls_ctx, appstate_alpn_select_callback, NULL);
   SSL_CTX_set_verify(as->as_dtls_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                      appstate_verify_callback);
   SSL_CTX_set_cookie_generate_cb(as->as_dtls_ctx, generate_cookie_cb);

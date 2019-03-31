@@ -568,7 +568,9 @@ static int candsrc_handle_response(struct candsrc *cs) {
 
 	pkt_sz = SSL_read(cs->cs_pconn->pc_dtls, my_buf, sizeof(my_buf));
 	if ( pkt_sz <= 0 ) {
-	  fprintf(stderr, "error while trying to read packet: %d\n", pkt_sz);
+          int local_err = SSL_get_error(cs->cs_pconn->pc_dtls, pkt_sz);
+	  fprintf(stderr, "error while trying to read packet: %d (SSL error = %d)\n", pkt_sz, local_err);
+          ERR_print_errors_fp(stderr);
 	} else {
 	  //              fprintf(stderr, "Got DTLS packet while established of size: %d\n", pkt_sz);
 	  //              print_hex_dump_fp(stderr, (const unsigned char *) my_buf, pkt_sz);
@@ -1546,7 +1548,7 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
     OFFER_LINE("a=msid-semantic: WMS");
   case 6:
     if ( pc->pc_type == PCONN_TYPE_WEBRTC ) {
-      OFFER_LINE("m=application 9 DTLS/SCTP webrtc-datachannel");
+      OFFER_LINE("m=application 9 UDP/DTLS/SCTP webrtc-datachannel");
     } else {
       OFFER_LINE("m=application 9 DTLS vlan");
     }
@@ -2503,7 +2505,8 @@ static int pconn_sdp_media_ctl_fn(void *pc_, int op, void *arg) {
     return 0;
   case SPS_MEDIA_SET_PROTOCOL:
     if ( pc->pc_type == PCONN_TYPE_WEBRTC ) {
-      if ( strcmp(arg, "DTLS/SCTP") != 0 )
+      if ( strcmp(arg, "DTLS/SCTP") != 0 &&
+           strcmp(arg, "UDP/DTLS/SCTP") != 0 )
         fprintf(stderr, "Expected 'DTLS/SCTP' as media protocol, got %s\n", (char *)arg);
       else
         pc->pc_answer_flags |= PCONN_ANSWER_IS_VALID_PROTO;
