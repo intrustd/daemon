@@ -894,7 +894,6 @@ static void wsconnection_respond_buffer(struct wsconnection *conn, struct eventl
     fprintf(stderr, "wsconnection_respond_line: Writing websocket data of length %d\n", line_length);
 
   if ( !WSC_HAS_SPACE(conn, line_length) ) {
-    fprintf(stderr, "wsconnection_respond_line: overflow: %d %d %ld\n", conn->wsc_outgoing_sz, line_length, sizeof(conn->wsc_outgoing_buf));
     connection_complete(&conn->wsc_conn);
     return;
   }
