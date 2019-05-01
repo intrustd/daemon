@@ -674,6 +674,28 @@ static int appstate_create_dtls_ctx(struct appstate *as) {
   return 0;
 }
 
+static int appstate_bump_persona_avatar(struct appstate *as, struct persona *p) {
+  char persona_avatar_path[PATH_MAX], persona_hex_str[PERSONA_ID_X_LENGTH + 1];
+  int err;
+  FILE *avatar_fp;
+
+  err = snprintf(persona_avatar_path, PATH_MAX, "%s/personas/%s/avatar.png", as->as_conf_dir,
+                 hex_digest_str((unsigned char *) p->p_persona_id, persona_hex_str, PERSONA_ID_LENGTH));
+  if ( err >= sizeof(persona_avatar_path) ) {
+    fprintf(stderr, "appstate_bump_persona_avatar: buffer overflow while writing avatar path\n");
+    return -1;
+  }
+
+  avatar_fp = fopen(persona_avatar_path, "rb");
+  if ( avatar_fp ) {
+    persona_set_photo_data_fp(p, "image/png", avatar_fp);
+    fclose(avatar_fp);
+  } else
+    persona_unset_photo(p);
+
+  return 0;
+}
+
 // as -- struct appstate, ac -- struct appconf
 // persona_id -- Must be of length PERSONA_ID_LENGTH
 // persona_dir -- path to persona directory
@@ -739,6 +761,11 @@ static int appstate_open_persona(struct appstate *as, struct appconf *ac,
   }
 
   fclose(persona_fp);
+
+  if ( appstate_bump_persona_avatar(as, p) < 0 ) {
+    PERSONA_UNREF(p);
+    return -1;
+  }
 
   if ( pthread_rwlock_wrlock(&as->as_personas_mutex) == 0 ) {
     struct persona *existing;
@@ -1555,9 +1582,7 @@ int appstate_save_persona(struct appstate *as, struct persona *p) {
 }
 
 int appstate_create_persona(struct appstate *as,
-                            const char *display_name, int display_name_sz,
-                            const char *password, int password_sz,
-                            uint32_t p_flags,
+                            struct personacreateinfo *pci,
                             struct persona **ret_ptr) {
   struct persona *p, *already_existing;
   EC_KEY *curve;
@@ -1607,15 +1632,15 @@ int appstate_create_persona(struct appstate *as,
     HASH_FIND(p_hh, as->as_personas, p->p_persona_id, PERSONA_ID_LENGTH, already_existing);
   } while ( already_existing );
 
-  if ( persona_init(p, as, display_name, display_name_sz, key) < 0 ) {
+  if ( persona_init(p, as, pci->pci_displayname, pci->pci_displayname_sz, key) < 0 ) {
     PERSONA_UNREF(p);
     pthread_rwlock_unlock(&as->as_personas_mutex);
     return -1;
   }
 
-  p->p_flags = p_flags;
+  p->p_flags = pci->pci_flags;
 
-  if ( persona_add_password(p, password, password_sz) < 0 ) {
+  if ( persona_add_password(p, pci->pci_password, pci->pci_password_sz) < 0 ) {
     PERSONA_UNREF(p);
     pthread_rwlock_unlock(&as->as_personas_mutex);
     return -1;
@@ -1625,6 +1650,14 @@ int appstate_create_persona(struct appstate *as,
     PERSONA_UNREF(p);
     pthread_rwlock_unlock(&as->as_personas_mutex);
     return -1;
+  }
+
+  if ( pci->pci_bump_avatar ) {
+    if ( appstate_bump_persona_avatar(as, p) < 0 ) {
+      PERSONA_UNREF(p);
+      pthread_rwlock_unlock(&as->as_personas_mutex);
+      return -1;
+    }
   }
 
   if ( appstate_save_persona(as, p) < 0 ) {
@@ -1643,6 +1676,39 @@ int appstate_create_persona(struct appstate *as,
   }
 
   return 0;
+}
+
+int appstate_update_persona(struct appstate *as,
+                            struct persona *p,
+                            struct personacreateinfo *pci) {
+  SAFE_RWLOCK_WRLOCK(&as->as_personas_mutex);
+
+  if ( pci->pci_displayname ) {
+    if ( persona_set_display_name(p, pci->pci_displayname, pci->pci_displayname_sz) < 0 )
+      goto error;
+  }
+
+  if ( pci->pci_password ) {
+    if ( persona_reset_password(p, pci->pci_password, pci->pci_password_sz) < 0 )
+      goto error;
+  }
+
+  if ( pci->pci_bump_avatar ) {
+    if ( appstate_bump_persona_avatar(as, p) < 0 )
+      goto error;
+  }
+
+  if ( appstate_save_persona(as, p) < 0 )
+    goto error;
+
+  pthread_rwlock_unlock(&as->as_personas_mutex);
+
+  return 0;
+
+ error:
+  pthread_rwlock_unlock(&as->as_personas_mutex);
+
+  return -1;
 }
 
 int appstate_lookup_persona(struct appstate *as, const char *pid, struct persona **p) {

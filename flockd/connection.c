@@ -71,9 +71,9 @@ static void connection_evtfn(struct eventloop *el, int op, void *arg) {
       // Release ourselves
       connection_complete_unlocked(conn);
       pthread_mutex_unlock(&conn->conn_mutex);
-      SHARED_DEBUG(&conn->conn_shared, "Before timeout unref");
+      // SHARED_DEBUG(&conn->conn_shared, "Before timeout unref");
       CONN_UNREF(conn);
-      SHARED_DEBUG(&conn->conn_shared, "After timeout unref");
+      // SHARED_DEBUG(&conn->conn_shared, "After timeout unref");
     }
     break;
   case OP_CONNECTION_RETRY_AI_CONNECT:
@@ -513,11 +513,13 @@ void connection_offer_received(struct connection *conn, int answer_offs,
 
   if ( conn->conn_ai_state == CONN_AI_STATE_RECEIVE_OFFER ||
        conn->conn_ai_state == CONN_AI_STATE_WAITING_FOR_ICE ) {
-    fprintf(stderr, "going to send lines\n");
+    // fprintf(stderr, "going to send lines\n");
     while ( (err = lines(ud, &next_line, &ln.sl_start, &ln.sl_end)) == CONNOFFER_LINE_RETRIEVED ) {
-      fprintf(stderr, "got line %d %d\n", next_line, conn->conn_ai_offer_line);
+      // fprintf(stderr, "got line %d %d\n", next_line, conn->conn_ai_offer_line);
+      // fprintf(stderr, "line: %.*s\n", (int) (ln.sl_end - ln.sl_start), ln.sl_start);
       if ( next_line == conn->conn_ai_offer_line ) {
         err = conn->conn_control(conn, CONNECTION_OP_SEND_OFFER_LINE, &ln);
+        fprintf(stderr, "Offer line status: %d\n", err);
         if ( err < 0 ) {
           err = CONNOFFER_SERVER_ERROR;
           break;
@@ -589,10 +591,10 @@ void connection_offer_received(struct connection *conn, int answer_offs,
 
 // Called after any response was received. Resets the retry timer. Conn_mutex must be held
 static void connection_next_request(struct connection *conn) {
-  SHARED_DEBUG(&conn->conn_shared, "Before confirmation received");
+  // SHARED_DEBUG(&conn->conn_shared, "Before confirmation received");
   if ( eventloop_cancel_timer(conn->conn_el, &conn->conn_ai_retry_connect) )
     CONN_WUNREF(conn);
-  SHARED_DEBUG(&conn->conn_shared, "After confirmation received");
+  // SHARED_DEBUG(&conn->conn_shared, "After confirmation received");
 
   conn->conn_ai_retries = 0;
   stun_random_tx_id(&conn->conn_start_tx_id);
@@ -664,12 +666,12 @@ void connection_complete_unlocked(struct connection *conn) {
   conn->conn_ai_state = CONN_AI_STATE_COMPLETE;
 
   if ( conn->conn_el ) {
-    SHARED_DEBUG(&conn->conn_shared, "Before complete");
+    // SHARED_DEBUG(&conn->conn_shared, "Before complete");
     if ( eventloop_unsubscribe_timer(conn->conn_el, &conn->conn_ai_retry_connect) )
       CONN_WUNREF(conn);
     if ( eventloop_unsubscribe_timer(conn->conn_el, &conn->conn_timeout) )
       CONN_WUNREF(conn);
-    SHARED_DEBUG(&conn->conn_shared, "After complete");
+    // SHARED_DEBUG(&conn->conn_shared, "After complete");
   }
 
   conn->conn_control(conn, CONNECTION_OP_COMPLETE, NULL);

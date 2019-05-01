@@ -34,6 +34,19 @@ struct pconn;
 //   UT_hash_handle pp_hh;
 // };
 
+struct personacreateinfo {
+  char *pci_displayname;
+  size_t pci_displayname_sz;
+
+  char *pci_password;
+  size_t pci_password_sz;
+
+  uint32_t pci_flags;
+  int pci_bump_avatar : 1;
+};
+
+void personacreateinfo_clear(struct personacreateinfo *pci);
+
 struct persona {
   struct shared p_shared;
 
@@ -44,7 +57,7 @@ struct persona {
   UT_hash_handle p_hh;
 
   // Personal information
-  char *p_display_name;
+  char *p_display_name, *p_photo_data;
 
   EVP_PKEY *p_private_key;
 
@@ -71,10 +84,16 @@ int persona_init(struct persona *p, struct appstate *as,
                  EVP_PKEY *private_key);
 int persona_init_fp(struct persona *p, struct appstate *as, FILE *fp);
 
+int persona_remove_passwords(struct persona *p);
 int persona_add_password(struct persona *p,
                          const char *password,
                          int password_sz);
 int persona_add_token_security(struct persona *p);
+
+int persona_set_display_name(struct persona *p, char *dn, size_t dn_sz);
+int persona_set_photo_data_fp(struct persona *p, const char *mimetype, FILE *fp);
+int persona_unset_photo(struct persona *p);
+int persona_reset_password(struct persona *p, char *pw, size_t pw_sz);
 
 // Save the persona to the FILE. You must hold p_mutex
 int persona_save_fp(struct persona *p, FILE *fp);

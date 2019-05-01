@@ -512,6 +512,7 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
         return;
       }
       break;
+
     default:
       localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
       return;
@@ -558,6 +559,35 @@ static void localsock_get_persona(struct localapi *api, struct eventloop *el,
     localsock_return_internal_error(api, el, msg);
 }
 
+static int handle_persona_attr(struct applocalattr *attr, struct applocalmsg *msg,
+                               int msgsz, struct personacreateinfo *pci) {
+  switch ( ALA_NAME(attr) ) {
+  case ALA_PERSONA_DISPLAYNM:
+    pci->pci_displayname = ALA_DATA_AS(attr, msg, msgsz, char *);
+    pci->pci_displayname_sz = ALA_PAYLOAD_SIZE(attr);
+    break;
+  case ALA_PERSONA_PASSWORD:
+    pci->pci_password = ALA_DATA_AS(attr, msg, msgsz, char *);
+    pci->pci_password_sz = ALA_PAYLOAD_SIZE(attr);
+    break;
+  case ALA_PERSONA_FLAGS:
+    if ( ALA_PAYLOAD_SIZE(attr) == sizeof(uint32_t) * 2 ) {
+      uint32_t flags[2];
+      memcpy(flags, ALA_DATA_UNSAFE(attr, uint64_t *), sizeof(flags));
+
+      pci->pci_flags |= ntohl(flags[0]);
+      pci->pci_flags &= ~ntohl(flags[1]);
+    }
+    break;
+  case ALA_RESET_PHOTO:
+    pci->pci_bump_avatar = 1;
+    break;
+  default:
+    return -1;
+  }
+  return 0;
+}
+
 static void localsock_create_persona(struct localapi *api, struct eventloop *el,
                                      struct applocalmsg *msg, int msgsz) {
   char ret_buf[APPLIANCED_MAX_LOCAL_MSG_SZ];
@@ -567,11 +597,11 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
 
   struct persona *persona;
 
-  char *display_name = NULL, *password = NULL;
-  int display_name_sz = 0, password_sz = 0;
-  uint32_t p_flags = 0;
+  struct personacreateinfo persona_details;
 
   int rspsz = ALM_SIZE_INIT;
+
+  personacreateinfo_clear(&persona_details);
 
   rsp->alm_req = htons(ALM_RESPONSE | htons(msg->alm_req));
   rsp->alm_req_flags = 0;
@@ -583,33 +613,16 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
   attr->ala_length = htons(ALA_SIZE(sizeof(uint16_t)));
 
   for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
-    switch ( ALA_NAME(attr) ) {
-    case ALA_PERSONA_DISPLAYNM:
-      display_name = ALA_DATA_AS(attr, msg, msgsz, char *);
-      display_name_sz = ALA_PAYLOAD_SIZE(attr);
-      break;
-    case ALA_PERSONA_PASSWORD:
-      password = ALA_DATA_AS(attr, msg, msgsz, char *);
-      password_sz = ALA_PAYLOAD_SIZE(attr);
-      break;
-    case ALA_PERSONA_FLAGS:
-      if ( ALA_PAYLOAD_SIZE(attr) == sizeof(uint32_t) * 2 ) {
-        uint32_t flags[2];
-        memcpy(flags, ALA_DATA_UNSAFE(attr, uint64_t *), sizeof(flags));
-
-        p_flags |= ntohl(flags[0]);
-        p_flags &= ~ntohl(flags[1]);
-      }
-      break;
-    default:
+    if ( handle_persona_attr(attr, msg, msgsz, &persona_details) == 0 )
+      continue;
+    else
       goto bad_request;
-    }
   }
-  if ( !display_name || !password )
+  if ( !persona_details.pci_displayname ||
+       !persona_details.pci_password )
     goto bad_request;
 
-  if ( appstate_create_persona(api->la_app_state, display_name, display_name_sz,
-                               password, password_sz, p_flags, &persona) < 0 ) {
+  if ( appstate_create_persona(api->la_app_state, &persona_details, &persona) < 0 ) {
     goto bad_request;
   }
 
@@ -633,6 +646,57 @@ static void localsock_create_persona(struct localapi *api, struct eventloop *el,
 
   return;
 
+ bad_request:
+  localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
+}
+
+static void localsock_update_persona(struct localapi *api, struct eventloop *el,
+                                     struct applocalmsg *msg, int msgsz) {
+  struct personacreateinfo persona_details;
+
+  char persona_id[PERSONA_ID_LENGTH];
+  int has_persona_id = 0;
+  struct applocalattr *attr;
+  struct persona *p;
+
+  personacreateinfo_clear(&persona_details);
+
+  for ( attr = ALM_FIRSTATTR(msg, msgsz); attr; attr = ALM_NEXTATTR(msg, attr, msgsz) ) {
+    if ( handle_persona_attr(attr, msg, msgsz, &persona_details) == 0 )
+      continue;
+    else {
+      switch ( ALA_NAME(attr) ) {
+      case ALA_PERSONA_ID:
+        if ( ALA_PAYLOAD_SIZE(attr) == PERSONA_ID_LENGTH ) {
+          memcpy(persona_id, ALA_DATA_UNSAFE(attr, char *), PERSONA_ID_LENGTH);
+          has_persona_id = 1;
+        }
+        break;
+
+      default:
+        goto bad_request;
+      }
+    }
+  }
+
+  if ( !has_persona_id ) {
+    localsock_return_missing_attrs(api, el, msg, ALM_REQ_ENTITY(msg),
+                                   ALM_REQ_OP(msg), ALA_PERSONA_ID, -1);
+    return;
+  }
+
+  if ( appstate_lookup_persona(api->la_app_state, persona_id, &p) < 0 ) {
+    localsock_return_not_found(api, el, msg);
+    return;
+  }
+
+  if ( appstate_update_persona(api->la_app_state, p, &persona_details) < 0 ) {
+    goto bad_request;
+  }
+
+  localsock_return_simple(api, el, msg, ALE_SUCCESS);
+
+  return;
  bad_request:
   localsock_return_bad_method(api, el, msg, ALM_REQ_ENTITY(msg), ALM_REQ_OP(msg));
 }
@@ -693,6 +757,10 @@ static void localsock_crud_persona(struct localapi *api, struct eventloop *el,
 
   case ALM_REQ_CREATE:
     localsock_create_persona(api, el, msg, msgsz);
+    break;
+
+  case ALM_REQ_UPDATE:
+    localsock_update_persona(api, el, msg, msgsz);
     break;
 
   default:

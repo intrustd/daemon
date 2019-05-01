@@ -93,10 +93,11 @@ void appstate_release(struct appstate *as);
 void appstate_start_services(struct appstate *as, struct appconf *ac);
 
 int appstate_create_persona(struct appstate *as,
-                            const char *display_name, int display_name_sz,
-                            const char *password, int password_sz,
-                            uint32_t p_flags,
+                            struct personacreateinfo *pci,
                             struct persona **p);
+int appstate_update_persona(struct appstate *as,
+                            struct persona *p,
+                            struct personacreateinfo *pci);
 // The as_personas_mutex must be held for writing. The mutex of p should not be held for write
 int appstate_save_persona(struct appstate *as, struct persona *p);
 

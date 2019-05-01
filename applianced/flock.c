@@ -173,6 +173,10 @@ void flock_move(struct flock *dst, struct flock *src) {
   src->f_pconns = NULL;
 }
 
+static void flock_init_resolve_timer(struct flock *f) {
+  timersub_init_default(&f->f_resolve_timer, OP_FLOCK_RETRY_CONNECTION, flock_fn);
+}
+
 // closes any active connections
 static void flock_shutdown_connection(struct flock *f, struct eventloop *el) {
   if ( f->f_dtls_client ) {
@@ -185,14 +189,16 @@ static void flock_shutdown_connection(struct flock *f, struct eventloop *el) {
     close(f->f_socket);
     f->f_socket = 0;
   }
+
+  flock_init_resolve_timer(f);
 }
 
 static void flock_on_dns_failure(struct flock *f, struct eventloop *el) {
   f->f_flock_state = FLOCK_STATE_NM_NOT_RES;
   dnssub_release(&f->f_resolver);
 
-  timersub_init_from_now(&f->f_resolve_timer, FLOCK_RETRY_RESOLUTION_INTERVAL,
-                         OP_FLOCK_RETRY_CONNECTION, flock_fn);
+  flock_init_resolve_timer(f);
+  timersub_set_from_now(&f->f_resolve_timer, FLOCK_RETRY_RESOLUTION_INTERVAL);
   eventloop_subscribe_timer(el, &f->f_resolve_timer);
 }
 
@@ -283,6 +289,7 @@ static void flock_send_registration(struct flock *f, struct appstate *as) {
   int err;
 
   // Send registration over dgram
+  fprintf(stderr, "Send registration\n");
   flock_update_registration_message(f, as);
   err = SSL_write(f->f_dtls_client, (const void *) &f->f_registration_msg,
                   STUN_MSG_LENGTH(&f->f_registration_msg));
@@ -960,6 +967,11 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     FLOCK_NEXT_RETRY(f, el);
 
     dbgprintf("Reg timeout\n");
+
+    if ( f->f_flock_state != FLOCK_STATE_SUSPENDED )
+      f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
+    else
+      fprintf(stderr, "Flock suspended\n");
     eventloop_subscribe_fd(el, f->f_socket, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
     break;
 
@@ -970,10 +982,10 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
 
     SAFE_MUTEX_LOCK(&f->f_mutex);
     f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
-    pthread_mutex_unlock(&f->f_mutex);
 
     dbgprintf("Refresh timer\n");
-    eventloop_subscribe_fd(el, f->f_socket, FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
+    eventloop_subscribe_fd(el, f->f_socket, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
+    pthread_mutex_unlock(&f->f_mutex);
     break;
 
   case OP_FLOCK_RETRY_CONNECTION:

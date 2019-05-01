@@ -2054,7 +2054,7 @@ static void pconn_reset_connectivity_check_timer(struct pconn *pc) {
 
 static void pconn_reset_connectivity_check_timeout(struct pconn *pc) {
 
-  fprintf(stderr, "Reset conn check timer\n");
+  //  fprintf(stderr, "Reset conn check timer\n");
   if ( !eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timeout_timer) ) {
     PCONN_WREF(pc);
   }

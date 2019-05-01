@@ -23,7 +23,8 @@
 #define FLOCK_INITIAL_REGISTRATION_RTO 150 // 150 milliseconds
 #define FLOCK_SEND_FAIL_INTERVAL       500 // After a socket failure, wait a half second
 #define FLOCK_FLAG_TRY_AGAIN_INTERVAL  1000
-#define FLOCK_SEND_REGISTRATION_INTERVAL (2 * 60000) // Send a new registration every two minutes
+#define FLOCK_SEND_REGISTRATION_INTERVAL 30000 // (2 * 60000) // Send a new registration every two minutes
+#define FLOCK_RETRY_CONNECTION_INTERVAL 10000 // On suspension, retry a connection every 10 seconds
 #define FLOCK_MAX_RETRIES              7
 #define FLOCK_RETRY_RESOLUTION_INTERVAL 60000
 
@@ -31,15 +32,18 @@
 #define FLOCK_HAS_FAILED(f) ((f)->f_flock_state >= FLOCK_STATE_SUSPENDED)
 #define FLOCK_IS_FAILING(f) ((f)->f_flags & FLOCK_FLAG_FAILING)
 #define FLOCK_NO_MORE_RETRIES(f) ((f)->f_retries >= FLOCK_MAX_RETRIES)
-#define FLOCK_NEXT_RETRY(f, el)                              \
-  if (1) {                                                   \
-    if ( FLOCK_IS_FAILING(f) && FLOCK_NO_MORE_RETRIES(f) ) { \
-      (f)->f_flock_state = FLOCK_STATE_SUSPENDED;            \
-      flock_shutdown_connection(f, (el));                    \
-    } else {                                                 \
-      (f)->f_flags |= FLOCK_FLAG_FAILING;                     \
-      (f)->f_retries ++;                                     \
-    }                                                        \
+#define FLOCK_NEXT_RETRY(f, el)                                         \
+  if (1) {                                                              \
+    if ( FLOCK_IS_FAILING(f) && FLOCK_NO_MORE_RETRIES(f) ) {            \
+      (f)->f_flock_state = FLOCK_STATE_SUSPENDED;                       \
+      flock_shutdown_connection(f, (el));                               \
+      timersub_set_from_now(&f->f_resolve_timer,                        \
+                            FLOCK_RETRY_CONNECTION_INTERVAL);           \
+      eventloop_subscribe_timer(el, &f->f_resolve_timer);               \
+    } else {                                                            \
+      (f)->f_flags |= FLOCK_FLAG_FAILING;                               \
+      (f)->f_retries ++;                                                \
+    }                                                                   \
   }
 
 struct flock {
@@ -66,9 +70,9 @@ struct flock {
   // Pending connections which have things to write on this flock
   DLIST_HEAD(struct pconn) f_pconns_with_response;
 
+  struct timersub f_resolve_timer;
   union {
     struct dnssub f_resolver;
-    struct timersub f_resolve_timer;
     struct {
       int  f_socket;
       struct fdsub f_socket_sub;

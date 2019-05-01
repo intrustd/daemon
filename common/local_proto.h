@@ -75,6 +75,7 @@ struct applocalattr {
 #define ALA_APP_SIGNATURE_URL  0x001F
 #define ALA_CRED               0x0020
 #define ALA_GUEST              0x0021
+#define ALA_RESET_PHOTO        0x0022
 
 #define ALE_SUCCESS            0x0000
 #define ALE_NOT_IMPLEMENTED    0x0001

@@ -19,6 +19,12 @@ static void persona_release(struct persona *p);
 // static int persona_ensure_container_running(struct persona *p);
 // static int persona_release_container(struct persona *p);
 
+void personacreateinfo_clear(struct personacreateinfo *pci) {
+  pci->pci_displayname = pci->pci_password = NULL;
+  pci->pci_displayname_sz = pci->pci_password_sz = 0;
+  pci->pci_flags = 0;
+  pci->pci_bump_avatar = 0;
+}
 
 static void personafreefn(const struct shared *sh, int level) {
   struct persona *p = STRUCT_FROM_BASE(struct persona, p_shared, sh);
@@ -33,6 +39,7 @@ static int persona_init_default(struct persona *p, struct appstate *as) {
   SHARED_INIT(&p->p_shared, personafreefn);
   p->p_private_key = NULL;
   p->p_display_name = NULL;
+  p->p_photo_data = NULL;
   p->p_auths = NULL;
   // p->p_ports = NULL;
   p->p_appstate = as;
@@ -235,6 +242,11 @@ static void persona_release(struct persona *p) {
     p->p_private_key = NULL;
   }
 
+  if ( p->p_photo_data ) {
+    free(p->p_photo_data);
+    p->p_photo_data = NULL;
+  }
+
   if ( p->p_display_name ) {
     free(p->p_display_name);
     p->p_display_name = NULL;
@@ -246,6 +258,28 @@ static void persona_release(struct persona *p) {
     free(a);
   }
   p->p_auths = NULL;
+}
+
+int persona_remove_passwords(struct persona *p) {
+  struct pauth *prev = NULL, *cur;
+
+  if ( pthread_mutex_lock(&p->p_mutex) < 0 )
+    return -1;
+
+  for ( cur = p->p_auths; cur; cur = cur->pa_next ) {
+    if ( cur->pa_type == PAUTH_TYPE_SHA256 ) {
+      if ( prev )
+        prev->pa_next = cur->pa_next;
+      else
+        p->p_auths = cur->pa_next;
+
+      free(cur);
+    }
+  }
+
+  pthread_mutex_unlock(&p->p_mutex);
+
+  return 0;
 }
 
 int persona_add_password(struct persona *p,
@@ -308,6 +342,98 @@ int persona_add_token_security(struct persona *p) {
   return 0;
 }
 
+int persona_reset_password(struct persona *p, char *pw, size_t pw_sz) {
+  persona_remove_passwords(p);
+  return persona_add_password(p, pw, pw_sz);
+}
+
+int persona_set_photo_data_fp(struct persona *p, const char *mimetype, FILE *fp) {
+  struct buffer b;
+  char *old_data;
+
+  buffer_init(&b);
+
+  if ( buffer_printf(&b, "data:%s;base64,", mimetype) < 0 ) {
+    buffer_release(&b);
+    return -1;
+  }
+
+  while ( !feof(fp) ) {
+    unsigned char chunk[3072];
+    char b64_chunk[4096];
+    size_t bytes_read = fread(chunk, 1, sizeof(chunk), fp), out_sz = sizeof(b64_chunk);
+
+    if ( b64_encode(chunk, bytes_read, b64_chunk, &out_sz) < 0 ) {
+      buffer_release(&b);
+      return -1;
+    }
+
+    if ( buffer_write(&b, b64_chunk, out_sz) < 0 ) {
+      buffer_release(&b);
+      return -1;
+    }
+
+    if ( bytes_read < sizeof(chunk) )
+      break;
+  }
+
+  if ( pthread_mutex_lock(&p->p_mutex) < 0 ) {
+    buffer_release(&b);
+    return -1;
+  }
+
+  old_data = p->p_photo_data;
+  buffer_finalize_str(&b, (const char **)&p->p_photo_data);
+
+  if ( old_data )
+    free(old_data);
+
+  pthread_mutex_unlock(&p->p_mutex);
+
+  return 0;
+}
+
+int persona_unset_photo(struct persona *p) {
+  char *old_data;
+
+  if ( pthread_mutex_lock(&p->p_mutex) < 0 ) {
+    return -1;
+  }
+
+  old_data = p->p_photo_data;
+  p->p_photo_data = NULL;
+
+  if ( old_data )
+    free(old_data);
+
+  pthread_mutex_unlock(&p->p_mutex);
+  return 0;
+}
+
+int persona_set_display_name(struct persona *p, char *dn, size_t dn_sz) {
+  char *new_dn = calloc(dn_sz + 1, 1), *old_dn;
+
+  if ( !new_dn )
+    return -1;
+
+  memcpy(new_dn, dn, dn_sz);
+
+  if ( pthread_mutex_lock(&p->p_mutex) < 0 ) {
+    free(new_dn);
+    return -1;
+  }
+
+  old_dn = p->p_display_name;
+  p->p_display_name = new_dn;
+
+  if ( old_dn )
+    free(old_dn);
+
+  pthread_mutex_unlock(&p->p_mutex);
+
+  return 0;
+}
+
 int persona_save_fp(struct persona *p, FILE *fp) {
   struct pauth *a;
   char sha256buf[SHA256_DIGEST_LENGTH * 2 + 1];
@@ -353,10 +479,17 @@ int persona_write_as_vcard(struct persona *p, struct buffer *b) {
       return -1;
   }
 
+  if ( p->p_photo_data ) {
+    if ( buffer_printf(b, "PHOTO:%s\n", p->p_photo_data) < 0 )
+      return -1;
+  }
+
   if ( buffer_printf(b, "END:VCARD\n") < 0 ) return -1;
 
   return 0;
 }
+
+
 
 // Persona set
 

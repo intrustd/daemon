@@ -441,7 +441,7 @@ static void fscs_handle_stun_request(struct flocksvcclientstate *st, struct floc
 
   err = stun_validate(buf, buf_sz, &v);
   if ( err < 0 || err == STUN_SUCCESS ) { // Negative error codes are responses that contained an error
-    fprintf(stderr, "Got stun request\n");
+    // fprintf(stderr, "Got stun request\n");
 
     switch ( STUN_REQUEST_TYPE(msg) ) {
     case STUN_BINDING:
@@ -1079,7 +1079,7 @@ static void flock_service_flush_buffers(struct flockservice *st, struct eventloo
     }
 
     // Attempt to write any connection attempts
-    fprintf(stderr, "Start send packets\n");
+    // fprintf(stderr, "Start send packets\n");
     DLIST_ITER(&cli->fscs_outgoing_packets, fcspw_dl, curpkt, tmppkt) {
       char req_buf[MAX_STUN_MSG_SIZE];
       int req_sz = sizeof(req_buf);
@@ -1089,7 +1089,7 @@ static void flock_service_flush_buffers(struct flockservice *st, struct eventloo
         req_sz = 0;
       }
 
-      fprintf(stderr, "Sending stun request of size %d\n", req_sz);
+      // fprintf(stderr, "Sending stun request of size %d\n", req_sz);
 
       if ( req_sz > 0 ) {
         err = SSL_write(cli->fscs_dtls, req_buf, req_sz);
@@ -1123,19 +1123,19 @@ static void flock_service_flush_buffers(struct flockservice *st, struct eventloo
         SHARED_UNREF(curpkt->fcspw_sh);
     }
 
-    fprintf(stderr, "Done send packets\n");
+    // fprintf(stderr, "Done send packets\n");
 
     DLIST_CLEAR(&cli->fscs_outgoing_packets);
 
   finish_cli_send:
-    fprintf(stderr, "Finish cli send\n");
+    // fprintf(stderr, "Finish cli send\n");
     pthread_mutex_unlock(&cli->fscs_outgoing_mutex);
 
     FSCS_UNREF(cli);
     continue;
 
   wouldblock:
-    fprintf(stderr, "Got wouldblock\n");
+    // fprintf(stderr, "Got wouldblock\n");
     pthread_mutex_unlock(&cli->fscs_outgoing_mutex);
     break;
   }
@@ -1145,11 +1145,11 @@ static void flock_service_flush_buffers(struct flockservice *st, struct eventloo
     st->fs_last_outgoing = NULL;
 
   pthread_mutex_unlock(&st->fs_service_mutex);
-  fprintf(stderr, "Wrote buffers\n");
+  // fprintf(stderr, "Wrote buffers\n");
 }
 
 static void flock_service_handle_event(struct flockservice *st, struct eventloop *el, struct fdevent *ev) {
-  fprintf(stderr, "Flock service got socket event\n");
+  // fprintf(stderr, "Flock service got socket event\n");
 
   if ( FD_WRITE_AVAILABLE(ev) )
     flock_service_flush_buffers(st, el);
@@ -1473,7 +1473,7 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
     new_app->ai_appliance_fn = fscs_appliancefn;
 
     new_app->ai_flags |= AI_FLAG_ACTIVE;
-    
+
     SAFE_MUTEX_LOCK(&st->fscs_state_mutex);
     st->fscs_appliance_ptr = new_app;
     pthread_mutex_unlock(&st->fscs_state_mutex);
