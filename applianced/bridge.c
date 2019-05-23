@@ -1359,6 +1359,17 @@ static int open_netns(pid_t p) {
   return open(netns_path, O_CLOEXEC);
 }
 
+static int bridge_set_arp_ignore() {
+  FILE *arp_ignore = fopen("/proc/sys/net/ipv4/conf/bridge/arp_ignore", "wt");
+  if ( !arp_ignore )
+    return -1;
+
+  fprintf(arp_ignore, "1");
+  fclose(arp_ignore);
+
+  return 0;
+}
+
 static int bridge_setup_main(void *br_ptr) {
   struct brstate *br = (struct brstate *)br_ptr;
   char tap_nm[IFNAMSIZ], cmd_buf[512];
@@ -1405,7 +1416,7 @@ static int bridge_setup_main(void *br_ptr) {
 
   fprintf(stderr, "Moved " INET_LINK_NAME " to parent\n");
 
-  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY "/8 dev internet", br->br_iproute_path);
+  err = snprintf(cmd_buf, sizeof(cmd_buf), "%s addr add " INTERNET_GATEWAY " dev internet", br->br_iproute_path);
   if ( err >= sizeof(cmd_buf) ) {
     fprintf(stderr, "bridge_setup_main: command overflow while adding internet gateway address\n");
     return 1;
@@ -1429,6 +1440,12 @@ static int bridge_setup_main(void *br_ptr) {
   if ( setsockopt(br->br_comm_fd[0], SOL_SOCKET, SO_PASSCRED,
                   &yes, sizeof(yes)) < 0 ) {
     perror("setsockopt(SO_PASSCRED)");
+    return 1;
+  }
+
+  // Set arp ignore to 1
+  if ( bridge_set_arp_ignore() < 0 ) {
+    fprintf(stderr, "bridge_setup_main: bridge_set_arp_ignore failed\n");
     return 1;
   }
 

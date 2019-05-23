@@ -82,6 +82,8 @@ in pkgs.stdenv.mkDerivation {
 
     nginx jq redis
 
+    nix-prefetch-git nodePackages.node2nix
+
     (python3.withPackages (ps: [
        ps.flask ps.sqlalchemy ps.pyopenssl ps.pyudev ps.celery ps.redis
        ps.kombu ps.pytest ps.requests ps.pillow
