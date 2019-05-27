@@ -254,8 +254,7 @@ int pssub_detach_attach(struct eventloop *el, struct pssub *det, struct pssub *a
       DLIST_REMOVE(&el->el_processes, ps_list, det);
       det->ps_which = -1;
       det->ps_status = -1;
-    } else if ( det )
-      ret = -1;
+    }
 
     if ( att && att->ps_which < 0 && ret == 0 ) {
       att->ps_which = p;

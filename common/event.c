@@ -629,6 +629,7 @@ static int eventloop_deliver_processes(struct eventloop *el) {
       perror("eventloop_deliver_processes: waitpid");
     else if ( exited == cur->ps_which ) {
       cur->ps_status = sts;
+      cur->ps_which = -1;
       eventloop_queue(el, &cur->ps_on_complete);
       DLIST_REMOVE(&el->el_processes, ps_list, cur);
       delivered++;
