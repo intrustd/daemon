@@ -88,7 +88,7 @@ struct stack_ent {
 
 //#define CONTROL_PROTO_NAME "control"
 //#define CONTROL_PROTO_LEN  7
-#define PROXY_BUF_SIZE  1024
+#define PROXY_BUF_SIZE  1024 * 16
 
 typedef uint16_t wrcchanid;
 struct wrtcchan {
