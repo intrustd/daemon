@@ -912,6 +912,15 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   FORMAT_PATH("%s/dev", image_path);
   DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755,size=16384k");
 
+  FORMAT_PATH("%s/dev/stdin", image_path);
+  DO_SYMLINK(path, "/proc/self/fd/0");
+
+  FORMAT_PATH("%s/dev/stdout", image_path);
+  DO_SYMLINK(path, "/proc/self/fd/1");
+
+  FORMAT_PATH("%s/dev/stderr", image_path);
+  DO_SYMLINK(path, "/proc/self/fd/2");
+
   FORMAT_PATH("%s/dev/random", image_path);
   err = open(path, O_CREAT, 0666);
   close(err);
