@@ -33,6 +33,7 @@ void flock_clear(struct flock *f) {
   f->f_uri_str = NULL;
   f->f_hostname = NULL;
   f->f_flock_state = FLOCK_STATE_UNSTARTED;
+  f->f_registration_state = FLOCK_REGISTRATION_STATE_INVALID;
   f->f_flags = 0;
   memset(f->f_expected_digest, 0, sizeof(f->f_expected_digest));
   f->f_cur_addr.sin_addr.s_addr = 0;
@@ -67,9 +68,7 @@ void flock_release(struct flock *f) {
     dnssub_release(&f->f_resolver);
     break;
   case FLOCK_STATE_CONNECTING:
-  case FLOCK_STATE_REGISTERING:
-  case FLOCK_STATE_SEND_REGISTRATION:
-  case FLOCK_STATE_REGISTERED:
+  case FLOCK_STATE_CONNECTED:
     if ( f->f_socket ) close(f->f_socket);
     if ( f->f_dtls_client ) SSL_free(f->f_dtls_client);
     break;
@@ -153,6 +152,7 @@ void flock_move(struct flock *dst, struct flock *src) {
 
   dst->f_flags = src->f_flags | FLOCK_FLAG_INITIALIZED;
   dst->f_flock_state = src->f_flock_state;
+  dst->f_registration_state = src->f_registration_state;
   dst->f_pconns = src->f_pconns;
   DLIST_MOVE(&dst->f_pconns_with_response, &src->f_pconns_with_response);
 
@@ -170,6 +170,7 @@ void flock_move(struct flock *dst, struct flock *src) {
 
   src->f_flags = 0;
   src->f_flock_state = 0;
+  src->f_registration_state = 0;
   src->f_pconns = NULL;
 }
 
@@ -305,7 +306,7 @@ static void flock_send_registration(struct flock *f, struct appstate *as) {
       dbgprintf("Could not write out entirety of registration message\n");
       goto retry;
     } else {
-      f->f_flock_state = FLOCK_STATE_REGISTERING;
+      f->f_registration_state = FLOCK_REGISTRATION_STATE_REGISTERING;
 
       // This was written successfully, now we have to wait for a response or a timeout
       timersub_set_from_now(&f->f_registration_timeout, FLOCK_TIMEOUT(f, FLOCK_INITIAL_REGISTRATION_RTO));
@@ -316,7 +317,7 @@ static void flock_send_registration(struct flock *f, struct appstate *as) {
   return;
 
  retry:
-  f->f_flock_state = FLOCK_STATE_REGISTERING;
+  f->f_registration_state = FLOCK_REGISTRATION_STATE_REGISTERING;
 
   FLOCK_NEXT_RETRY(f, &as->as_eventloop);
 
@@ -816,7 +817,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
           if ( (f->f_flags & FLOCK_FLAG_STUN_ONLY) == 0 )
             flock_start_connection(f, el);
           else if ( f->f_flags & FLOCK_FLAG_PENDING ) {
-            f->f_flock_state = FLOCK_STATE_REGISTERED;
+            f->f_flock_state = FLOCK_STATE_CONNECTED;
             eventloop_queue(el, &f->f_on_should_save);
           }
         }
@@ -857,7 +858,8 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
       } else {
         fprintf(stderr, "The DTLS handshake has been completed\n");
 
-        f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
+        f->f_registration_state = FLOCK_REGISTRATION_STATE_SEND_REGISTRATION;
+        f->f_flock_state = FLOCK_STATE_CONNECTED;
         f->f_retries = 0;
 
         eventloop_subscribe_fd(el, f->f_socket, FD_SUB_ERROR | FD_SUB_READ | FD_SUB_WRITE,
@@ -866,64 +868,59 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
       break;
 
     case FLOCK_STATE_SUSPENDED:
-    case FLOCK_STATE_REGISTERED:
+    case FLOCK_STATE_CONNECTED:
       if ( FD_WRITE_AVAILABLE(fd_ev) ) {
+        if ( f->f_registration_state == FLOCK_REGISTRATION_STATE_SEND_REGISTRATION )
+          flock_send_registration(f, as);
+
         flock_send_pconn_responses(f);
         dbgprintf("Sent pconn response\n");
       }
 
       if ( FD_READ_PENDING(fd_ev) ) {
-        dbgprintf("Read pending on registered flock socket\n");
-        err = flock_receive_request(f, as);
-        if ( err < 0 ) {
-          fprintf(stderr, "Invalid request\n");
-        }
-      }
+        int handled = 0;
 
-      eventloop_subscribe_fd(el, f->f_socket,
-                             FD_SUB_READ | FD_SUB_ERROR |
-                             (!(DLIST_EMPTY(&f->f_pconns_with_response)) ? FD_SUB_WRITE : 0),
-                             &f->f_socket_sub);
-      break;
+        if ( f->f_registration_state == FLOCK_REGISTRATION_STATE_REGISTERING ) {
+          err = flock_receive_response(f, as, STUN_INTRUSTD_REGISTRATION);
+          if ( err < 0 ) {
+            fprintf(stderr, "Invalid binding response or request");
+          } else if ( err == STUN_REQUEST_MISMATCH ) {
+            handled = 0;
+          } else if ( err == STUN_TOO_EARLY ) {
+            dbgprintf("Scheduling another registration in %d ms\n",
+                      FLOCK_FLAG_TRY_AGAIN_INTERVAL);
 
-    case FLOCK_STATE_SEND_REGISTRATION:
-    case FLOCK_STATE_REGISTERING:
+            eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
 
-      if ( FD_WRITE_AVAILABLE(fd_ev) ) {
-        if ( f->f_flock_state == FLOCK_STATE_SEND_REGISTRATION )
-          flock_send_registration(f, as);
+            if ( f->f_retries < FLOCK_MAX_RETRIES ) {
+              f->f_retries++;
+              eventloop_cancel_timer(el, &f->f_refresh_timer);
+              timersub_set_from_now(&f->f_refresh_timer, FLOCK_FLAG_TRY_AGAIN_INTERVAL);
+              eventloop_subscribe_timer(el, &f->f_refresh_timer);
+            } else {
+              fprintf(stderr, "No success response from server\n");
+              f->f_flags |= FLOCK_FLAG_FAILING | FLOCK_FLAG_CONFLICT;
+            }
 
-        // Attempt to send out pending connections as well
-        flock_send_pconn_responses(f);
-      }
-
-      if ( FD_READ_PENDING(fd_ev) ) {
-        dbgprintf("Read pending on flock socket\n");
-        err = flock_receive_response(f, as, STUN_INTRUSTD_REGISTRATION);
-        if ( err < 0 ) {
-          fprintf(stderr, "Invalid binding response or request\n");
-        } else if ( err == STUN_TOO_EARLY ) {
-          dbgprintf("Scheduling another registration in %d ms\n",
-                    FLOCK_FLAG_TRY_AGAIN_INTERVAL);
-
-          eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
-
-          if ( f->f_retries < FLOCK_MAX_RETRIES ) {
-            f->f_retries++;
-            eventloop_cancel_timer(el, &f->f_refresh_timer);
-            timersub_set_from_now(&f->f_refresh_timer, FLOCK_FLAG_TRY_AGAIN_INTERVAL);
-            eventloop_subscribe_timer(el, &f->f_refresh_timer);
+            handled = 1;
+          } else if ( err == STUN_CONFLICT ) {
+            f->f_flags |= FLOCK_FLAG_CONFLICT;
+            eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
+            handled = 1;
+          } else if ( err == 0 ) {
+            flock_successful_registration(f, as);
+            handled = 1;
           } else {
-            fprintf(stderr, "No success response from server\n");
-            f->f_flags |= FLOCK_FLAG_FAILING | FLOCK_FLAG_CONFLICT;
+            dbgprintf("Invalid error code from flock_receive_response: %d\n", err);
           }
-        } else if ( err == STUN_CONFLICT ) {
-          f->f_flags |= FLOCK_FLAG_CONFLICT;
-          eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
-        } else if ( err == 0 ) {
-          flock_successful_registration(f, as);
-        } else {
-          dbgprintf("Invalid error code from flock_receive_response: %d\n", err);
+        }
+
+        if ( !handled ) {
+          dbgprintf("Read pending on registered flock socket\n");
+          err = flock_receive_request(f, as);
+          if ( err < 0 ) {
+            fprintf(stderr, "Invalid request\n");
+          }
         }
       }
 
@@ -937,21 +934,23 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
           fprintf(stderr, "ERROR: Got flock socket error: %s\n", strerror(serr));
         }
 
-        f->f_flags |= FLOCK_FLAG_FAILING;
-        if ( f->f_retries >= FLOCK_MAX_RETRIES ) {
-          fprintf(stderr, "Reached max retries for flock. Setting disabled\n");
-          f->f_retries = 0;
-          f->f_flock_state = FLOCK_STATE_CONNECTING;
-          f->f_flags &= ~FLOCK_FLAG_REGISTRATION_VALID;
-        } else
-          f->f_retries ++;
+        if ( f->f_registration_state == FLOCK_REGISTRATION_STATE_REGISTERING ) {
+          f->f_flags |= FLOCK_FLAG_FAILING;
+          if ( f->f_retries >= FLOCK_MAX_RETRIES ) {
+            fprintf(stderr, "Reached max retries for flock. Setting disabled\n");
+            f->f_retries = 0;
+            f->f_flock_state = FLOCK_STATE_CONNECTING;
+            f->f_registration_state = FLOCK_REGISTRATION_STATE_INVALID;
+            f->f_flags &= ~FLOCK_FLAG_REGISTRATION_VALID;
+          } else
+            f->f_retries ++;
+        }
       }
 
       eventloop_subscribe_fd(el, f->f_socket,
                              FD_SUB_READ | FD_SUB_ERROR |
-                             ((!DLIST_EMPTY(&f->f_pconns_with_response)) ? FD_SUB_WRITE : 0),
+                             (!(DLIST_EMPTY(&f->f_pconns_with_response)) ? FD_SUB_WRITE : 0),
                              &f->f_socket_sub);
-
       break;
 
     default:
@@ -969,7 +968,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     dbgprintf("Reg timeout\n");
 
     if ( f->f_flock_state != FLOCK_STATE_SUSPENDED )
-      f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
+      f->f_registration_state = FLOCK_REGISTRATION_STATE_SEND_REGISTRATION;
     else
       fprintf(stderr, "Flock suspended\n");
     eventloop_subscribe_fd(el, f->f_socket, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
@@ -981,7 +980,7 @@ static void flock_fn(struct eventloop *el, int op, void *arg) {
     flock_refresh_registration(f); // Updates the transaction id
 
     SAFE_MUTEX_LOCK(&f->f_mutex);
-    f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
+    f->f_registration_state = FLOCK_REGISTRATION_STATE_SEND_REGISTRATION;
 
     dbgprintf("Refresh timer\n");
     eventloop_subscribe_fd(el, f->f_socket, FD_SUB_READ | FD_SUB_WRITE | FD_SUB_ERROR, &f->f_socket_sub);
@@ -1007,7 +1006,7 @@ static void flock_successful_registration(struct flock *f, struct appstate *as) 
   if ( f->f_flags & FLOCK_FLAG_PENDING )
     eventloop_queue(&as->as_eventloop, &f->f_on_should_save);
 
-  f->f_flock_state = FLOCK_STATE_REGISTERED;
+  f->f_registration_state = FLOCK_REGISTRATION_STATE_REGISTERED;
 
   // Stop the registration timeout
   eventloop_cancel_timer(&as->as_eventloop, &f->f_registration_timeout);
@@ -1124,7 +1123,7 @@ static void flock_start_connection(struct flock *f, struct eventloop *el) {
     SSL_set_bio(f->f_dtls_client, sock_bio, sock_bio);
     sock_bio = NULL;
   } else
-    f->f_flock_state = FLOCK_STATE_SEND_REGISTRATION;
+    f->f_registration_state = FLOCK_REGISTRATION_STATE_SEND_REGISTRATION;
 
   // write and error for registration events
   dbgprintf("Start send\n");

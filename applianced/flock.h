@@ -52,7 +52,8 @@ struct flock {
   char *f_uri_str; // Dynamically allocated raw normalized flock URI string
   char *f_hostname; // Dynamically allocated raw hostname
 
-  uint16_t f_flock_state;
+  uint16_t f_flock_state : 14;
+  uint16_t f_registration_state: 2;
   uint32_t f_flags;
 
   unsigned char f_expected_digest[FLOCK_SIGNATURE_DIGEST_SZ];
@@ -89,24 +90,27 @@ struct flock {
   };
 };
 
+#define FLOCK_REGISTRATION_STATE_INVALID           0
+// DTLS connection established and we need to send a registration message
+#define FLOCK_REGISTRATION_STATE_SEND_REGISTRATION 1
+// The DTLS connection has been established, we have sent a registration message and are waiting
+#define FLOCK_REGISTRATION_STATE_REGISTERING       2
+// The connection has been established and we have confirmed registration
+#define FLOCK_REGISTRATION_STATE_REGISTERED        3
+
 // The flock has not yet had service started
 #define FLOCK_STATE_UNSTARTED   0
 // The flock has not yet been contacted for joining
 #define FLOCK_STATE_PENDING     1
 // The flock address has been resolved, and we are in the process of sending the DTLS handshake
 #define FLOCK_STATE_CONNECTING  2
-// DTLS connection established and we need to send a registration message
-#define FLOCK_STATE_SEND_REGISTRATION 3
-// The DTLS connection has been established, we have sent a registration message and are waiting
-#define FLOCK_STATE_REGISTERING 4
-// The connection has been established and we have confirmed registration
-#define FLOCK_STATE_REGISTERED  5
+#define FLOCK_STATE_CONNECTED   3
 // The remote server has not responded in a while, and we have given up trying to connect again for now
-#define FLOCK_STATE_SUSPENDED   6
+#define FLOCK_STATE_SUSPENDED   4
 // The DTLS handshake resulted in a certificate we did not accept
-#define FLOCK_STATE_SRV_CRT_REJ 7
+#define FLOCK_STATE_SRV_CRT_REJ 5
 // The domainn name could not be resolved
-#define FLOCK_STATE_NM_NOT_RES  8
+#define FLOCK_STATE_NM_NOT_RES  6
 
 #define FLOCK_FLAG_INITIALIZED        0x01
 // We have been requested to force acceptance of the server certificate
