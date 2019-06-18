@@ -1601,6 +1601,11 @@ int main_loop(int srv) {
             needs_write_space = err;
         }
 
+        if ( ev->events & EPOLLHUP ) {
+          // When SCTP disconnects, exit
+          exit(0);
+        }
+
         ev->events = DFL_EPOLL_EVENTS;
         //fprintf(stderr, "Set SCTP trigger %d %d %d\n", !!needs_write_space,
         //        !!g_pending_reads.next, !!g_pending_free_channels.next);
