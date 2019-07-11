@@ -39,7 +39,7 @@ target_compile_options(intrustd-common PUBLIC -Wall -Werror ${INTRUSTD_CFLAGS})
 add_executable(flockd flockd/main.c flockd/configuration.c flockd/connection.c
   flockd/state.c flockd/service.c flockd/websocket.c flockd/client.c flockd/appliance.c
   flockd/personas.c)
-target_link_libraries(flockd PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES})
+target_link_libraries(flockd PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 target_compile_options(flockd PUBLIC -Wall ${INTRUSTD_CFLAGS})
 
 add_library(libapplianced STATIC  applianced/configuration.c applianced/state.c
