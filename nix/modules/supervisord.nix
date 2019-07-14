@@ -105,7 +105,7 @@ in {
         serviceConfigs = lib.mapAttrsToList mkServiceConfig config.app.services;
     in {
       app.startHook = lib.mkDefault ''
-        ${app.supervisord.beforeStart}
+        ${config.app.supervisord.beforeStart}
         exec ${pkgs.pythonPackages.supervisor}/bin/supervisord -c ${supervisorConfig} -n
       '';
 
