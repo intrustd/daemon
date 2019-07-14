@@ -25,6 +25,12 @@ let permissionsType = with lib; types.submodule {
           description = "Priority";
         };
 
+        superuser = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Whether or not this permission can only apply to superusers";
+        };
+
         dynamic = mkOption {
           type = types.bool;
           default = false;

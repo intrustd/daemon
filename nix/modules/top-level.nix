@@ -237,7 +237,7 @@
 
           cmpPrio = a: b: a.priority < b.priority;
           mkPermission = perm: with perm;
-             let base = { inherit description dynamic; };
+             let base = { inherit description dynamic superuser; };
              in if !(builtins.isNull perm.name)
                 then base // { inherit name; }
                 else if !(builtins.isNull perm.regex)

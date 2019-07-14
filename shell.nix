@@ -57,10 +57,12 @@ let stdenv = pkgs.stdenv;
        '';
    };
 
+   openssl = pkgs.openssl_1_1 or pkgs.openssl_1_1_0;
+
    curl-intrustd = pkgs.curl.override {
      c-aresSupport = true; sslSupport = true; idnSupport = true;
      scpSupport = false; gssSupport = true;
-     brotliSupport = true; openssl = pkgs.openssl_1_1_0;
+     brotliSupport = true; inherit openssl;
    };
 
    lksctp-tools-1-0-18 = pkgs.callPackage ./deploy/pkgs/lksctp-tools.nix { };
@@ -69,7 +71,7 @@ in pkgs.stdenv.mkDerivation {
   name = "intrustd-cpp";
 
   buildInputs = with pkgs; [
-    pkgconfig cmake gdb openssl_1_1_0.dev
+    pkgconfig cmake gdb openssl.dev
     uriparser nodejs-8_x
     uthash zlib check
 

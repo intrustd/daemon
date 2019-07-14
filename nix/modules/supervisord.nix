@@ -49,6 +49,12 @@ in {
       type = types.attrsOf (types.submodule servicesType);
       description = "Service configurations";
     };
+
+    app.supervisord.beforeStart = mkOption {
+      type = types.str;
+      description = "Extra commands before supervisord";
+      default = "";
+    };
   };
 
   config =
@@ -99,6 +105,7 @@ in {
         serviceConfigs = lib.mapAttrsToList mkServiceConfig config.app.services;
     in {
       app.startHook = lib.mkDefault ''
+        ${app.supervisord.beforeStart}
         exec ${pkgs.pythonPackages.supervisor}/bin/supervisord -c ${supervisorConfig} -n
       '';
 
