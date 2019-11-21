@@ -47,7 +47,7 @@ add_library(libapplianced STATIC  applianced/configuration.c applianced/state.c
   applianced/pconn.c applianced/container.c applianced/update.c applianced/application.c
   applianced/token.c applianced/nat.c)
 target_compile_options(libapplianced PUBLIC -Wall ${INTRUSTD_CFLAGS})
-target_link_libraries(libapplianced PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES})
+target_link_libraries(libapplianced PUBLIC intrustd-common ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} ${UTHASH_LIBRARIES} ${URIPARSER_LIBRARIES} ${CURL_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(applianced applianced/main.c)
 target_link_libraries(applianced PUBLIC intrustd-common libapplianced)

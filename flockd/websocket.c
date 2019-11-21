@@ -142,7 +142,8 @@ static void wsconnection_remove_cork(struct wsconnection *conn) {
   if ( conn->wsc_corking_mode >= WSC_START_CORK ) {
     if ( conn->wsc_corking_mode == WSC_CONTINUE_CORK ) {
       conn->wsc_corking_mode = WSC_FINISH_CORK;
-      wsconnection_respond_line(conn, conn->wsc_conn.conn_el, "");
+      if ( conn->wsc_mode != WSC_MODE_FLOCKP )
+        wsconnection_respond_line(conn, conn->wsc_conn.conn_el, "");
     }
     conn->wsc_corking_mode = WSC_NO_CORK;
   }
@@ -804,7 +805,8 @@ static int wsconnectionctlfn(struct connection *c, int op, void *arg) {
     if ( WSC_HAS_SPACE(wsc, ln->sl_end - ln->sl_start + (wsc->wsc_mode == WSC_MODE_WEBSOCKET ? 2 : 0)) ) {
       // If we have space, write the line
       wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, ln->sl_start, ln->sl_end - ln->sl_start);
-      if ( wsc->wsc_mode == WSC_MODE_WEBSOCKET )
+      if ( wsc->wsc_mode == WSC_MODE_WEBSOCKET ||
+           wsc->wsc_mode == WSC_MODE_FLOCKP )
         wsconnection_respond_line_ex(wsc, wsc->wsc_conn.conn_el, "\r\n", 2);
       WSC_SUBSCRIBE_WRITE(wsc);
       return 1;
@@ -931,8 +933,18 @@ static void wsconnection_respond_protoline(struct wsconnection *conn, struct eve
   char line[line_length];
 
   memcpy(line, line_nonl, line_nonl_length);
-  line[line_length - 2] = '\r';
-  line[line_length - 1] = '\n';
+  if ( conn->wsc_corking_mode == WSC_START_CORK ) {
+    conn->wsc_corking_mode = WSC_CONTINUE_CORK;
+    line_length -= 2;
+  } else if ( conn->wsc_corking_mode == WSC_CONTINUE_CORK ) {
+    line_length -= 2;
+  } else if ( conn->wsc_corking_mode == WSC_FINISH_CORK ||
+              conn->wsc_corking_mode == WSC_NO_CORK ) {
+    if ( conn->wsc_corking_mode == WSC_FINISH_CORK )
+      conn->wsc_corking_mode = WSC_NO_CORK;
+    line[line_length - 2] = '\r';
+    line[line_length - 1] = '\n';
+  }
   wsconnection_respond_buffer(conn, el, line, line_length);
 }
 
