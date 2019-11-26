@@ -30,6 +30,7 @@ in {
           nix-closure = closures;
           run-as-admin = config.app.runAsAdmin;
           singleton = config.app.singleton;
+          autostart = config.app.autostart;
 
           version = "${builtins.toString config.app.version.major}.${builtins.toString config.app.version.minor}.${builtins.toString config.app.version.revision}";
 
