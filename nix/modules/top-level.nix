@@ -95,6 +95,14 @@
       '';
     };
 
+    app.autostart = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        If true, this app should be auto-started, if the user has given permissions.
+      '';
+    };
+
     app.singleton = mkOption {
       type = types.bool;
       default = false;
