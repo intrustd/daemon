@@ -293,6 +293,7 @@
              cat >$out/etc/group <<EOF
              root:x:0:
              intrustd:x:100:
+             nobody:x:65534:
              EOF
 
              ln -s /run/hosts $out/etc/hosts
