@@ -271,6 +271,7 @@
              mkdir -p $out/etc
              mkdir -p $out/etc/ssl/certs
              mkdir -p $out/var/log
+             mkdir -p $out/var/empty
              mkdir -p $out/tmp
              chmod 777 $out/tmp
              ln -s ${healthCheckScript} $out/app/hc
@@ -286,6 +287,7 @@
              cat >$out/etc/passwd <<EOF
              root:x:0:0:System administrator:/intrustd:${pkgs.bash}/bin/bash
              intrustd:x:1000:100:Intrustd user:/intrustd:${pkgs.bash}/bin/bash
+             nobody:x:65534:65534:Unprivileged account:/var/empty:${pkgs.shadow}/bin/nologin
              EOF
 
              cat >$out/etc/group <<EOF
