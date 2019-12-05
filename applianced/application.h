@@ -78,6 +78,7 @@ struct appmanifest {
 
 #define APPMANIFEST_FLAG_RUN_AS_ADMIN 0x1
 #define APPMANIFEST_FLAG_SINGLETON    0x2
+#define APPMANIFEST_FLAG_AUTOSTART    0x4
 
 #define APPMANIFEST_REF(au) SHARED_REF(&(au)->am_shared)
 #define APPMANIFEST_UNREF(au) SHARED_UNREF(&(au)->am_shared)

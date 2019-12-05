@@ -17,6 +17,9 @@
 
 #define DEFAULT_EC_CURVE_NAME NID_X9_62_prime256v1
 
+#define APP_PERMISSION_SINGLETON "singleton"
+#define APP_PERMISSION_AUTOSTART "autostart"
+
 struct pconn;
 struct appstate;
 struct app;
@@ -130,5 +133,7 @@ void appstate_update_application_state(struct appstate *as, struct app *a);
 
 struct token *appstate_open_token_ex(struct appstate *as,
                                      const char *token_hex, size_t token_sz);
+
+int appstate_check_app_permission(struct appstate *as, struct app *a, const char *perm_name);
 
 #endif

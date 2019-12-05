@@ -23,6 +23,12 @@ let servicesType = with lib; {
           description = "Extra environment variables";
         };
 
+        user = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Name of user to run as";
+        };
+
         priority = mkOption {
           type = types.nullOr types.int;
           default = null;

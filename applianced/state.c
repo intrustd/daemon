@@ -2075,24 +2075,31 @@ void appstate_update_application_state(struct appstate *as, struct app *a) {
 
   SAFE_MUTEX_LOCK(&a->app_mutex);
   a->app_flags &= ~(APP_FLAG_RUN_AS_ADMIN | APP_FLAG_SINGLETON | APP_FLAG_SIGNED);
-  if ( a->app_current_manifest->am_flags &
-         (APPMANIFEST_FLAG_RUN_AS_ADMIN | APPMANIFEST_FLAG_SINGLETON) ) {
+
+  if ( (a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN) &&
+       appstate_can_run_as_admin(as, a) ) {
     fprintf(stderr, "Requesting run as singleton or admin %p\n", a);
-    if ( appstate_can_run_as_admin(as, a) ) {
-      a->app_flags |= APP_FLAG_SIGNED; // TODO allow any app to be signed
+    a->app_flags |= APP_FLAG_SIGNED; // TODO allow any app to be signed
 
-      if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN )
-        a->app_flags |= APP_FLAG_RUN_AS_ADMIN;
-      if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_SINGLETON )
-        a->app_flags |= APP_FLAG_SINGLETON;
+    if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_RUN_AS_ADMIN )
+      a->app_flags |= APP_FLAG_RUN_AS_ADMIN;
+    if ( a->app_current_manifest->am_flags & APPMANIFEST_FLAG_SINGLETON )
+      a->app_flags |= APP_FLAG_SINGLETON;
 
-      // TODO manual autostart
-      if ( strcmp(a->app_domain, ADMIN_APP_URL) == 0 ) {
-        fprintf(stderr, "Setting as autostart %s\n", a->app_domain);
-        a->app_flags |= APP_FLAG_AUTOSTART;
-      }
+    // TODO manual autostart
+    if ( strcmp(a->app_domain, ADMIN_APP_URL) == 0 ) {
+      fprintf(stderr, "Setting as autostart %s\n", a->app_domain);
+      a->app_flags |= APP_FLAG_AUTOSTART;
     }
   }
+
+  if ( (a->app_current_manifest->am_flags & APPMANIFEST_FLAG_SINGLETON) &&
+       appstate_check_app_permission(as, a, APP_PERMISSION_SINGLETON) )
+    a->app_flags |= APP_FLAG_SINGLETON;
+
+  if ( (a->app_current_manifest->am_flags & APPMANIFEST_FLAG_AUTOSTART) &&
+       appstate_check_app_permission(as, a, APP_PERMISSION_AUTOSTART) )
+    a->app_flags |= APP_FLAG_AUTOSTART;
 
   am = a->app_current_manifest;
   APPMANIFEST_REF(am);
@@ -2183,6 +2190,55 @@ struct token *appstate_open_token_ex(struct appstate *as,
     return ret;
   } else
     return NULL;
+}
+
+int appstate_check_app_permission(struct appstate *as, struct app *a, const char *perm_name) {
+  char app_perms_nm[PATH_MAX], app_perm_line[4096];
+  int err;
+  FILE *perms_fp;
+  size_t perm_len = strlen(perm_name);
+
+  err = snprintf(app_perms_nm, sizeof(app_perms_nm), "%s/app.perms", as->as_conf_dir);
+  if ( err >= sizeof(app_perms_nm) ) {
+    fprintf(stderr, "appstate_check_app_permission: path overflow\n");
+    return 0;
+  }
+
+  perms_fp = fopen(app_perms_nm, "rt");
+  if ( !perms_fp ) {
+    perror("appstate_check_app_permission: fopen");
+    return 0;
+  }
+
+  fprintf(stderr, "appstate_check_app_permission: %s for %s\n",
+          a->app_domain, perm_name);
+
+  while ( fgets(app_perm_line, sizeof(app_perm_line), perms_fp) ) {
+    int last_ix = strnlen(app_perm_line, sizeof(app_perm_line)) - 1;
+    char *app_name, *cur_perm, *saveptr;
+    if ( app_perm_line[last_ix] != '\n' && !feof(perms_fp) ) {
+      fprintf(stderr, "appstate_check_app_permission: skipping long line (max length %zu)\n",
+              sizeof(app_perm_line));
+    }
+
+    app_name = strtok_r(app_perm_line, " ", &saveptr);
+    if ( !app_name ) {
+      fprintf(stderr, "appstate_check_app_permission: malformed line\n");
+    }
+
+    if ( strncmp(app_name, a->app_domain, strlen(a->app_domain)) != 0 )
+      continue;
+
+    while ( ( cur_perm = strtok_r(NULL, " ", &saveptr) ) ) {
+      if ( strncmp(cur_perm, perm_name, perm_len) == 0  ) {
+        fclose(perms_fp);
+        return 1;
+      }
+    }
+  }
+
+  fclose(perms_fp);
+  return 0;
 }
 
 void init_appliance_global() {

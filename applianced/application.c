@@ -114,6 +114,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
     PARSING_ST_NAME,
     PARSING_ST_NIX_CLOSURE,
     PARSING_ST_SINGLETON,
+    PARSING_ST_AUTOSTART,
     PARSING_ST_RUN_AS_ADMIN,
     PARSING_ST_BIND_MOUNTS,
 
@@ -157,6 +158,8 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
           state = PARSING_ST_NIX_CLOSURE;
         } else if ( strncmp(data + token->start, "singleton", token->end - token->start) == 0 ) {
           state = PARSING_ST_SINGLETON;
+        } else if ( strncmp(data + token->start, "autostart", token->end - token->start) == 0 ) {
+          state = PARSING_ST_AUTOSTART;
         } else if ( strncmp(data + token->start, "run-as-admin", token->end - token->start) == 0 ) {
           state = PARSING_ST_RUN_AS_ADMIN;
         } else if ( strncmp(data + token->start, "bind-mounts", token->end - token->start) == 0 ) {
@@ -172,6 +175,7 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
       }
       break;
 
+    case PARSING_ST_AUTOSTART:
     case PARSING_ST_SINGLETON:
     case PARSING_ST_RUN_AS_ADMIN:
       if ( token->type != JSMN_PRIMITIVE ) {
@@ -191,6 +195,9 @@ static struct appmanifest *appmanifest_parse_tokens(const char *data, size_t sz,
         } else if ( state == PARSING_ST_RUN_AS_ADMIN ) {
           if ( value ) flags |= APPMANIFEST_FLAG_RUN_AS_ADMIN;
           else flags &= ~APPMANIFEST_FLAG_RUN_AS_ADMIN;
+        } else if ( state == PARSING_ST_AUTOSTART ) {
+          if ( value ) flags |= APPMANIFEST_FLAG_AUTOSTART;
+          else flags &= ~APPMANIFEST_FLAG_AUTOSTART;
         }
 
         state = PARSING_ST_MAIN_OBJECT_KEY;
@@ -921,6 +928,14 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   FORMAT_PATH("%s/dev/stderr", image_path);
   DO_SYMLINK(path, "/proc/self/fd/2");
 
+  FORMAT_PATH("%s/dev/log", image_path);
+  err = open(path, O_CREAT, 0666);
+  close(err);
+  DO_MOUNT("/dev/log", path, "bind", MS_BIND, "");
+
+  FORMAT_PATH("%s/dev/fd", image_path);
+  DO_SYMLINK(path, "/proc/self/fd");
+
   FORMAT_PATH("%s/dev/random", image_path);
   err = open(path, O_CREAT, 0666);
   close(err);
@@ -930,6 +945,11 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   err = open(path, O_CREAT, 0666);
   close(err);
   DO_MOUNT("/dev/urandom", path, "bind", MS_BIND | MS_RDONLY, "");
+
+  FORMAT_PATH("%s/dev/null", image_path);
+  err = open(path, O_CREAT, 0666);
+  close(err);
+  DO_MOUNT("/dev/null", path, "bind", MS_BIND, "");
 
   FORMAT_PATH("%s/etc/ssl/certs/ca-certificates.crt", image_path);
   err = readlink_recursive("/etc/ssl/certs/ca-certificates.crt",
@@ -947,7 +967,7 @@ static int appinstance_setup(struct container *c, struct appinstance *ai) {
   DO_MOUNT(ai->inst_appstate->as_resolv_conf, path, "bind", MS_BIND | MS_RDONLY, "");
 
   FORMAT_PATH("%s/run", image_path);
-  DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=700,size=16384k");
+  DO_MOUNT("tmpfs", path, "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755,size=16384k");
 
   FORMAT_PATH("%s/personas/%s/tmp/%s", ai->inst_appstate->as_conf_dir,
               persona_id_str, ai->inst_app->app_domain);

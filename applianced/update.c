@@ -565,6 +565,9 @@ static void appupdater_build_from_manifest(struct appupdater *au) {
 
   pssubopts_push_env(&ps, "HOME", home_path);
 
+  if ( getenv("INTRUSTD_NIX_CACHES") )
+    pssubopts_push_env(&ps, "INTRUSTD_NIX_CACHES", getenv("INTRUSTD_NIX_CACHES"));
+
   if ( pssubopts_error(&ps) ) {
     pssubopts_release(&ps);
     fprintf(stderr, "appupdater_build_from_manifest: could not set up build process\n");

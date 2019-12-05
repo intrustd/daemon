@@ -975,7 +975,7 @@ static int setup_user_namespace(struct brstate *br, int proc_dir) {
   }
 
   if ( br->br_euid == 0 ) {
-    SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n1000 %d 1\n",
+    SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n1000 %d 1\n65534 65534 1",
                           br->br_daemon_uid, br->br_user_uid) < sizeof(buf) );
   } else {
     SAFE_ASSERT( snprintf(buf, sizeof(buf), "0 %d 1\n", br->br_uid) < sizeof(buf) );
