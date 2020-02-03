@@ -188,6 +188,8 @@
       iproute
     ];
 
+    app.environment = { PATH = "/bin"; };
+
     app.pathsToLink = [
       "/bin"
       "/etc/xdg"
