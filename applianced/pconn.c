@@ -2383,6 +2383,7 @@ static uint32_t icecand_recommend_priority(struct icecand *ic, uint16_t local_pr
     }                                                                   \
     for ( ; isspace(*start) && start != end; ++start );                 \
   } while(0)
+
 static int icecand_parse(struct icecand *ic, const char *start, const char *end) {
   char ip_addr[INET6_ADDRSTRLEN];
   uint16_t port;
@@ -2726,13 +2727,13 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
       if ( err < 0 ) {
         fprintf(stderr, "could not parse ice candidate: %.*s\n",
                 (int) (vle - vls), vls);
-        return -1;
-      }
-
-      err = pconn_add_ice_candidate(pc, PCONN_REMOTE_CANDIDATE, &cand);
-      if ( err < 0 ) {
-        fprintf(stderr, "could not add ice candidate\n");
-        return -1;
+        // Ignore candidates that we cannot parse
+      } else {
+        err = pconn_add_ice_candidate(pc, PCONN_REMOTE_CANDIDATE, &cand);
+        if ( err < 0 ) {
+          fprintf(stderr, "could not add ice candidate\n");
+          return -1;
+        }
       }
 
     } else if ( ATTR_IS("vlansrc") && vls && vle && vls != vle &&
