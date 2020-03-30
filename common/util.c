@@ -234,7 +234,6 @@ int parse_address(const char *str, size_t str_sz, uint16_t port,
   struct in6_addr in6;
 
   strncpy_safe(nt_addr, str, sizeof(nt_addr));
-  fprintf(stderr, "parse_address: %s\n", nt_addr);
 
   if ( inet_pton(AF_INET, nt_addr, &in.s_addr) ) {
     if ( *sa_sz >= sizeof(struct sockaddr_in) ) {

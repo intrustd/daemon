@@ -12,8 +12,10 @@
 #include "state.h"
 #include "token.h"
 #include "nat.h"
+#include "avahi.h"
 
 #define DEFAULT_SCTP_PORT 5000
+#define ICECAND_PARSE_DEFERRED 1
 
 // According to https://tools.ietf.org/id/draft-ietf-tls-dtls13-02.html#rfc.section.4.1.1,
 // DTLS packets start with 21, 22, 23 or 25
@@ -24,6 +26,14 @@ static const char guest_persona_id[PERSONA_ID_LENGTH] =
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+// When an ice candidate is deferred (for avahi lookup for example,
+// this structure is used to hold all the information we'll need to
+// add it )
+struct deferredicecand {
+  struct pconn *dic_pconn;
+  struct icecand dic_icecand;
+};
 
 // A candidate source. This information is taken from the full set of
 // flocks when the pconn is started
@@ -124,7 +134,7 @@ struct candsrc {
 static const char *ice_transport_str(int ts);
 static const char *ice_type_str(int ty);
 static uint32_t icecand_recommend_priority(struct icecand *ic, uint16_t local_pref);
-static int icecand_parse(struct icecand *ic, const char *vls, const char *vle);
+static int icecand_parse(struct pconn *pc, struct icecand *ic, const char *vls, const char *vle);
 
 #define CANDSRC_SUBSCRIBE_READ(cs) do {                           \
     uint32_t __did_sub_ ## __LINE__;                              \
@@ -162,6 +172,7 @@ static int icecand_parse(struct icecand *ic, const char *vls, const char *vle);
 #define OP_PCONN_NEW_TOKEN (EVT_CTL_CUSTOM + 6)
 #define OP_PCONN_DTLS_TIMEOUT (EVT_CTL_CUSTOM + 7)
 #define OP_PCONN_CHECK_PERM (EVT_CTL_CUSTOM + 8)
+#define OP_PCONN_AVAHI_RESOLUTION_COMPLETES (EVT_CTL_CUSTOM + 9)
 
 static void pconn_fn(struct eventloop *el, int op, void *arg);
 static void pconn_free(struct pconn *pc);
@@ -828,6 +839,10 @@ static void candsrc_send_connectivity_check(struct candsrc *cs) {
     return;
   }
 
+  //  fprintf(stderr, "Sending conn check: size =%d addr=", STUN_MSG_LENGTH(&msg));
+  //dump_address(stderr, &remote->ic_addr.sa, sizeof(remote->ic_addr));
+  //  fprintf(stderr, " addrSz=%d\n", (int)sizeof(remote->ic_addr));
+
   err = sendto(cs->cs_socket, &msg, STUN_MSG_LENGTH(&msg), 0,
                &remote->ic_addr.sa, sizeof(remote->ic_addr));
   if ( err < 0 ) {
@@ -835,7 +850,12 @@ static void candsrc_send_connectivity_check(struct candsrc *cs) {
     if ( errno == EWOULDBLOCK ) {
       fprintf(stderr, "candsrc_send_connectivity_check: would block\n");
     } else {
+      char addr[INET6_ADDRSTRLEN];
+      uint16_t port;
       perror("candsrc_send_connectivity_check: sendto");
+      fprintf(stderr, "candsrc_send_connectivity_check: message had length %d\n", STUN_MSG_LENGTH(&msg));
+      format_address(&remote->ic_addr.sa, sizeof(remote->ic_addr), addr, sizeof(addr), &port);
+      fprintf(stderr, "Remote address is %.*s:%d\n", (int)sizeof(addr), addr, port);
     }
   }
 }
@@ -923,6 +943,10 @@ uint64_t icecand_pair_priority(struct pconn *pc, struct icecand *local, struct i
   }
 
   return ((g < d ? g : d) << 32) + 2 * (g > d ? g : d) + (g > d ? 1 : 0);
+}
+
+void icecand_copy(struct icecand *dest, struct icecand *src) {
+  memcpy(dest, src, sizeof(struct icecand));
 }
 
 static void pconn_delayed_start(struct pconn *pc) {
@@ -1020,6 +1044,8 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
   struct pconn *pc;
   struct candsrc *cs;
   struct brpermrequest *perm;
+  struct avahirequest *avahi;
+  struct deferredicecand *dic;
   int has_error = 0, cs_idx;
 
   switch ( op ) {
@@ -1217,6 +1243,44 @@ static void pconn_fn(struct eventloop *el, int op, void *arg) {
 
     eventloop_queue(perm->bpr_el, &perm->bpr_finished_event);
 
+    break;
+
+  case OP_PCONN_AVAHI_RESOLUTION_COMPLETES:
+    avahi = AVAHIREQUEST_FROM_FINISH_EVT(evt);
+    dic = (struct deferredicecand *) avahi->ar_data;
+    pc = dic->dic_pconn;
+    if ( PCONN_LOCK(pc) == 0 ) {
+      int sts, err;
+      if ( avahirequest_get_status(avahi, &sts, &dic->dic_icecand.ic_addr) < 0 ) {
+        fprintf(stderr, "pconn_fn: could not get avahi request status\n");
+        PCONN_UNREF(pc);
+        AVAHIREQUEST_UNREF(avahi);
+        return;
+      }
+
+      if ( sts == AVAHI_SUCCESS ) {
+        SAFE_MUTEX_LOCK(&pc->pc_mutex);
+        err = pconn_add_ice_candidate(pc, PCONN_REMOTE_CANDIDATE, &dic->dic_icecand);
+        if ( err < 0 ) {
+          fprintf(stderr, "pconn_fn: could not add avahi resolved ice candidate %s\n",
+                  avahi->ar_domain);
+        }
+
+        fprintf(stderr, "pconn_fn: avahi lookup resolves %s into ", avahi->ar_domain);
+        dump_address(stderr, &dic->dic_icecand.ic_addr, sizeof(dic->dic_icecand.ic_addr));
+        fprintf(stderr, "\n");
+        pthread_mutex_unlock(&pc->pc_mutex);
+      } else {
+        fprintf(stderr, "pconn_fn: could not complete avahi resolution for %s: %s\n",
+                avahi->ar_domain, avahi_error_string(sts));
+      }
+
+      PCONN_UNREF(pc);
+    }
+    // The avahi request will have been referenced for us by the start event
+    AVAHIREQUEST_UNREF(avahi);
+    // And again for the reference we never freed from avahirequest_alloc
+    AVAHIREQUEST_UNREF(avahi);
     break;
 
   default:
@@ -1719,7 +1783,7 @@ int pconn_write_response(struct pconn *pc, char *buf, int buf_sz) {
 void pconn_finish(struct pconn *pc) {
   int old_subs, i;
 
-  fprintf(stderr, "pconn_finish!!!\n");
+  // fprintf(stderr, "pconn_finish!!!\n");
 
   if ( eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_conn_check_timer) ) {
     PCONN_WUNREF(pc);
@@ -1728,7 +1792,7 @@ void pconn_finish(struct pconn *pc) {
   if ( eventloop_cancel_timer(&pc->pc_appstate->as_eventloop, &pc->pc_timeout) )
     PCONN_WUNREF(pc);
 
-  SHARED_DEBUG(&pc->pc_shared, "after cancel timers");
+  // SHARED_DEBUG(&pc->pc_shared, "after cancel timers");
 
   for ( i = 0; i < pc->pc_candidate_sources_count; ++i ) {
     struct candsrc *src = &pc->pc_candidate_sources[i];
@@ -1743,9 +1807,9 @@ void pconn_finish(struct pconn *pc) {
 
   }
 
-  SHARED_DEBUG(&pc->pc_shared, "after events unregister");
+  // SHARED_DEBUG(&pc->pc_shared, "after events unregister");
   flock_pconn_expires(pc->pc_flock, pc);
-  SHARED_DEBUG(&pc->pc_shared, "after expiration");
+  // SHARED_DEBUG(&pc->pc_shared, "after expiration");
 }
 
 static void pconn_auth_fails(struct pconn *pc) {
@@ -2154,7 +2218,7 @@ static int pconn_form_candidate_pairs(struct pconn *pc, struct icecand *cand, in
   pc->pc_candidate_pairs_count += partners_to_add;
 
   if ( partners_to_add > 0 ) {
-    fprintf(stderr, "Sorting candidates\n");
+    //    fprintf(stderr, "Sorting candidates\n");
     qsort(pc->pc_candidate_pairs_sorted, pc->pc_candidate_pairs_count,
           sizeof(*pc->pc_candidate_pairs_sorted), cmp_candidates);
 
@@ -2238,7 +2302,7 @@ static int pconn_add_ice_candidate(struct pconn *pc, int cand_type, struct iceca
       ret = 1;
       cur_cands_cnt++;
 
-      fprintf(stderr, "pconn_add_ice_candidate: %s\n",
+      fprintf(stderr, "pconn_add_ice_candidate: %s:",
               cand_type == PCONN_LOCAL_CANDIDATE ? "local" : "remote");
       FORMAT_ICE_CANDIDATE(&cur_cands[cur_cands_cnt - 1], dbgprintf);
       fprintf(stderr, "\n");
@@ -2384,11 +2448,15 @@ static uint32_t icecand_recommend_priority(struct icecand *ic, uint16_t local_pr
     for ( ; isspace(*start) && start != end; ++start );                 \
   } while(0)
 
-static int icecand_parse(struct icecand *ic, const char *start, const char *end) {
-  char ip_addr[INET6_ADDRSTRLEN];
+static int icecand_parse(struct pconn *pc, struct icecand *ic,
+                         const char *start, const char *end) {
+  char ip_addr[DNS_DOMAIN_MAXLEN];
   uint16_t port;
   socklen_t addr_sz;
   const char *start_init = start;
+
+  int deferred = 0;
+  struct icecand *deferred_icecand = NULL;
 
   if ( start == end ) return -1;
 
@@ -2423,8 +2491,30 @@ static int icecand_parse(struct icecand *ic, const char *start, const char *end)
   addr_sz = sizeof(ic->ic_addr);
   if ( parse_address(ip_addr, sizeof(ip_addr), port,
                      &ic->ic_addr.sa, &addr_sz) < 0 ) {
-    fprintf(stderr, "icecand_parse: could not parse address\n");
-    return -1;
+    if ( is_local_address(ip_addr, sizeof(ip_addr)) ) {
+      struct deferredicecand *dic;
+      struct avahirequest *ar = avahirequest_alloc(ip_addr, strnlen(ip_addr, sizeof(ip_addr)), port,
+                                                   sizeof(struct deferredicecand),
+                                                   OP_PCONN_AVAHI_RESOLUTION_COMPLETES,
+                                                   pconn_fn);
+      if ( !ar ) {
+        fprintf(stderr, "icecand_parse: could not allocate Avahi request\n");
+        return -1;
+      }
+
+      PCONN_WREF(pc); // Reference for avahi request
+
+      dic = (struct deferredicecand *) ar->ar_data;
+      dic->dic_pconn = pc;
+      deferred_icecand = &dic->dic_icecand;
+
+      avahirequest_start(ar, &pc->pc_appstate->as_eventloop);
+      deferred = 1;
+    } else {
+      fprintf(stderr, "icecand_parse: could not parse address (was not local address): %.*s\n",
+              (int) sizeof(ip_addr), ip_addr);
+      return -1;
+    }
   }
 
   ICECAND_EXACT("typ");
@@ -2459,6 +2549,13 @@ static int icecand_parse(struct icecand *ic, const char *start, const char *end)
       fprintf(stderr, "icecand_parse: could not parse raddr\n");
       return -1;
     }
+  }
+
+  if ( deferred ) {
+    if ( deferred_icecand )
+      icecand_copy(deferred_icecand, ic);
+
+    return ICECAND_PARSE_DEFERRED;
   }
 
   return 0;
@@ -2723,11 +2820,15 @@ static int pconn_sdp_attr_fn(void *pc_, const char *nms, const char *nme,
       cand.ic_candsrc_ix = -1;
 
       fprintf(stderr, "attempting to parse ice candidate: %.*s\n", (int) (vle-vls), vls);
-      err = icecand_parse(&cand, vls, vle);
+      err = icecand_parse(pc, &cand, vls, vle);
       if ( err < 0 ) {
         fprintf(stderr, "could not parse ice candidate: %.*s\n",
                 (int) (vle - vls), vls);
         // Ignore candidates that we cannot parse
+      } else if ( err == ICECAND_PARSE_DEFERRED ) {
+        // Adding the ICE candidate has been deferred for resolution
+        fprintf(stderr, "Deferring ice candidate for later: %.*s\n",
+                (int) (vle - vls), vls);
       } else {
         err = pconn_add_ice_candidate(pc, PCONN_REMOTE_CANDIDATE, &cand);
         if ( err < 0 ) {
@@ -3289,7 +3390,7 @@ static int pconn_container_fn(struct container *c, int op, void *argp, ssize_t a
 
   case CONTAINER_CTL_ON_SHUTDOWN:
     PCONN_UNREF(pc);
-    SHARED_DEBUG(&pc->pc_shared, "after on shutdown");
+    // SHARED_DEBUG(&pc->pc_shared, "after on shutdown");
     return 0;
 
   case CONTAINER_CTL_INIT_EXITS:

@@ -164,7 +164,7 @@ static inline int shared_lock_imm(struct shared *s) {
 #define SHARED_DEBUG(shared, str)                                       \
   do {                                                                  \
     uint64_t __cnt_ ## __LINE__ = __sync_fetch_and_or(&(shared)->sh_refcnt, 0); \
-    fprintf(stderr, "SHARED_DEBUG: " str " (weak 0x%08"PRIu64", strong 0x%08"PRIu64")\n", \
+    fprintf(stderr, "SHARED_DEBUG: " str " (weak 0x%08"PRIx64", strong 0x%08"PRIx64")\n", \
             (__cnt_ ## __LINE__ >> 32) & 0xFFFFFFFF, __cnt_ ## __LINE__ & 0xFFFFFFFF); \
   } while (0)
 
@@ -351,6 +351,10 @@ typedef union {
   struct sockaddr_in sa_ipv4;
   struct sockaddr_in6 sa_ipv6;
 } intrustd_sock_addr;
+
+#define INTRUSTD_SOCK_ADDR_INIT(sap) do { \
+    (sap)->sa.sa_family = AF_UNSPEC;      \
+  } while (0)
 
 int intrustd_sock_addr_equal(intrustd_sock_addr *ksa, struct sockaddr *a, socklen_t a_sz);
 

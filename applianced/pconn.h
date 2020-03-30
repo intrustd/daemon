@@ -73,6 +73,7 @@ struct icecand {
    (a)->ic_addr.sa.sa_family != AF_UNSPEC)
 uint64_t icecand_pair_priority(struct pconn *pc, struct icecand *local, struct icecand *remote);
 int icecand_equivalent(struct icecand *a, struct icecand *b);
+void icecand_copy(struct icecand *dest, struct icecand *src);
 
 #define ICECANDPAIR_FLAG_NOMINATED   0x1 // We've performed a successful connectivity check
 // #define ICECANDPAIR_FLAG_RECEIVED    0x2 // We've received a successful STUN ping

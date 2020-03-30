@@ -2149,12 +2149,12 @@ void handle_msg(int srv,
     control = (struct wrtcmsg *)buf;
 
     if ( sz < sizeof(control->wm_type) ) break;
-    fprintf(stderr, "Received WebRTC control msg\n");
+    log_printf(stderr, "Received WebRTC control msg\n");
 
     switch ( control->wm_type ) {
     case WEBRTC_MSG_OPEN:
       chan_id = WEBRTC_CHANID(rcv->sinfo_stream);
-      fprintf(stderr, "Request to open WebRTC data channel %d\n", chan_id);
+      log_printf(stderr, "Request to open WebRTC data channel %d\n", chan_id);
 
       do_not_close_channel(chan_id);
 
@@ -2212,7 +2212,7 @@ void handle_msg(int srv,
 
       dbg_chan(chan);
 
-      fprintf(stderr, "Opening WebRTC channel\n");
+      log_printf(stderr, "Opening WebRTC channel\n");
 
       chan->wrc_family = AF_INET;
       chan->wrc_type = SOCK_DGRAM;
