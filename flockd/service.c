@@ -1469,7 +1469,10 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
     }
 
     // Copy name
-    strncpy(new_app->ai_name, app_name, sizeof(new_app->ai_name));
+    memset(new_app->ai_name, 0, sizeof(new_app->ai_name));
+    strncpy(new_app->ai_name, app_name, sizeof(new_app->ai_name) - 1);
+    new_app->ai_name[sizeof(new_app->ai_name) - 1] = 0;
+
     new_app->ai_appliance_fn = fscs_appliancefn;
 
     new_app->ai_flags |= AI_FLAG_ACTIVE;
@@ -1500,7 +1503,11 @@ int flockservice_handle_appliance_registration(struct flockservice *svc,
       AI_REF(old_app);
 
       reconciliation.air_old = old_app;
-      strncpy(reconciliation.air_new_name, app_name, sizeof(reconciliation.air_new_name));
+
+      memset(reconciliation.air_new_name, 0, sizeof(reconciliation.air_new_name));
+      strncpy(reconciliation.air_new_name, app_name, sizeof(reconciliation.air_new_name) - 1);
+      reconciliation.air_new_name[sizeof(reconciliation.air_new_name) - 1] = 0;
+
       reconciliation.air_new_cert = SSL_get_peer_certificate(st->fscs_dtls);
 
       err = old_app->ai_appliance_fn(old_app, AI_OP_RECONCILE, &reconciliation);

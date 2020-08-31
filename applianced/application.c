@@ -785,8 +785,11 @@ static int appinstance_container_ctl(struct container *c, int op, void *argp, ss
              sizeof(desc->ad_app_instance.ad_persona_id));
     } else
       memset(desc->ad_app_instance.ad_persona_id, 0, sizeof(desc->ad_app_instance.ad_persona_id));
+
+    memset(desc->ad_app_instance.ad_app_url, 0, sizeof(desc->ad_app_instance.ad_app_url));
     strncpy(desc->ad_app_instance.ad_app_url, ai->inst_app->app_domain,
-            sizeof(desc->ad_app_instance.ad_app_url));
+            sizeof(desc->ad_app_instance.ad_app_url) - 1);
+
     desc->ad_app_instance.ad_app_instance = ai;
     APPINSTANCE_REF(ai);
     return 0;

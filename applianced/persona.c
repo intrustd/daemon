@@ -69,7 +69,9 @@ int persona_init(struct persona *p, struct appstate *as,
   if ( !p->p_display_name )
     return -1;
 
-  strncpy(p->p_display_name, display_name, display_name_sz + 1);
+  memset(p->p_display_name, 0, display_name_sz + 1);
+  strncpy(p->p_display_name, display_name, display_name_sz);
+  p->p_display_name[display_name_sz] = 0;
 
   p->p_auths = NULL;
 

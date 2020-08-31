@@ -1593,7 +1593,9 @@ int pconn_write_offer(struct pconn *pc, struct stunmsg *msg,
     break;
   default:
     addrty = "IP4";
-    strncpy(addr_buf, "127.0.0.1", sizeof(addr_buf));
+    memset(addr_buf, 0, sizeof(addr_buf));
+    strncpy(addr_buf, "127.0.0.1", sizeof(addr_buf) - 1);
+    addr_buf[sizeof(addr_buf) - 1] = 0;
     break;
   }
 

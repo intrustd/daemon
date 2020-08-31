@@ -144,7 +144,8 @@ int readlink_recursive(const char *path, char *out, size_t out_sz) {
     return -1;
   }
 
-  strncpy(out, path, out_sz);
+  memset(out, 0, out_sz);
+  strncpy(out, path, out_sz - 1);
   out[out_sz - 1] = '\0';
 
   do {

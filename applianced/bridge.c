@@ -1060,7 +1060,9 @@ static int bridge_create_tap(struct brstate *br, char *tap_nm, int is_tun) {
     exit(5);
   }
 
-  strncpy(tap_nm, ifr.ifr_name, IFNAMSIZ);
+  memset(tap_nm, 0, IFNAMSIZ);
+  strncpy(tap_nm, ifr.ifr_name, IFNAMSIZ - 1);
+  tap_nm[IFNAMSIZ - 1] = 0;
 
   return fd;
 }
@@ -1957,7 +1959,9 @@ static int bridge_move_if_to_ns(struct brstate *br, const char *if_name, int net
     return -1;
   }
 
-  strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name));
+  memset(ifr.ifr_name, 0, sizeof(ifr.ifr_name));
+  strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name) - 1);
+  ifr.ifr_name[sizeof(ifr.ifr_name) - 1] = 0;
 
   if ( ioctl(nl_sk, SIOCGIFINDEX, &ifr, sizeof(ifr)) < 0 ) {
     perror("bridge_move_if_to_ns: ioctl(SIOCGIFINDEX)");
@@ -2139,7 +2143,9 @@ static int find_hw_addr(const char *if_name, unsigned char *mac_addr) {
     return -1;
   }
 
-  strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name));
+  memset(ifr.ifr_name, 0, sizeof(ifr.ifr_name));
+  strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name) - 1);
+  ifr.ifr_name[sizeof(ifr.ifr_name) - 1] = 0;
 
   if ( ioctl(sk, SIOCGIFHWADDR, &ifr, sizeof(ifr)) < 0 ) {
     close(sk);

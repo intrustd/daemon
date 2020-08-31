@@ -266,7 +266,9 @@ static int open_avahi_socket() {
 
   memset(&sa, 0, sizeof(sa));
   sa.sun_family = AF_UNIX;
+
   strncpy(sa.sun_path, avahi_socket, sizeof(sa.sun_path) - 1);
+  sa.sun_path[sizeof(sa.sun_path) - 1] = 0;
 
   if ( connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 ) {
     perror("avahi_socket: connect");
@@ -373,6 +375,7 @@ struct avahirequest *avahirequest_alloc(const char *domain, size_t domain_sz, ui
 
   memset(ar->ar_domain, 0, sizeof(ar->ar_domain));
   strncpy(ar->ar_domain, domain, sizeof(ar->ar_domain) - 1);
+  ar->ar_domain[sizeof(ar->ar_domain) - 1] = 0;
 
   qdevtsub_init(&ar->ar_finished_evt, finish_op, finish_fn);
   qdevtsub_init(&ar->ar_start_evt, OP_AVAHI_STARTS, avahirequest_fn);
