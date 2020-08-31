@@ -963,7 +963,7 @@ static void wsconnection_respond_wsline(struct wsconnection *conn, struct eventl
     line[0] = WS_FIN;
     conn->wsc_corking_mode = WSC_NO_CORK;
   } else
-    line[0] = WS_FIN | WS_TEXT_FRAME;
+    line[0] = (unsigned char) ((unsigned char) WS_FIN | (unsigned char) WS_TEXT_FRAME);
 
   cur_pkt_length = 1;
   if ( line_nonl_length < 126 ) {

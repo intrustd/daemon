@@ -159,8 +159,8 @@ struct pconn {
   int pc_ice_gathering_state : 4;
   int pc_type : 4;
 
-  int pc_auth_attempts : 2;
-  int pc_ice_role : 2; // ICE_ROLE_CONTROLLING or ICE_ROLE_CONTROLLED
+  int pc_auth_attempts;
+  unsigned int pc_ice_role; // ICE_ROLE_CONTROLLING or ICE_ROLE_CONTROLLED
   int pc_offer_line;
   int pc_last_offer_line; // index of offer line of first candidate
 

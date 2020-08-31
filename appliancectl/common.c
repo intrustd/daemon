@@ -153,13 +153,16 @@ int mk_api_socket() {
   int err, sk;
   char *intrustd_path = getenv("INTRUSTD_APPLIANCE_DIR");
 
+  memset(&addr, 0, sizeof(addr));
+
   addr.sun_family = AF_UNIX;
 
   if ( intrustd_path )
     err = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/" APPLIANCED_LOCAL_API_SOCK, intrustd_path);
-  else
-    err = strnlen(strncpy(addr.sun_path, APPLIANCED_LOCAL_API_SOCK, sizeof(addr.sun_path)),
+  else {
+    err = strnlen(strncpy(addr.sun_path, APPLIANCED_LOCAL_API_SOCK, sizeof(addr.sun_path) - 1),
                   sizeof(addr.sun_path));
+  }
   assert(err < sizeof(addr.sun_path));
 
   sk = socket(AF_UNIX, SOCK_SEQPACKET, 0);
