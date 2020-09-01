@@ -2470,7 +2470,7 @@ int main(int argc, char **argv) {
   reseto.assoc_value = 1;
   if ( setsockopt(sock, IPPROTO_SCTP, SCTP_INTERLEAVING_SUPPORTED, &reseto, sizeof(reseto)) < 0 ) {
     perror("setsockopt SCTP_INTERLEAVING_SUPPORTED");
-    
+
     if ( errno != ENOPROTOOPT )
       return 1;
     else

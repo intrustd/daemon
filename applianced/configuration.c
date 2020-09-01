@@ -513,11 +513,27 @@ int appconf_validate(struct appconf *ac, int do_debug) {
   }
 
   if ( !ac->ac_ebroute_bin ) {
+    struct stat bin_info;
+
     // Attempt to get ebroute information using nix-build
     ac->ac_ebroute_bin = nix_build("ebtables", "bin/ebtables");
     if ( !ac->ac_ebroute_bin ) {
       fprintf(stderr, "Could not build ebroute via nix\n");
       return -1;
+    }
+
+    // Check to see if this works
+    if ( stat(ac->ac_ebroute_bin, &bin_info) < 0 ) {
+      if ( errno == ENOENT ) {
+        ac->ac_ebroute_bin = nix_build("ebtables", "bin/ebtables-legacy");
+        if (!ac->ac_ebroute_bin) {
+          fprintf(stderr, "Could not find ebroutes or ebroutes-legacy\n");
+          return -1;
+        }
+      } else {
+        perror("Stating ebtables");
+        return -1;
+      }
     }
   }
 

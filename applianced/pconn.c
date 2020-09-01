@@ -3197,24 +3197,24 @@ static void pconn_on_local_packet(struct pconn *pc, const void *buf, size_t sz) 
 
     if ( pc->pc_active_candidate_pair < 0 ||
          pc->pc_active_candidate_pair >= pc->pc_candidate_pairs_count ) {
-      fprintf(stderr, "pconn_on_sctp_packet: invalid candidate pair\n");
+      fprintf(stderr, "pconn_on_local_packet: invalid candidate pair\n");
       goto done;
     }
     active = pc->pc_candidate_pairs_sorted[pc->pc_active_candidate_pair];
     if ( !active ) {
-      fprintf(stderr, "pconn_on_sctp_packet: null in candidate pair list\n");
+      fprintf(stderr, "pconn_on_local_packet: null in candidate pair list\n");
       goto done;
     }
 
     if ( active->icp_local_ix >= pc->pc_local_ice_candidates_count ) {
-      fprintf(stderr, "pconn_on_sctp_packet: invalid local ice candidate\n");
+      fprintf(stderr, "pconn_on_local_packet: invalid local ice candidate\n");
       goto done;
     }
     local_cand = &pc->pc_local_ice_candidates[active->icp_local_ix];
 
     if ( local_cand->ic_candsrc_ix < 0 ||
          local_cand->ic_candsrc_ix >= pc->pc_candidate_sources_count ) {
-      fprintf(stderr, "pconn_on_sctp_packet: invalid candidate source index\n");
+      fprintf(stderr, "pconn_on_local_packet: invalid candidate source index\n");
       goto done;
     }
     candsrc = &pc->pc_candidate_sources[local_cand->ic_candsrc_ix];
@@ -3240,18 +3240,18 @@ static void pconn_on_local_packet(struct pconn *pc, const void *buf, size_t sz) 
       } else
         cur_write_head += 4;
 
-      //fprintf(stderr, "pconn_on_sctp_packet: write at %lu\n", cur_write_head);
+      //fprintf(stderr, "pconn_on_local_packet: write at %lu\n", cur_write_head);
       memcpy(pc->pc_outgoing_pkt + cur_write_head, buf + bytes_written, aligned_sz - 4 - bytes_written);
       pc->pc_outgoing_size += aligned_sz;
 
-      //fprintf(stderr, "pconn_on_sctp_packet: asking for write\n");
+      //fprintf(stderr, "pconn_on_local_packet: asking for write\n");
       CANDSRC_SUBSCRIBE_WRITE(candsrc);
     } else
-      fprintf(stderr, "pconn_on_sctp_packet: dropping packet\n"); // TODO drop first packet
+      fprintf(stderr, "pconn_on_local_packet: dropping packet\n"); // TODO drop first packet
   done:
     pthread_mutex_unlock(&pc->pc_mutex);
   } else
-    fprintf(stderr, "pconn_on_sctp_packet: can't lock mutex\n");
+    fprintf(stderr, "pconn_on_local_packet: can't lock mutex\n");
 }
 
 static void pconn_on_natted_packet(struct vlannat *nat, const void *buf, size_t sz) {

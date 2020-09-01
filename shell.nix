@@ -82,7 +82,7 @@ in pkgs.stdenv.mkDerivation {
     lksctp-tools-1-0-18 libnl thrift
     curl-intrustd curl-intrustd.dev
 
-    nginx jq redis
+    nginx jq redis usrsctp
 
     nix-prefetch-git nodePackages.node2nix
 

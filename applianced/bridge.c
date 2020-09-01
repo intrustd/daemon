@@ -585,7 +585,6 @@ static void bridge_process_ip(struct brstate *br, struct eventloop *el, int sz) 
       }
 
       case IPPROTO_SCTP:
-        //      fprintf(stderr, "bridge_process_ip: got SCTP message\n");
         if ( sz < (sizeof(struct ethhdr) + sizeof(struct iphdr) + 2) ) {
           fprintf(stderr, "bridge_process_ip: SCTP packet is too short\n");
         } else {
